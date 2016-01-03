@@ -98,6 +98,10 @@ func getproccount() int32 {
 	}
 	return n
 }
+func getphyspagesz() uintptr {
+	// XXX: How to get PAGESIZE?
+	return _PhysPageSize
+}
 
 // Clone, the Linux rfork.
 const (
@@ -171,6 +175,7 @@ var failthreadcreate = []byte("runtime: failed to create new OS thread\n")
 
 func osinit() {
 	ncpu = getproccount()
+	physpagesz = getphyspagesz()
 }
 
 var urandom_dev = []byte("/dev/urandom\x00")

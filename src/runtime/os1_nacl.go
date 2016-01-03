@@ -51,6 +51,7 @@ func unminit() {
 func osinit() {
 	ncpu = 1
 	getg().m.procid = 2
+	pyhspagesz = _PhysPageSize
 	//nacl_exception_handler(funcPC(sigtramp), nil);
 }
 

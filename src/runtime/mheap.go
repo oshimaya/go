@@ -307,7 +307,7 @@ func mHeap_MapSpans(h *mheap, arena_used uintptr) {
 	n := arena_used
 	n -= h.arena_start
 	n = n / _PageSize * ptrSize
-	n = round(n, _PhysPageSize)
+	n = round(n, physpagesz)
 	if h.spans_mapped >= n {
 		return
 	}
@@ -788,7 +788,7 @@ func mHeap_FreeSpanLocked(h *mheap, s *mspan, acctinuse, acctidle bool, unusedsi
 }
 
 func scavengelist(list *mspan, now, limit uint64) uintptr {
-	if _PhysPageSize > _PageSize {
+	if physpagesz > _PageSize {
 		// golang.org/issue/9993
 		// If the physical page size of the machine is larger than
 		// our logical heap page size the kernel may round up the

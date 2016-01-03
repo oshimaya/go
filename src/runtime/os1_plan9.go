@@ -66,6 +66,11 @@ func getproccount() int32 {
 	return ncpu
 }
 
+func getphyspagesz() uintptr {
+	// XXX: How to get PAGE_SIZE?
+	return _PhysPageSize
+}
+
 var pid = []byte("#c/pid\x00")
 
 func getpid() uint64 {
@@ -85,6 +90,7 @@ func getpid() uint64 {
 func osinit() {
 	initBloc()
 	ncpu = getproccount()
+	physpagesz = getphyspagesz()
 	getg().m.procid = getpid()
 	notify(unsafe.Pointer(funcPC(sigtramp)))
 }

@@ -130,6 +130,10 @@ func getproccount() int32 {
 	stdcall1(_GetSystemInfo, uintptr(unsafe.Pointer(&info)))
 	return int32(info.dwnumberofprocessors)
 }
+func getphyspagesz() uintptr {
+	// XXX: How to get PAGESIZE ??
+	return _PhysPageSize
+}
 
 const (
 	currentProcess = ^uintptr(0) // -1 = current process
@@ -157,6 +161,7 @@ func osinit() {
 	stdcall1(_timeBeginPeriod, 1)
 
 	ncpu = getproccount()
+	physpagesz = getphyspagesz()
 
 	// Windows dynamic priority boosting assumes that a process has different types
 	// of dedicated threads -- GUI, IO, computational, etc. Go processes use

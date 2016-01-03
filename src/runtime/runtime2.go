@@ -639,6 +639,7 @@ var (
 	forcegc     forcegcstate
 	sched       schedt
 	newprocs    int32
+	physpagesz  uintptr
 
 	// Information about what cpu features are available.
 	// Set on startup in asm_{x86,amd64}.s.
