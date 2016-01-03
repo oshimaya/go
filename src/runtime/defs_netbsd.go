@@ -122,4 +122,4 @@ type Itimerval C.struct_itimerval
 type McontextT C.mcontext_t
 type UcontextT C.ucontext_t
 
-type Kevent C.struct_kevent
+type KeventT C.struct_kevent
