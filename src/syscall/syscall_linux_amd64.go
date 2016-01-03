@@ -4,6 +4,8 @@
 
 package syscall
 
+import "runtime"
+
 const _SYS_dup = SYS_DUP2
 
 //sys	Dup2(oldfd int, newfd int) (err error)
@@ -69,7 +71,7 @@ func Gettimeofday(tv *Timeval) (err error) {
 	return nil
 }
 
-func Getpagesize() int { return 4096 }
+func Getpagesize() int { return runtime.Physpagesize() }
 
 func Time(t *Time_t) (tt Time_t, err error) {
 	var tv Timeval

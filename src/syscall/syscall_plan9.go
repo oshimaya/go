@@ -11,7 +11,10 @@
 
 package syscall
 
-import "unsafe"
+import (
+	"unsafe"
+	"runtime"
+)
 
 const ImplementsGetwd = true
 
@@ -304,7 +307,7 @@ func Gettimeofday(tv *Timeval) error {
 	return nil
 }
 
-func Getpagesize() int { return 0x1000 }
+func Getpagesize() int { return runtime.Physpagesize() }
 
 func Getegid() (egid int) { return -1 }
 func Geteuid() (euid int) { return -1 }

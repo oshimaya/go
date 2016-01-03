@@ -8,6 +8,7 @@ package syscall
 
 import (
 	errorspkg "errors"
+	"runtime"
 	"sync"
 	"unicode/utf16"
 	"unsafe"
@@ -75,7 +76,7 @@ func UTF16PtrFromString(s string) (*uint16, error) {
 	return &a[0], nil
 }
 
-func Getpagesize() int { return 4096 }
+func Getpagesize() int { return runtime.Physpagesize() }
 
 // Errno is the Windows error number.
 type Errno uintptr
