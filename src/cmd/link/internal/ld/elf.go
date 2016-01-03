@@ -796,7 +796,8 @@ func Elfinit() {
 	// 32-bit architectures
 	case '5':
 		// we use EABI on both linux/arm and freebsd/arm.
-		if HEADTYPE == obj.Hlinux || HEADTYPE == obj.Hfreebsd {
+		if HEADTYPE == obj.Hlinux || HEADTYPE == obj.Hfreebsd ||
+		    HEADTYPE == obj.Hnetbsd {
 			ehdr.flags = 0x5000002 // has entry point, Version5 EABI
 		}
 		fallthrough
