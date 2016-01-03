@@ -36,6 +36,11 @@ func NumCPU() int {
 	return int(ncpu)
 }
 
+// Physpagesize returns the physical page size from runtime
+func Physpagesize() int {
+	return int(physpagesz)
+}
+
 // NumCgoCall returns the number of cgo calls made by the current process.
 func NumCgoCall() int64 {
 	var n int64
