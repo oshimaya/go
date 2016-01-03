@@ -121,7 +121,6 @@ func archinit() {
 
 	case obj.Hlinux, /* arm elf */
 		obj.Hfreebsd,
-		obj.Hnetbsd,
 		obj.Hopenbsd:
 		ld.Debug['d'] = 0
 		// with dynamic linking
@@ -135,6 +134,20 @@ func archinit() {
 		}
 		if ld.INITRND == -1 {
 			ld.INITRND = 4096
+		}
+	case obj.Hnetbsd:
+		ld.Debug['d'] = 0
+		// with dynamic linking
+		ld.Elfinit()
+		ld.HEADR = ld.ELFRESERVE
+		if ld.INITTEXT == -1 {
+			ld.INITTEXT = 0x10000 + int64(ld.HEADR)
+		}
+		if ld.INITDAT == -1 {
+			ld.INITDAT = 0
+		}
+		if ld.INITRND == -1 {
+			ld.INITRND = 0x10000
 		}
 
 	case obj.Hnacl:

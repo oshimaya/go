@@ -161,7 +161,6 @@ func archinit() {
 
 	case obj.Hlinux, /* elf64 executable */
 		obj.Hfreebsd,   /* freebsd */
-		obj.Hnetbsd,    /* netbsd */
 		obj.Hopenbsd,   /* openbsd */
 		obj.Hdragonfly, /* dragonfly */
 		obj.Hsolaris:   /* solaris */
@@ -176,6 +175,19 @@ func archinit() {
 		}
 		if ld.INITRND == -1 {
 			ld.INITRND = 4096
+		}
+	case obj.Hnetbsd:
+		ld.Elfinit()
+
+		ld.HEADR = ld.ELFRESERVE
+		if ld.INITTEXT == -1 {
+			ld.INITTEXT = (1 << 22) + int64(ld.HEADR)
+		}
+		if ld.INITDAT == -1 {
+			ld.INITDAT = 0
+		}
+		if ld.INITRND == -1 {
+			ld.INITRND = 0x200000
 		}
 
 	case obj.Hnacl:
