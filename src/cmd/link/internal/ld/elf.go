@@ -827,7 +827,8 @@ func Elfinit() {
 	// 32-bit architectures
 	case '5':
 		// we use EABI on both linux/arm and freebsd/arm.
-		if HEADTYPE == obj.Hlinux || HEADTYPE == obj.Hfreebsd {
+		if HEADTYPE == obj.Hlinux || HEADTYPE == obj.Hfreebsd || 
+                   HEADTYPE == obj.Hnetbsd {
 			// We set a value here that makes no indication of which
 			// float ABI the object uses, because this is information
 			// used by the dynamic linker to compare executables and
