@@ -99,6 +99,10 @@ func getproccount() int32 {
 	return n
 }
 
+func getpagesize() uintptr {
+	return sys.PhysPageSize
+}
+
 // Clone, the Linux rfork.
 const (
 	_CLONE_VM             = 0x100
@@ -170,6 +174,7 @@ var failthreadcreate = []byte("runtime: failed to create new OS thread\n")
 
 func osinit() {
 	ncpu = getproccount()
+	physpagesize = getpagesize()
 }
 
 var urandom_dev = []byte("/dev/urandom\x00")

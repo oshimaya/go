@@ -24,7 +24,7 @@ var addrspace_vec [1]byte
 func addrspace_free(v unsafe.Pointer, n uintptr) bool {
 	var chunk uintptr
 	for off := uintptr(0); off < n; off += chunk {
-		chunk = _PAGE_SIZE * uintptr(len(addrspace_vec))
+		chunk = physpagesize * uintptr(len(addrspace_vec))
 		if chunk > (n - off) {
 			chunk = n - off
 		}

@@ -33,6 +33,7 @@ const (
 const (
 	_CTL_HW  = 6
 	_HW_NCPU = 3
+	_HW_PAGESIZE = 7
 )
 
 func getncpu() int32 {
@@ -46,6 +47,18 @@ func getncpu() int32 {
 		return int32(out)
 	}
 	return 1
+}
+
+func getpagesize() uintptr {
+	mib := [2]uint32{_CTL_HW, _HW_PAGESIZE}
+	out := uintptr(0)
+	nout := unsafe.Sizeof(out)
+
+	ret := sysctl(&mib[0], 2, (*byte)(unsafe.Pointer(&out)), &nout, nil, 0)
+	if ret >= 0 {
+		return out
+	}
+	return sys.PhysPageSize
 }
 
 //go:nosplit
@@ -127,6 +140,7 @@ func newosproc(mp *m, stk unsafe.Pointer) {
 
 func osinit() {
 	ncpu = getncpu()
+	physpagesize = getpagesize()
 }
 
 var urandom_dev = []byte("/dev/urandom\x00")

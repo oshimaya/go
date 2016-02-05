@@ -134,7 +134,7 @@ func writebarrierptr(dst *uintptr, src uintptr) {
 	if !writeBarrier.needed {
 		return
 	}
-	if src != 0 && (src < sys.PhysPageSize || src == poisonStack) {
+	if src != 0 && (src < physpagesize || src == poisonStack) {
 		systemstack(func() {
 			print("runtime: writebarrierptr *", dst, " = ", hex(src), "\n")
 			throw("bad pointer in write barrier")
@@ -153,7 +153,7 @@ func writebarrierptr_nostore(dst *uintptr, src uintptr) {
 	if !writeBarrier.needed {
 		return
 	}
-	if src != 0 && (src < sys.PhysPageSize || src == poisonStack) {
+	if src != 0 && (src < physpagesize || src == poisonStack) {
 		systemstack(func() { throw("bad pointer in write barrier") })
 	}
 	writebarrierptr_nostore1(dst, src)
