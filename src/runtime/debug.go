@@ -43,6 +43,10 @@ func NumCPU() int {
 	return int(ncpu)
 }
 
+func Physpagesize() int {
+	return int(physpagesize)
+}
+
 // NumCgoCall returns the number of cgo calls made by the current process.
 func NumCgoCall() int64 {
 	var n int64
