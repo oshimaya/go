@@ -12,6 +12,7 @@ import (
 	"sync"
 	"unicode/utf16"
 	"unsafe"
+        "runtime"
 )
 
 //go:generate go run mksyscall_windows.go -output zsyscall_windows.go syscall_windows.go security_windows.go
@@ -76,7 +77,7 @@ func UTF16PtrFromString(s string) (*uint16, error) {
 	return &a[0], nil
 }
 
-func Getpagesize() int { return 4096 }
+func Getpagesize() int { return runtime.Physpagesize() }
 
 // Errno is the Windows error number.
 type Errno uintptr

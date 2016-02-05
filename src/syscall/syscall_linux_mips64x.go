@@ -7,6 +7,8 @@
 
 package syscall
 
+import "runtime"
+
 const (
 	_SYS_dup = SYS_DUP2
 
@@ -65,7 +67,7 @@ const (
 //sys	sendmsg(s int, msg *Msghdr, flags int) (n int, err error)
 //sys	mmap(addr uintptr, length uintptr, prot int, flags int, fd int, offset int64) (xaddr uintptr, err error)
 
-func Getpagesize() int { return 65536 }
+func Getpagesize() int { return runtime.Physpagesize() }
 
 //sysnb	Gettimeofday(tv *Timeval) (err error)
 

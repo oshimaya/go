@@ -3,8 +3,9 @@
 // license that can be found in the LICENSE file.
 
 package syscall
+import "runtime"
 
-func Getpagesize() int { return 4096 }
+func Getpagesize() int { return runtime.Physpagesize() }
 
 func TimespecToNsec(ts Timespec) int64 { return int64(ts.Sec)*1e9 + int64(ts.Nsec) }
 
