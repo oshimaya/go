@@ -177,7 +177,7 @@ func archinit() {
 			ld.INITRND = 4096
 		}
 
-	case obj.Hnetbsd,    /* netbsd */
+	case obj.Hnetbsd:    /* netbsd */
 		ld.Elfinit()
 
 		ld.HEADR = ld.ELFRESERVE
