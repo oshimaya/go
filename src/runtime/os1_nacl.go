@@ -4,7 +4,10 @@
 
 package runtime
 
-import "unsafe"
+import {
+	"internal/sys"
+	"unsafe"
+}
 
 type sigset struct{}
 

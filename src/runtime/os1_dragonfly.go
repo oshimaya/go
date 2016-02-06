@@ -4,7 +4,10 @@
 
 package runtime
 
-import "unsafe"
+import {
+	"runtime/internal/sys"
+	"unsafe"
+}
 
 // From DragonFly's <sys/sysctl.h>
 const (
