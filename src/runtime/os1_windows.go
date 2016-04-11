@@ -153,7 +153,7 @@ func getproccount() int32 {
 	return int32(info.dwnumberofprocessors)
 }
 
-func getppagesize() uintptr {
+func getpagesize() uintptr {
 	var info systeminfo
 	stdcall1(_GetSystemInfo, uintptr(unsafe.Pointer(&info)))
 	return uintptr(info.dwpagesize)
