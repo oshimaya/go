@@ -1,6 +1,10 @@
 // +build amd64
 // errorcheck -0 -d=ssa/prove/debug=3
 
+// Copyright 2016 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 package main
 
 import "math"
@@ -29,11 +33,30 @@ func f1(a []int) int {
 }
 
 func f1b(a []int, i int, j uint) int {
-	if i >= 0 && i < len(a) { // TODO: handle this case
-		return a[i]
+	if i >= 0 && i < len(a) {
+		return a[i] // ERROR "Proved non-negative bounds IsInBounds$"
+	}
+	if i >= 10 && i < len(a) {
+		return a[i] // ERROR "Proved non-negative bounds IsInBounds$"
+	}
+	if i >= 10 && i < len(a) {
+		return a[i] // ERROR "Proved non-negative bounds IsInBounds$"
+	}
+	if i >= 10 && i < len(a) { // todo: handle this case
+		return a[i-10]
 	}
 	if j < uint(len(a)) {
-		return a[j] // ERROR "Proved IsInBounds"
+		return a[j] // ERROR "Proved IsInBounds$"
+	}
+	return 0
+}
+
+func f1c(a []int, i int64) int {
+	c := uint64(math.MaxInt64 + 10) // overflows int
+	d := int64(c)
+	if i >= d && i < int64(len(a)) {
+		// d overflows, should not be handled.
+		return a[i]
 	}
 	return 0
 }

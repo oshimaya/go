@@ -16,6 +16,13 @@ import (
 	"errors"
 )
 
+// Seek whence values.
+const (
+	SeekStart   = 0 // seek relative to the origin of the file
+	SeekCurrent = 1 // seek relative to the current offset
+	SeekEnd     = 2 // seek relative to the end
+)
+
 // ErrShortWrite means that a write accepted fewer bytes than requested
 // but failed to return an explicit error.
 var ErrShortWrite = errors.New("short write")
@@ -267,6 +274,16 @@ type RuneScanner interface {
 	UnreadRune() error
 }
 
+// SizedReaderAt is the interface that groups the basic ReadAt method
+// with a Size method that reports the total size of the underlying
+// object. It represents a fixed-size data source that supports random
+// access by multiple concurrent goroutines.
+type SizedReaderAt interface {
+	ReaderAt
+	// Size reports the length of the data source in bytes.
+	Size() int64
+}
+
 // stringWriter is the interface that wraps the WriteString method.
 type stringWriter interface {
 	WriteString(s string) (n int, err error)
@@ -274,6 +291,7 @@ type stringWriter interface {
 
 // WriteString writes the contents of the string s to w, which accepts a slice of bytes.
 // If w implements a WriteString method, it is invoked directly.
+// Otherwise, w.Write is called exactly once.
 func WriteString(w Writer, s string) (n int, err error) {
 	if sw, ok := w.(stringWriter); ok {
 		return sw.WriteString(s)

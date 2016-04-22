@@ -66,12 +66,12 @@ func typecheckinl(fn *Node) {
 		return // typecheckinl on local function
 	}
 
-	if Debug['m'] > 2 {
+	if Debug['m'] > 2 || Debug_export != 0 {
 		fmt.Printf("typecheck import [%v] %v { %v }\n", fn.Sym, Nconv(fn, FmtLong), Hconv(fn.Func.Inl, FmtSharp))
 	}
 
 	save_safemode := safemode
-	safemode = 0
+	safemode = false
 
 	savefn := Curfn
 	Curfn = fn
@@ -492,7 +492,7 @@ func mkinlcall(n *Node, fn *Node, isddd bool) *Node {
 	pkg := fnpkg(fn)
 
 	if pkg != localpkg && pkg != nil {
-		safemode = 0
+		safemode = false
 	}
 	n = mkinlcall1(n, fn, isddd)
 	safemode = save_safemode

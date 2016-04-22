@@ -372,30 +372,6 @@ func saveorignode(n *Node) {
 	n.Orig = norig
 }
 
-// checkMapKeyType checks that Type key is valid for use as a map key.
-func checkMapKeyType(key *Type) {
-	alg, bad := algtype1(key)
-	if alg != ANOEQ {
-		return
-	}
-	switch bad.Etype {
-	default:
-		Yyerror("invalid map key type %v", key)
-	case TANY:
-		// Will be resolved later.
-	case TFORW:
-		// map[key] used during definition of key.
-		// postpone check until key is fully defined.
-		// if there are multiple uses of map[key]
-		// before key is fully defined, the error
-		// will only be printed for the first one.
-		// good enough.
-		if key.Maplineno == 0 {
-			key.Maplineno = lineno
-		}
-	}
-}
-
 // methcmp sorts by symbol, then by package path for unexported symbols.
 type methcmp []*Field
 
@@ -540,8 +516,15 @@ func treecopy(n *Node, lineno int32) *Node {
 		}
 		return n
 
+	case OPACK:
+		// OPACK nodes are never valid in const value declarations,
+		// but allow them like any other declared symbol to avoid
+		// crashing (golang.org/issue/11361).
+		fallthrough
+
 	case ONAME, OLITERAL, OTYPE:
 		return n
+
 	}
 }
 
@@ -611,6 +594,7 @@ func methtype(t *Type, mustname int) *Type {
 
 		case TSTRUCT,
 			TARRAY,
+			TSLICE,
 			TMAP,
 			TCHAN,
 			TSTRING,
@@ -658,7 +642,7 @@ func eqtype1(t1, t2 *Type, assumedEqual map[typePair]struct{}) bool {
 	if t1 == t2 {
 		return true
 	}
-	if t1 == nil || t2 == nil || t1.Etype != t2.Etype {
+	if t1 == nil || t2 == nil || t1.Etype != t2.Etype || t1.Broke || t2.Broke {
 		return false
 	}
 	if t1.Sym != nil || t2.Sym != nil {
@@ -721,7 +705,7 @@ func eqtype1(t1, t2 *Type, assumedEqual map[typePair]struct{}) bool {
 		}
 
 	case TCHAN:
-		if t1.Chan != t2.Chan {
+		if t1.ChanDir() != t2.ChanDir() {
 			return false
 		}
 
@@ -767,7 +751,7 @@ func assignop(src *Type, dst *Type, why *string) Op {
 
 	// TODO(rsc,lvd): This behaves poorly in the presence of inlining.
 	// https://golang.org/issue/2795
-	if safemode != 0 && importpkg == nil && src != nil && src.Etype == TUNSAFEPTR {
+	if safemode && importpkg == nil && src != nil && src.Etype == TUNSAFEPTR {
 		Yyerror("cannot use unsafe.Pointer")
 		errorexit()
 	}
@@ -844,7 +828,7 @@ func assignop(src *Type, dst *Type, why *string) Op {
 	// 4. src is a bidirectional channel value, dst is a channel type,
 	// src and dst have identical element types, and
 	// either src or dst is not a named type.
-	if src.IsChan() && src.Chan == Cboth && dst.IsChan() {
+	if src.IsChan() && src.ChanDir() == Cboth && dst.IsChan() {
 		if Eqtype(src.Elem(), dst.Elem()) && (src.Sym == nil || dst.Sym == nil) {
 			return OCONVNOP
 		}
@@ -853,18 +837,13 @@ func assignop(src *Type, dst *Type, why *string) Op {
 	// 5. src is the predeclared identifier nil and dst is a nillable type.
 	if src.Etype == TNIL {
 		switch dst.Etype {
-		case TARRAY:
-			if !dst.IsSlice() {
-				break
-			}
-			fallthrough
-
 		case TPTR32,
 			TPTR64,
 			TFUNC,
 			TMAP,
 			TCHAN,
-			TINTER:
+			TINTER,
+			TSLICE:
 			return OCONVNOP
 		}
 	}
@@ -1079,6 +1058,10 @@ func syslook(name string) *Node {
 		Fatalf("syslook: can't find runtime.%s", name)
 	}
 	return s.Def
+}
+
+func (s *Sym) IsRuntimeCall(name string) bool {
+	return s.Pkg == Runtimepkg && s.Name == name
 }
 
 // typehash computes a hash value for type t to use in type switch
@@ -1341,6 +1324,11 @@ func safeexpr(n *Node, init *Nodes) *Node {
 		a.Right = r
 		a = walkexpr(a, init)
 		return a
+
+	case OSTRUCTLIT, OARRAYLIT:
+		if isStaticCompositeLiteral(n) {
+			return n
+		}
 	}
 
 	// make a copy; must not be used as an lvalue

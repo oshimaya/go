@@ -1187,17 +1187,17 @@ func (p *parser) uexpr() *Node {
 
 		if x.Op == OTCHAN {
 			// x is a channel type => re-associate <-
-			dir := EType(Csend)
+			dir := Csend
 			t := x
 			for ; t.Op == OTCHAN && dir == Csend; t = t.Left {
-				dir = t.Etype
+				dir = ChanDir(t.Etype)
 				if dir == Crecv {
 					// t is type <-chan E but <-<-chan E is not permitted
 					// (report same error as for "type _ <-<-chan E")
 					p.syntax_error("unexpected <-, expecting chan")
 					// already progressed, no need to advance
 				}
-				t.Etype = Crecv
+				t.Etype = EType(Crecv)
 			}
 			if dir == Csend {
 				// channel dir is <- but channel element E is not a channel
@@ -1588,7 +1588,7 @@ func (p *parser) onew_name() *Node {
 func (p *parser) sym() *Sym {
 	switch p.tok {
 	case LNAME:
-		s := p.sym_
+		s := p.sym_ // from localpkg
 		p.next()
 		// during imports, unqualified non-exported identifiers are from builtinpkg
 		if importpkg != nil && !exportname(s.Name) {
@@ -1697,7 +1697,7 @@ func (p *parser) try_ntype() *Node {
 		p.next()
 		p.want(LCHAN)
 		t := Nod(OTCHAN, p.chan_elem(), nil)
-		t.Etype = Crecv
+		t.Etype = EType(Crecv)
 		return t
 
 	case LFUNC:
@@ -1726,9 +1726,9 @@ func (p *parser) try_ntype() *Node {
 		// LCHAN non_recvchantype
 		// LCHAN LCOMM ntype
 		p.next()
-		var dir EType = Cboth
+		var dir = EType(Cboth)
 		if p.got(LCOMM) {
-			dir = Csend
+			dir = EType(Csend)
 		}
 		t := Nod(OTCHAN, p.chan_elem(), nil)
 		t.Etype = dir
@@ -2931,12 +2931,7 @@ func (p *parser) hidden_pkgtype() *Type {
 		defer p.trace("hidden_pkgtype")()
 	}
 
-	s1 := p.hidden_pkg_importsym()
-
-	ss := pkgtype(s1)
-	importsym(s1, OTYPE)
-
-	return ss
+	return pkgtype(p.hidden_pkg_importsym())
 }
 
 // ----------------------------------------------------------------------------

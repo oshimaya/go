@@ -31,7 +31,7 @@ package mips
 
 import (
 	"cmd/internal/obj"
-	"encoding/binary"
+	"cmd/internal/sys"
 	"fmt"
 	"math"
 )
@@ -336,7 +336,7 @@ func preprocess(ctxt *obj.Link, cursym *obj.LSym) {
 				q.As = AMOVV
 				q.From.Type = obj.TYPE_MEM
 				q.From.Reg = REGG
-				q.From.Offset = 4 * int64(ctxt.Arch.Ptrsize) // G.panic
+				q.From.Offset = 4 * int64(ctxt.Arch.PtrSize) // G.panic
 				q.To.Type = obj.TYPE_REG
 				q.To.Reg = REG_R1
 
@@ -559,9 +559,9 @@ func stacksplit(ctxt *obj.Link, p *obj.Prog, framesize int32) *obj.Prog {
 	p.As = AMOVV
 	p.From.Type = obj.TYPE_MEM
 	p.From.Reg = REGG
-	p.From.Offset = 2 * int64(ctxt.Arch.Ptrsize) // G.stackguard0
+	p.From.Offset = 2 * int64(ctxt.Arch.PtrSize) // G.stackguard0
 	if ctxt.Cursym.Cfunc {
-		p.From.Offset = 3 * int64(ctxt.Arch.Ptrsize) // G.stackguard1
+		p.From.Offset = 3 * int64(ctxt.Arch.PtrSize) // G.stackguard1
 	}
 	p.To.Type = obj.TYPE_REG
 	p.To.Reg = REG_R1
@@ -1229,7 +1229,7 @@ func markregused(ctxt *obj.Link, s *Sch) {
 			s.used.ireg |= 1 << uint(c-REG_R0)
 		}
 	}
-	s.set.ireg &^= (1 << (REGZERO - REG_R0)) /* R0 cant be set */
+	s.set.ireg &^= (1 << (REGZERO - REG_R0)) /* R0 can't be set */
 }
 
 /*
@@ -1400,7 +1400,7 @@ loop:
 				r = ctxt.NewProg()
 				*r = *p
 				if r.Mark&FOLL == 0 {
-					fmt.Printf("cant happen 1\n")
+					fmt.Printf("can't happen 1\n")
 				}
 				r.Mark |= FOLL
 				if p != q {
@@ -1425,7 +1425,7 @@ loop:
 					xfol(ctxt, r.Link, last)
 				}
 				if r.Pcond.Mark&FOLL == 0 {
-					fmt.Printf("cant happen 2\n")
+					fmt.Printf("can't happen 2\n")
 				}
 				return
 			}
@@ -1469,27 +1469,17 @@ loop:
 }
 
 var Linkmips64 = obj.LinkArch{
-	ByteOrder:  binary.BigEndian,
-	Name:       "mips64",
-	Thechar:    '0',
+	Arch:       sys.ArchMIPS64,
 	Preprocess: preprocess,
 	Assemble:   span0,
 	Follow:     follow,
 	Progedit:   progedit,
-	Minlc:      4,
-	Ptrsize:    8,
-	Regsize:    8,
 }
 
 var Linkmips64le = obj.LinkArch{
-	ByteOrder:  binary.LittleEndian,
-	Name:       "mips64le",
-	Thechar:    '0',
+	Arch:       sys.ArchMIPS64LE,
 	Preprocess: preprocess,
 	Assemble:   span0,
 	Follow:     follow,
 	Progedit:   progedit,
-	Minlc:      4,
-	Ptrsize:    8,
-	Regsize:    8,
 }

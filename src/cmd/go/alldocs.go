@@ -69,6 +69,8 @@ When compiling multiple packages or a single non-main package,
 build compiles the packages but discards the resulting object,
 serving only as a check that the packages can be built.
 
+When compiling packages, build ignores files that end in '_test.go'.
+
 The -o flag, only allowed when compiling a single package,
 forces build to write the resulting executable or object
 to the named output file, instead of the default behavior described
@@ -1346,7 +1348,10 @@ The following flags are recognized by the 'go test' command and
 control the execution of any test:
 
 	-bench regexp
-	    Run benchmarks matching the regular expression.
+	    Run (sub)benchmarks matching a regular expression.
+	    The given regular expression is split into smaller ones by
+	    top-level '/', where each must match the corresponding part of a
+	    benchmark's identifier.
 	    By default, no benchmarks run. To run all benchmarks,
 	    use '-bench .' or '-bench=.'.
 
@@ -1434,8 +1439,10 @@ control the execution of any test:
 	    (see 'go help build').
 
 	-run regexp
-	    Run only those tests and examples matching the regular
-	    expression.
+	    Run only those tests and examples matching the regular expression.
+	    For tests the regular expression is split into smaller ones by
+	    top-level '/', where each must match the corresponding part of a
+	    test's identifier.
 
 	-short
 	    Tell long-running tests to shorten their run time.

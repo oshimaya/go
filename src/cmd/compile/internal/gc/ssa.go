@@ -13,6 +13,7 @@ import (
 
 	"cmd/compile/internal/ssa"
 	"cmd/internal/obj"
+	"cmd/internal/sys"
 )
 
 var ssaEnabled = true
@@ -24,13 +25,13 @@ func initssa() *ssa.Config {
 	ssaExp.unimplemented = false
 	ssaExp.mustImplement = true
 	if ssaConfig == nil {
-		ssaConfig = ssa.NewConfig(Thearch.Thestring, &ssaExp, Ctxt, Debug['N'] == 0)
+		ssaConfig = ssa.NewConfig(Thearch.LinkArch.Name, &ssaExp, Ctxt, Debug['N'] == 0)
 	}
 	return ssaConfig
 }
 
 func shouldssa(fn *Node) bool {
-	switch Thearch.Thestring {
+	switch Thearch.LinkArch.Name {
 	default:
 		// Only available for testing.
 		if os.Getenv("SSATEST") == "" {
@@ -336,12 +337,14 @@ var (
 	memVar = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "mem"}}
 
 	// dummy nodes for temporary variables
-	ptrVar   = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "ptr"}}
-	capVar   = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "cap"}}
-	typVar   = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "typ"}}
-	idataVar = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "idata"}}
-	okVar    = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "ok"}}
-	deltaVar = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "delta"}}
+	ptrVar    = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "ptr"}}
+	lenVar    = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "len"}}
+	newlenVar = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "newlen"}}
+	capVar    = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "cap"}}
+	typVar    = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "typ"}}
+	idataVar  = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "idata"}}
+	okVar     = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "ok"}}
+	deltaVar  = Node{Op: ONAME, Class: Pxxx, Sym: &Sym{Name: "delta"}}
 )
 
 // startBlock sets the current block we're generating code in to b.
@@ -552,7 +555,7 @@ func (s *state) stmt(n *Node) {
 	case OCALLFUNC, OCALLMETH, OCALLINTER:
 		s.call(n, callNormal)
 		if n.Op == OCALLFUNC && n.Left.Op == ONAME && n.Left.Class == PFUNC &&
-			(compiling_runtime != 0 && n.Left.Sym.Name == "throw" ||
+			(compiling_runtime && n.Left.Sym.Name == "throw" ||
 				n.Left.Sym.Pkg == Runtimepkg && (n.Left.Sym.Name == "gopanic" || n.Left.Sym.Name == "selectgo" || n.Left.Sym.Name == "block")) {
 			m := s.mem()
 			b := s.endBlock()
@@ -577,7 +580,7 @@ func (s *state) stmt(n *Node) {
 		if n.Left.Class&PHEAP == 0 {
 			return
 		}
-		if compiling_runtime != 0 {
+		if compiling_runtime {
 			Fatalf("%v escapes to heap, not allowed in runtime.", n)
 		}
 
@@ -661,6 +664,17 @@ func (s *state) stmt(n *Node) {
 			return
 		}
 
+		if n.Left == n.Right && n.Left.Op == ONAME {
+			// An x=x assignment. No point in doing anything
+			// here. In addition, skipping this assignment
+			// prevents generating:
+			//   VARDEF x
+			//   COPY x -> x
+			// which is bad because x is incorrectly considered
+			// dead before the vardef. See issue #14904.
+			return
+		}
+
 		var t *Type
 		if n.Right != nil {
 			t = n.Right.Type
@@ -670,14 +684,27 @@ func (s *state) stmt(n *Node) {
 
 		// Evaluate RHS.
 		rhs := n.Right
-		if rhs != nil && (rhs.Op == OSTRUCTLIT || rhs.Op == OARRAYLIT) {
-			// All literals with nonzero fields have already been
-			// rewritten during walk. Any that remain are just T{}
-			// or equivalents. Use the zero value.
-			if !iszero(rhs) {
-				Fatalf("literal with nonzero value in SSA: %v", rhs)
+		if rhs != nil {
+			switch rhs.Op {
+			case OSTRUCTLIT, OARRAYLIT:
+				// All literals with nonzero fields have already been
+				// rewritten during walk. Any that remain are just T{}
+				// or equivalents. Use the zero value.
+				if !iszero(rhs) {
+					Fatalf("literal with nonzero value in SSA: %v", rhs)
+				}
+				rhs = nil
+			case OAPPEND:
+				// If we're writing the result of an append back to the same slice,
+				// handle it specially to avoid write barriers on the fast (non-growth) path.
+				// If the slice can be SSA'd, it'll be on the stack,
+				// so there will be no write barriers,
+				// so there's no need to attempt to prevent them.
+				if samesafeexpr(n.Left, rhs.List.First()) && !s.canSSA(n.Left) {
+					s.append(rhs, true)
+					return
+				}
 			}
-			rhs = nil
 		}
 		var r *ssa.Value
 		needwb := n.Op == OASWB && rhs != nil
@@ -696,11 +723,11 @@ func (s *state) stmt(n *Node) {
 			}
 		}
 		if rhs != nil && rhs.Op == OAPPEND {
-			// Yuck!  The frontend gets rid of the write barrier, but we need it!
-			// At least, we need it in the case where growslice is called.
-			// TODO: Do the write barrier on just the growslice branch.
+			// The frontend gets rid of the write barrier to enable the special OAPPEND
+			// handling above, but since this is not a special case, we need it.
 			// TODO: just add a ptr graying to the end of growslice?
-			// TODO: check whether we need to do this for ODOTTYPE and ORECV also.
+			// TODO: check whether we need to provide special handling and a write barrier
+			// for ODOTTYPE and ORECV also.
 			// They get similar wb-removal treatment in walk.go:OAS.
 			needwb = true
 		}
@@ -1111,7 +1138,7 @@ var opToSSA = map[opAndType]ssa.Op{
 	opAndType{OEQ, TINT64}:     ssa.OpEq64,
 	opAndType{OEQ, TUINT64}:    ssa.OpEq64,
 	opAndType{OEQ, TINTER}:     ssa.OpEqInter,
-	opAndType{OEQ, TARRAY}:     ssa.OpEqSlice,
+	opAndType{OEQ, TSLICE}:     ssa.OpEqSlice,
 	opAndType{OEQ, TFUNC}:      ssa.OpEqPtr,
 	opAndType{OEQ, TMAP}:       ssa.OpEqPtr,
 	opAndType{OEQ, TCHAN}:      ssa.OpEqPtr,
@@ -1131,7 +1158,7 @@ var opToSSA = map[opAndType]ssa.Op{
 	opAndType{ONE, TINT64}:     ssa.OpNeq64,
 	opAndType{ONE, TUINT64}:    ssa.OpNeq64,
 	opAndType{ONE, TINTER}:     ssa.OpNeqInter,
-	opAndType{ONE, TARRAY}:     ssa.OpNeqSlice,
+	opAndType{ONE, TSLICE}:     ssa.OpNeqSlice,
 	opAndType{ONE, TFUNC}:      ssa.OpNeqPtr,
 	opAndType{ONE, TMAP}:       ssa.OpNeqPtr,
 	opAndType{ONE, TCHAN}:      ssa.OpNeqPtr,
@@ -1911,8 +1938,7 @@ func (s *state) expr(n *Node) *ssa.Value {
 		return s.newValue2(ssa.OpLoad, n.Type, addr, s.mem())
 
 	case OIND:
-		p := s.expr(n.Left)
-		s.nilCheck(p)
+		p := s.exprPtr(n.Left, false, n.Lineno)
 		return s.newValue2(ssa.OpLoad, n.Type, p, s.mem())
 
 	case ODOT:
@@ -1925,8 +1951,7 @@ func (s *state) expr(n *Node) *ssa.Value {
 		return s.newValue2(ssa.OpLoad, n.Type, p, s.mem())
 
 	case ODOTPTR:
-		p := s.expr(n.Left)
-		s.nilCheck(p)
+		p := s.exprPtr(n.Left, false, n.Lineno)
 		p = s.newValue1I(ssa.OpOffPtr, p.Type, n.Xoffset, p)
 		return s.newValue2(ssa.OpLoad, n.Type, p, s.mem())
 
@@ -2066,103 +2091,179 @@ func (s *state) expr(n *Node) *ssa.Value {
 		return s.newValue1(ssa.OpGetG, n.Type, s.mem())
 
 	case OAPPEND:
-		// append(s, e1, e2, e3).  Compile like:
-		// ptr,len,cap := s
-		// newlen := len + 3
-		// if newlen > s.cap {
-		//     ptr,_,cap = growslice(s, newlen)
-		// }
-		// *(ptr+len) = e1
-		// *(ptr+len+1) = e2
-		// *(ptr+len+2) = e3
-		// makeslice(ptr,newlen,cap)
-
-		et := n.Type.Elem()
-		pt := Ptrto(et)
-
-		// Evaluate slice
-		slice := s.expr(n.List.First())
-
-		// Allocate new blocks
-		grow := s.f.NewBlock(ssa.BlockPlain)
-		assign := s.f.NewBlock(ssa.BlockPlain)
-
-		// Decide if we need to grow
-		nargs := int64(n.List.Len() - 1)
-		p := s.newValue1(ssa.OpSlicePtr, pt, slice)
-		l := s.newValue1(ssa.OpSliceLen, Types[TINT], slice)
-		c := s.newValue1(ssa.OpSliceCap, Types[TINT], slice)
-		nl := s.newValue2(s.ssaOp(OADD, Types[TINT]), Types[TINT], l, s.constInt(Types[TINT], nargs))
-		cmp := s.newValue2(s.ssaOp(OGT, Types[TINT]), Types[TBOOL], nl, c)
-		s.vars[&ptrVar] = p
-		s.vars[&capVar] = c
-		b := s.endBlock()
-		b.Kind = ssa.BlockIf
-		b.Likely = ssa.BranchUnlikely
-		b.SetControl(cmp)
-		b.AddEdgeTo(grow)
-		b.AddEdgeTo(assign)
-
-		// Call growslice
-		s.startBlock(grow)
-		taddr := s.newValue1A(ssa.OpAddr, Types[TUINTPTR], &ssa.ExternSymbol{Types[TUINTPTR], typenamesym(n.Type)}, s.sb)
-
-		r := s.rtcall(growslice, true, []*Type{pt, Types[TINT], Types[TINT]}, taddr, p, l, c, nl)
-
-		s.vars[&ptrVar] = r[0]
-		// Note: we don't need to read r[1], the result's length. It will be nl.
-		// (or maybe we should, we just have to spill/restore nl otherwise?)
-		s.vars[&capVar] = r[2]
-		b = s.endBlock()
-		b.AddEdgeTo(assign)
-
-		// assign new elements to slots
-		s.startBlock(assign)
-
-		// Evaluate args
-		args := make([]*ssa.Value, 0, nargs)
-		store := make([]bool, 0, nargs)
-		for _, n := range n.List.Slice()[1:] {
-			if canSSAType(n.Type) {
-				args = append(args, s.expr(n))
-				store = append(store, true)
-			} else {
-				args = append(args, s.addr(n, false))
-				store = append(store, false)
-			}
-		}
-
-		p = s.variable(&ptrVar, pt)          // generates phi for ptr
-		c = s.variable(&capVar, Types[TINT]) // generates phi for cap
-		p2 := s.newValue2(ssa.OpPtrIndex, pt, p, l)
-		// TODO: just one write barrier call for all of these writes?
-		// TODO: maybe just one writeBarrier.enabled check?
-		for i, arg := range args {
-			addr := s.newValue2(ssa.OpPtrIndex, pt, p2, s.constInt(Types[TINT], int64(i)))
-			if store[i] {
-				if haspointers(et) {
-					s.insertWBstore(et, addr, arg, n.Lineno, 0)
-				} else {
-					s.vars[&memVar] = s.newValue3I(ssa.OpStore, ssa.TypeMem, et.Size(), addr, arg, s.mem())
-				}
-			} else {
-				if haspointers(et) {
-					s.insertWBmove(et, addr, arg, n.Lineno)
-				} else {
-					s.vars[&memVar] = s.newValue3I(ssa.OpMove, ssa.TypeMem, et.Size(), addr, arg, s.mem())
-				}
-			}
-		}
-
-		// make result
-		delete(s.vars, &ptrVar)
-		delete(s.vars, &capVar)
-		return s.newValue3(ssa.OpSliceMake, n.Type, p, nl, c)
+		return s.append(n, false)
 
 	default:
 		s.Unimplementedf("unhandled expr %s", opnames[n.Op])
 		return nil
 	}
+}
+
+// append converts an OAPPEND node to SSA.
+// If inplace is false, it converts the OAPPEND expression n to an ssa.Value,
+// adds it to s, and returns the Value.
+// If inplace is true, it writes the result of the OAPPEND expression n
+// back to the slice being appended to, and returns nil.
+// inplace MUST be set to false if the slice can be SSA'd.
+func (s *state) append(n *Node, inplace bool) *ssa.Value {
+	// If inplace is false, process as expression "append(s, e1, e2, e3)":
+	//
+	// ptr, len, cap := s
+	// newlen := len + 3
+	// if newlen > cap {
+	//     ptr, len, cap = growslice(s, newlen)
+	//     newlen = len + 3 // recalculate to avoid a spill
+	// }
+	// // with write barriers, if needed:
+	// *(ptr+len) = e1
+	// *(ptr+len+1) = e2
+	// *(ptr+len+2) = e3
+	// return makeslice(ptr, newlen, cap)
+	//
+	//
+	// If inplace is true, process as statement "s = append(s, e1, e2, e3)":
+	//
+	// a := &s
+	// ptr, len, cap := s
+	// newlen := len + 3
+	// if newlen > cap {
+	//    newptr, len, newcap = growslice(ptr, len, cap, newlen)
+	//    vardef(a)       // if necessary, advise liveness we are writing a new a
+	//    *a.cap = newcap // write before ptr to avoid a spill
+	//    *a.ptr = newptr // with write barrier
+	// }
+	// newlen = len + 3 // recalculate to avoid a spill
+	// *a.len = newlen
+	// // with write barriers, if needed:
+	// *(ptr+len) = e1
+	// *(ptr+len+1) = e2
+	// *(ptr+len+2) = e3
+
+	et := n.Type.Elem()
+	pt := Ptrto(et)
+
+	// Evaluate slice
+	sn := n.List.First() // the slice node is the first in the list
+
+	var slice, addr *ssa.Value
+	if inplace {
+		addr = s.addr(sn, false)
+		slice = s.newValue2(ssa.OpLoad, n.Type, addr, s.mem())
+	} else {
+		slice = s.expr(sn)
+	}
+
+	// Allocate new blocks
+	grow := s.f.NewBlock(ssa.BlockPlain)
+	assign := s.f.NewBlock(ssa.BlockPlain)
+
+	// Decide if we need to grow
+	nargs := int64(n.List.Len() - 1)
+	p := s.newValue1(ssa.OpSlicePtr, pt, slice)
+	l := s.newValue1(ssa.OpSliceLen, Types[TINT], slice)
+	c := s.newValue1(ssa.OpSliceCap, Types[TINT], slice)
+	nl := s.newValue2(s.ssaOp(OADD, Types[TINT]), Types[TINT], l, s.constInt(Types[TINT], nargs))
+
+	cmp := s.newValue2(s.ssaOp(OGT, Types[TINT]), Types[TBOOL], nl, c)
+	s.vars[&ptrVar] = p
+
+	if !inplace {
+		s.vars[&newlenVar] = nl
+		s.vars[&capVar] = c
+	} else {
+		s.vars[&lenVar] = l
+	}
+
+	b := s.endBlock()
+	b.Kind = ssa.BlockIf
+	b.Likely = ssa.BranchUnlikely
+	b.SetControl(cmp)
+	b.AddEdgeTo(grow)
+	b.AddEdgeTo(assign)
+
+	// Call growslice
+	s.startBlock(grow)
+	taddr := s.newValue1A(ssa.OpAddr, Types[TUINTPTR], &ssa.ExternSymbol{Types[TUINTPTR], typenamesym(n.Type.Elem())}, s.sb)
+
+	r := s.rtcall(growslice, true, []*Type{pt, Types[TINT], Types[TINT]}, taddr, p, l, c, nl)
+
+	if inplace {
+		if sn.Op == ONAME {
+			// Tell liveness we're about to build a new slice
+			s.vars[&memVar] = s.newValue1A(ssa.OpVarDef, ssa.TypeMem, sn, s.mem())
+		}
+		capaddr := s.newValue1I(ssa.OpOffPtr, pt, int64(Array_cap), addr)
+		s.vars[&memVar] = s.newValue3I(ssa.OpStore, ssa.TypeMem, s.config.IntSize, capaddr, r[2], s.mem())
+		s.insertWBstore(pt, addr, r[0], n.Lineno, 0)
+		// load the value we just stored to avoid having to spill it
+		s.vars[&ptrVar] = s.newValue2(ssa.OpLoad, pt, addr, s.mem())
+		s.vars[&lenVar] = r[1] // avoid a spill in the fast path
+	} else {
+		s.vars[&ptrVar] = r[0]
+		s.vars[&newlenVar] = s.newValue2(s.ssaOp(OADD, Types[TINT]), Types[TINT], r[1], s.constInt(Types[TINT], nargs))
+		s.vars[&capVar] = r[2]
+	}
+
+	b = s.endBlock()
+	b.AddEdgeTo(assign)
+
+	// assign new elements to slots
+	s.startBlock(assign)
+
+	if inplace {
+		l = s.variable(&lenVar, Types[TINT]) // generates phi for len
+		nl = s.newValue2(s.ssaOp(OADD, Types[TINT]), Types[TINT], l, s.constInt(Types[TINT], nargs))
+		lenaddr := s.newValue1I(ssa.OpOffPtr, pt, int64(Array_nel), addr)
+		s.vars[&memVar] = s.newValue3I(ssa.OpStore, ssa.TypeMem, s.config.IntSize, lenaddr, nl, s.mem())
+	}
+
+	// Evaluate args
+	args := make([]*ssa.Value, 0, nargs)
+	store := make([]bool, 0, nargs)
+	for _, n := range n.List.Slice()[1:] {
+		if canSSAType(n.Type) {
+			args = append(args, s.expr(n))
+			store = append(store, true)
+		} else {
+			args = append(args, s.addr(n, false))
+			store = append(store, false)
+		}
+	}
+
+	p = s.variable(&ptrVar, pt) // generates phi for ptr
+	if !inplace {
+		nl = s.variable(&newlenVar, Types[TINT]) // generates phi for nl
+		c = s.variable(&capVar, Types[TINT])     // generates phi for cap
+	}
+	p2 := s.newValue2(ssa.OpPtrIndex, pt, p, l)
+	// TODO: just one write barrier call for all of these writes?
+	// TODO: maybe just one writeBarrier.enabled check?
+	for i, arg := range args {
+		addr := s.newValue2(ssa.OpPtrIndex, pt, p2, s.constInt(Types[TINT], int64(i)))
+		if store[i] {
+			if haspointers(et) {
+				s.insertWBstore(et, addr, arg, n.Lineno, 0)
+			} else {
+				s.vars[&memVar] = s.newValue3I(ssa.OpStore, ssa.TypeMem, et.Size(), addr, arg, s.mem())
+			}
+		} else {
+			if haspointers(et) {
+				s.insertWBmove(et, addr, arg, n.Lineno)
+			} else {
+				s.vars[&memVar] = s.newValue3I(ssa.OpMove, ssa.TypeMem, et.Size(), addr, arg, s.mem())
+			}
+		}
+	}
+
+	delete(s.vars, &ptrVar)
+	if inplace {
+		delete(s.vars, &lenVar)
+		return nil
+	}
+	delete(s.vars, &newlenVar)
+	delete(s.vars, &capVar)
+	// make result
+	return s.newValue3(ssa.OpSliceMake, n.Type, p, nl, c)
 }
 
 // condBranch evaluates the boolean expression cond and branches to yes
@@ -2393,7 +2494,7 @@ func isSSAIntrinsic1(s *Sym) bool {
 	// so far has only been noticed for Bswap32 and the 16-bit count
 	// leading/trailing instructions, but heuristics might change
 	// in the future or on different architectures).
-	if !ssaEnabled || ssa.IntrinsicsDisable || Thearch.Thechar != '6' {
+	if !ssaEnabled || ssa.IntrinsicsDisable || Thearch.LinkArch.Family != sys.AMD64 {
 		return false
 	}
 	if s != nil && s.Pkg != nil && s.Pkg.Path == "runtime/internal/sys" {
@@ -2565,7 +2666,7 @@ func (s *state) call(n *Node, k callKind) *ssa.Value {
 		return nil
 	}
 	fp := res.Field(0)
-	return s.entryNewValue1I(ssa.OpOffPtr, Ptrto(fp.Type), fp.Offset, s.sp)
+	return s.entryNewValue1I(ssa.OpOffPtr, Ptrto(fp.Type), fp.Offset+Ctxt.FixedFrameSize(), s.sp)
 }
 
 // etypesign returns the signed-ness of e, for integer/pointer etypes.
@@ -2675,19 +2776,12 @@ func (s *state) addr(n *Node, bounded bool) *ssa.Value {
 			return s.newValue2(ssa.OpPtrIndex, Ptrto(n.Left.Type.Elem()), a, i)
 		}
 	case OIND:
-		p := s.expr(n.Left)
-		if !bounded {
-			s.nilCheck(p)
-		}
-		return p
+		return s.exprPtr(n.Left, bounded, n.Lineno)
 	case ODOT:
 		p := s.addr(n.Left, bounded)
 		return s.newValue1I(ssa.OpOffPtr, t, n.Xoffset, p)
 	case ODOTPTR:
-		p := s.expr(n.Left)
-		if !bounded {
-			s.nilCheck(p)
-		}
+		p := s.exprPtr(n.Left, bounded, n.Lineno)
 		return s.newValue1I(ssa.OpOffPtr, t, n.Xoffset, p)
 	case OCLOSUREVAR:
 		return s.newValue1I(ssa.OpOffPtr, t, n.Xoffset,
@@ -2768,9 +2862,6 @@ func canSSAType(t *Type) bool {
 	}
 	switch t.Etype {
 	case TARRAY:
-		if t.IsSlice() {
-			return true
-		}
 		// We can't do arrays because dynamic indexing is
 		// not supported on SSA variables.
 		// TODO: maybe allow if length is <=1?  All indexes
@@ -2790,6 +2881,19 @@ func canSSAType(t *Type) bool {
 	default:
 		return true
 	}
+}
+
+// exprPtr evaluates n to a pointer and nil-checks it.
+func (s *state) exprPtr(n *Node, bounded bool, lineno int32) *ssa.Value {
+	p := s.expr(n)
+	if bounded || n.NonNil {
+		if s.f.Config.Debug_checknil() && lineno > 1 {
+			s.f.Config.Warnl(lineno, "removed nil check")
+		}
+		return p
+	}
+	s.nilCheck(p)
+	return p
 }
 
 // nilCheck generates nil pointer checking code.
@@ -3682,6 +3786,10 @@ func (s *state) resolveFwdRef(v *ssa.Value) {
 	if b == s.f.Entry {
 		// Live variable at start of function.
 		if s.canSSA(name) {
+			if strings.HasPrefix(name.Sym.Name, "autotmp_") {
+				// It's likely that this is an uninitialized variable in the entry block.
+				s.Fatalf("Treating auto as if it were arg, func %s, node %v, value %v", b.Func.Name, name, v)
+			}
 			v.Op = ssa.OpArg
 			v.Aux = name
 			return
@@ -4128,7 +4236,7 @@ func fieldIdx(n *Node) int {
 	}
 	panic(fmt.Sprintf("can't find field in expr %s\n", n))
 
-	// TODO: keep the result of this fucntion somewhere in the ODOT Node
+	// TODO: keep the result of this function somewhere in the ODOT Node
 	// so we don't have to recompute it each time we need it.
 }
 
@@ -4202,7 +4310,7 @@ func (e *ssaExport) SplitInterface(name ssa.LocalSlot) (ssa.LocalSlot, ssa.Local
 
 func (e *ssaExport) SplitSlice(name ssa.LocalSlot) (ssa.LocalSlot, ssa.LocalSlot, ssa.LocalSlot) {
 	n := name.N.(*Node)
-	ptrType := Ptrto(n.Type.Type)
+	ptrType := Ptrto(name.Type.ElemType().(*Type))
 	lenType := Types[TINT]
 	if n.Class == PAUTO && !n.Addrtaken {
 		// Split this slice up into three separate variables.
@@ -4234,6 +4342,20 @@ func (e *ssaExport) SplitComplex(name ssa.LocalSlot) (ssa.LocalSlot, ssa.LocalSl
 	}
 	// Return the two parts of the larger variable.
 	return ssa.LocalSlot{n, t, name.Off}, ssa.LocalSlot{n, t, name.Off + s}
+}
+
+func (e *ssaExport) SplitStruct(name ssa.LocalSlot, i int) ssa.LocalSlot {
+	n := name.N.(*Node)
+	st := name.Type
+	ft := st.FieldType(i)
+	if n.Class == PAUTO && !n.Addrtaken {
+		// Note: the _ field may appear several times.  But
+		// have no fear, identically-named but distinct Autos are
+		// ok, albeit maybe confusing for a debugger.
+		x := e.namedAuto(n.Sym.Name+"."+st.FieldName(i), ft)
+		return ssa.LocalSlot{x, ft, 0}
+	}
+	return ssa.LocalSlot{n, ft, name.Off + st.FieldOff(i)}
 }
 
 // namedAuto returns a new AUTO variable with the given name and type.

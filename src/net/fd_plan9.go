@@ -32,12 +32,6 @@ func sysInit() {
 	netdir = "/net"
 }
 
-func dial(net string, ra Addr, dialer func(time.Time) (Conn, error), deadline time.Time) (Conn, error) {
-	// On plan9, use the relatively inefficient
-	// goroutine-racing implementation.
-	return dialChannel(net, ra, dialer, deadline)
-}
-
 func newFD(net, name string, ctl, data *os.File, laddr, raddr Addr) (*netFD, error) {
 	return &netFD{net: net, n: name, dir: netdir + "/" + net + "/" + name, ctl: ctl, data: data, laddr: laddr, raddr: raddr}, nil
 }
@@ -74,55 +68,6 @@ func (fd *netFD) destroy() {
 	fd.data = nil
 }
 
-// Add a reference to this fd.
-// Returns an error if the fd cannot be used.
-func (fd *netFD) incref() error {
-	if !fd.fdmu.incref() {
-		return errClosing
-	}
-	return nil
-}
-
-// Remove a reference to this FD and close if we've been asked to do so
-// (and there are no references left).
-func (fd *netFD) decref() {
-	if fd.fdmu.decref() {
-		fd.destroy()
-	}
-}
-
-// Add a reference to this fd and lock for reading.
-// Returns an error if the fd cannot be used.
-func (fd *netFD) readLock() error {
-	if !fd.fdmu.rwlock(true) {
-		return errClosing
-	}
-	return nil
-}
-
-// Unlock for reading and remove a reference to this FD.
-func (fd *netFD) readUnlock() {
-	if fd.fdmu.rwunlock(true) {
-		fd.destroy()
-	}
-}
-
-// Add a reference to this fd and lock for writing.
-// Returns an error if the fd cannot be used.
-func (fd *netFD) writeLock() error {
-	if !fd.fdmu.rwlock(false) {
-		return errClosing
-	}
-	return nil
-}
-
-// Unlock for writing and remove a reference to this FD.
-func (fd *netFD) writeUnlock() {
-	if fd.fdmu.rwunlock(false) {
-		fd.destroy()
-	}
-}
-
 func (fd *netFD) Read(b []byte) (n int, err error) {
 	if !fd.ok() || fd.data == nil {
 		return 0, syscall.EINVAL
@@ -132,6 +77,9 @@ func (fd *netFD) Read(b []byte) (n int, err error) {
 	}
 	defer fd.readUnlock()
 	n, err = fd.data.Read(b)
+	if isHangup(err) {
+		err = io.EOF
+	}
 	if fd.net == "udp" && err == io.EOF {
 		n = 0
 		err = nil
@@ -233,4 +181,8 @@ func setReadBuffer(fd *netFD, bytes int) error {
 
 func setWriteBuffer(fd *netFD, bytes int) error {
 	return syscall.EPLAN9
+}
+
+func isHangup(err error) bool {
+	return err != nil && stringsHasSuffix(err.Error(), "Hangup")
 }

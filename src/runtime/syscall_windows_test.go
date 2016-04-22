@@ -622,6 +622,13 @@ uintptr_t cfunc(callback f, uintptr_t n) {
 	}
 }
 
+func TestTimeBeginPeriod(t *testing.T) {
+	const TIMERR_NOERROR = 0
+	if *runtime.TimeBeginPeriodRetValue != TIMERR_NOERROR {
+		t.Fatalf("timeBeginPeriod failed: it returned %d", *runtime.TimeBeginPeriodRetValue)
+	}
+}
+
 // removeOneCPU removes one (any) cpu from affinity mask.
 // It returns new affinity mask.
 func removeOneCPU(mask uintptr) (uintptr, error) {
@@ -780,6 +787,17 @@ func TestDLLPreloadMitigation(t *testing.T) {
 		t.Skip("skipping test: gcc is missing")
 	}
 
+	tmpdir, err := ioutil.TempDir("", "TestDLLPreloadMitigation")
+	if err != nil {
+		t.Fatal("TempDir failed: ", err)
+	}
+	defer func() {
+		err := os.RemoveAll(tmpdir)
+		if err != nil {
+			t.Error(err)
+		}
+	}()
+
 	dir0, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -794,12 +812,6 @@ uintptr_t cfunc() {
    SetLastError(123);
 }
 `
-	tmpdir, err := ioutil.TempDir("", "TestDLLPreloadMitigation")
-	if err != nil {
-		t.Fatal("TempDir failed: ", err)
-	}
-	defer os.RemoveAll(tmpdir)
-
 	srcname := "nojack.c"
 	err = ioutil.WriteFile(filepath.Join(tmpdir, srcname), []byte(src), 0)
 	if err != nil {
@@ -863,4 +875,100 @@ func TestLoadLibraryEx(t *testing.T) {
 	}
 	t.Skipf("LoadLibraryEx not usable, but not expected. (LoadLibraryEx=%v; flags=%v)",
 		have, flags)
+}
+
+var (
+	modwinmm    = syscall.NewLazyDLL("winmm.dll")
+	modkernel32 = syscall.NewLazyDLL("kernel32.dll")
+
+	procCreateEvent = modkernel32.NewProc("CreateEventW")
+	procSetEvent    = modkernel32.NewProc("SetEvent")
+)
+
+func createEvent() (syscall.Handle, error) {
+	r0, _, e0 := syscall.Syscall6(procCreateEvent.Addr(), 4, 0, 0, 0, 0, 0, 0)
+	if r0 == 0 {
+		return 0, syscall.Errno(e0)
+	}
+	return syscall.Handle(r0), nil
+}
+
+func setEvent(h syscall.Handle) error {
+	r0, _, e0 := syscall.Syscall(procSetEvent.Addr(), 1, uintptr(h), 0, 0)
+	if r0 == 0 {
+		return syscall.Errno(e0)
+	}
+	return nil
+}
+
+func BenchmarkChanToSyscallPing(b *testing.B) {
+	n := b.N
+	ch := make(chan int)
+	event, err := createEvent()
+	if err != nil {
+		b.Fatal(err)
+	}
+	go func() {
+		for i := 0; i < n; i++ {
+			syscall.WaitForSingleObject(event, syscall.INFINITE)
+			ch <- 1
+		}
+	}()
+	for i := 0; i < n; i++ {
+		err := setEvent(event)
+		if err != nil {
+			b.Fatal(err)
+		}
+		<-ch
+	}
+}
+
+func BenchmarkSyscallToSyscallPing(b *testing.B) {
+	n := b.N
+	event1, err := createEvent()
+	if err != nil {
+		b.Fatal(err)
+	}
+	event2, err := createEvent()
+	if err != nil {
+		b.Fatal(err)
+	}
+	go func() {
+		for i := 0; i < n; i++ {
+			syscall.WaitForSingleObject(event1, syscall.INFINITE)
+			err := setEvent(event2)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	}()
+	for i := 0; i < n; i++ {
+		err := setEvent(event1)
+		if err != nil {
+			b.Fatal(err)
+		}
+		syscall.WaitForSingleObject(event2, syscall.INFINITE)
+	}
+}
+
+func BenchmarkChanToChanPing(b *testing.B) {
+	n := b.N
+	ch1 := make(chan int)
+	ch2 := make(chan int)
+	go func() {
+		for i := 0; i < n; i++ {
+			<-ch1
+			ch2 <- 1
+		}
+	}()
+	for i := 0; i < n; i++ {
+		ch1 <- 1
+		<-ch2
+	}
+}
+
+func BenchmarkOsYield(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		runtime.OsYield()
+	}
 }

@@ -230,9 +230,10 @@ var passes = [...]pass{
 	{name: "early deadcode", fn: deadcode}, // remove generated dead code to avoid doing pointless work during opt
 	{name: "short circuit", fn: shortcircuit},
 	{name: "decompose user", fn: decomposeUser, required: true},
-	{name: "opt", fn: opt, required: true},           // TODO: split required rules and optimizing rules
-	{name: "zero arg cse", fn: zcse, required: true}, // required to merge OpSB values
-	{name: "opt deadcode", fn: deadcode},             // remove any blocks orphaned during opt
+	{name: "opt", fn: opt, required: true},               // TODO: split required rules and optimizing rules
+	{name: "zero arg cse", fn: zcse, required: true},     // required to merge OpSB values
+	{name: "opt deadcode", fn: deadcode, required: true}, // remove any blocks orphaned during opt
+	{name: "generic domtree", fn: domTree},
 	{name: "generic cse", fn: cse},
 	{name: "phiopt", fn: phiopt},
 	{name: "nilcheckelim", fn: nilcheckelim},
@@ -242,6 +243,7 @@ var passes = [...]pass{
 	{name: "dec", fn: dec, required: true},
 	{name: "late opt", fn: opt, required: true}, // TODO: split required rules and optimizing rules
 	{name: "generic deadcode", fn: deadcode},
+	{name: "check bce", fn: checkbce},
 	{name: "fuse", fn: fuse},
 	{name: "dse", fn: dse},
 	{name: "tighten", fn: tighten}, // move values closer to their uses
@@ -287,9 +289,17 @@ var passOrder = [...]constraint{
 	{"opt", "nilcheckelim"},
 	// tighten should happen before lowering to avoid splitting naturally paired instructions such as CMP/SET
 	{"tighten", "lower"},
+	// cse, phiopt, nilcheckelim, prove and loopbce share idom.
+	{"generic domtree", "generic cse"},
+	{"generic domtree", "phiopt"},
+	{"generic domtree", "nilcheckelim"},
+	{"generic domtree", "prove"},
+	{"generic domtree", "loopbce"},
 	// tighten will be most effective when as many values have been removed as possible
 	{"generic deadcode", "tighten"},
 	{"generic cse", "tighten"},
+	// checkbce needs the values removed
+	{"generic deadcode", "check bce"},
 	// don't run optimization pass until we've decomposed builtin objects
 	{"decompose builtin", "late opt"},
 	// don't layout blocks until critical edges have been removed

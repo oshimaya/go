@@ -7,7 +7,7 @@ package gc
 import (
 	"bufio"
 	"bytes"
-	"cmd/internal/obj"
+	"cmd/internal/bio"
 	"fmt"
 	"sort"
 	"unicode"
@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	newexport    int // if set, use new export format
-	Debug_export int // if set, print debugging information about export data
+	newexport    bool // if set, use new export format
+	Debug_export int  // if set, print debugging information about export data
 	exportsize   int
 )
 
@@ -203,7 +203,7 @@ func reexportdep(n *Node) {
 		t := n.Type
 
 		switch t.Etype {
-		case TARRAY, TCHAN, TPTR32, TPTR64:
+		case TARRAY, TCHAN, TPTR32, TPTR64, TSLICE:
 			if t.Sym == nil {
 				t = t.Elem()
 			}
@@ -303,7 +303,7 @@ func dumpexporttype(t *Type) {
 	case TMAP:
 		dumpexporttype(t.Val())
 		dumpexporttype(t.Key())
-	case TARRAY, TCHAN, TPTR32, TPTR64:
+	case TARRAY, TCHAN, TPTR32, TPTR64, TSLICE:
 		dumpexporttype(t.Elem())
 	}
 
@@ -377,16 +377,15 @@ func dumpexport() {
 	}
 
 	size := 0 // size of export section without enclosing markers
-	if forceNewExport || newexport != 0 {
+	if forceNewExport || newexport {
 		// binary export
 		// The linker also looks for the $$ marker - use char after $$ to distinguish format.
-		exportf("\n$$B\n")        // indicate binary format
-		const verifyExport = true // enable to check format changes
-		if verifyExport {
+		exportf("\n$$B\n") // indicate binary format
+		if debugFormat {
 			// save a copy of the export data
 			var copy bytes.Buffer
-			bcopy := obj.Binitw(&copy)
-			size = Export(bcopy, Debug_export != 0)
+			bcopy := bufio.NewWriter(&copy)
+			size = export(bcopy, Debug_export != 0)
 			bcopy.Flush() // flushing to bytes.Buffer cannot fail
 			if n, err := bout.Write(copy.Bytes()); n != size || err != nil {
 				Fatalf("error writing export data: got %d bytes, want %d bytes, err = %v", n, size, err)
@@ -408,7 +407,7 @@ func dumpexport() {
 			pkgs = savedPkgs
 			pkgMap = savedPkgMap
 		} else {
-			size = Export(bout, Debug_export != 0)
+			size = export(bout.Writer, Debug_export != 0)
 		}
 		exportf("\n$$\n")
 	} else {
@@ -418,7 +417,7 @@ func dumpexport() {
 		exportf("\n$$\n") // indicate textual format
 		exportsize = 0
 		exportf("package %s", localpkg.Name)
-		if safemode != 0 {
+		if safemode {
 			exportf(" safe")
 		}
 		exportf("\n")
@@ -430,9 +429,8 @@ func dumpexport() {
 		}
 
 		// exportlist grows during iteration - cannot use range
-		for len(exportlist) > 0 {
-			n := exportlist[0]
-			exportlist = exportlist[1:]
+		for i := 0; i < len(exportlist); i++ {
+			n := exportlist[i]
 			lineno = n.Lineno
 			dumpsym(n.Sym)
 		}
@@ -447,10 +445,8 @@ func dumpexport() {
 	}
 }
 
-// import
-
-// return the sym for ss, which should match lexical
-func importsym(s *Sym, op Op) *Sym {
+// importsym declares symbol s as an imported object representable by op.
+func importsym(s *Sym, op Op) {
 	if s.Def != nil && s.Def.Op != op {
 		pkgstr := fmt.Sprintf("during import %q", importpkg.Path)
 		redeclare(s, pkgstr)
@@ -464,11 +460,10 @@ func importsym(s *Sym, op Op) *Sym {
 			s.Flags |= SymPackage // package scope
 		}
 	}
-
-	return s
 }
 
-// return the type pkg.name, forward declaring if needed
+// pkgtype returns the named type declared by symbol s.
+// If no such type has been declared yet, a forward declaration is returned.
 func pkgtype(s *Sym) *Type {
 	importsym(s, OTYPE)
 	if s.Def == nil || s.Def.Op != OTYPE {
@@ -508,6 +503,7 @@ func importimport(s *Sym, path string) {
 	}
 }
 
+// importconst declares symbol s as an imported constant with type t and value n.
 func importconst(s *Sym, t *Type, n *Node) {
 	importsym(s, OLITERAL)
 	n = convlit(n, t)
@@ -535,6 +531,7 @@ func importconst(s *Sym, t *Type, n *Node) {
 	}
 }
 
+// importvar declares symbol s as an imported variable with type t.
 func importvar(s *Sym, t *Type) {
 	importsym(s, ONAME)
 	if s.Def != nil && s.Def.Op == ONAME {
@@ -580,7 +577,7 @@ func importtype(pt *Type, t *Type) {
 }
 
 func dumpasmhdr() {
-	b, err := obj.Bopenw(asmhdr)
+	b, err := bio.Create(asmhdr)
 	if err != nil {
 		Fatalf("%v", err)
 	}
@@ -595,7 +592,7 @@ func dumpasmhdr() {
 
 		case OTYPE:
 			t := n.Type
-			if !t.IsStruct() || t.Map != nil || t.Funarg {
+			if !t.IsStruct() || t.StructType().Map != nil || t.IsFuncArgStruct() {
 				break
 			}
 			fmt.Fprintf(b, "#define %s__size %d\n", t.Sym.Name, int(t.Width))
@@ -607,5 +604,5 @@ func dumpasmhdr() {
 		}
 	}
 
-	obj.Bterm(b)
+	b.Close()
 }

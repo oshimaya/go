@@ -6,6 +6,7 @@ package gc
 
 import (
 	"cmd/internal/obj"
+	"cmd/internal/sys"
 	"fmt"
 	"strings"
 )
@@ -287,7 +288,7 @@ func walkstmt(n *Node) *Node {
 		if n.List.Len() == 0 {
 			break
 		}
-		if (Curfn.Type.Outnamed && n.List.Len() > 1) || paramoutheap(Curfn) {
+		if (Curfn.Type.FuncType().Outnamed && n.List.Len() > 1) || paramoutheap(Curfn) {
 			// assign to the function out parameters,
 			// so that reorder3 can fix up conflicts
 			var rl []*Node
@@ -593,8 +594,7 @@ opswitch:
 		// for a struct containing a reflect.Value, which itself has
 		// an unexported field of type unsafe.Pointer.
 		old_safemode := safemode
-
-		safemode = 0
+		safemode = false
 		n = walkcompare(n, init)
 		safemode = old_safemode
 
@@ -672,8 +672,7 @@ opswitch:
 		walkexprlist(n.List.Slice(), init)
 
 		if n.Left.Op == ONAME && n.Left.Sym.Name == "Sqrt" && n.Left.Sym.Pkg.Path == "math" {
-			switch Thearch.Thechar {
-			case '5', '6', '7', '9':
+			if Thearch.LinkArch.InFamily(sys.AMD64, sys.ARM, sys.ARM64, sys.PPC64, sys.S390X) {
 				n.Op = OSQRT
 				n.Left = n.List.First()
 				n.List.Set(nil)
@@ -865,8 +864,14 @@ opswitch:
 		//   a = *var
 		a := n.List.First()
 
-		fn := mapfn(p, t)
-		r = mkcall1(fn, fn.Type.Results(), init, typename(t), r.Left, key)
+		if w := t.Val().Width; w <= 1024 { // 1024 must match ../../../../runtime/hashmap.go:maxZero
+			fn := mapfn(p, t)
+			r = mkcall1(fn, fn.Type.Results(), init, typename(t), r.Left, key)
+		} else {
+			fn := mapfn("mapaccess2_fat", t)
+			z := zeroaddr(w)
+			r = mkcall1(fn, fn.Type.Results(), init, typename(t), r.Left, key, z)
+		}
 
 		// mapaccess2* returns a typed bool, but due to spec changes,
 		// the boolean result of i.(T) is now untyped so we make it the
@@ -881,6 +886,7 @@ opswitch:
 		if !isblank(a) {
 			var_ := temp(Ptrto(t.Val()))
 			var_.Typecheck = 1
+			var_.NonNil = true // mapaccess always returns a non-nil pointer
 			n.List.SetIndex(0, var_)
 			n = walkexpr(n, init)
 			init.Append(n)
@@ -889,8 +895,6 @@ opswitch:
 
 		n = typecheck(n, Etop)
 		n = walkexpr(n, init)
-
-		// TODO: ptr is always non-nil, so disable nil check for this OIND op.
 
 	case ODELETE:
 		init.AppendNodes(&n.Ninit)
@@ -1056,7 +1060,7 @@ opswitch:
 		n = walkexpr(n, init)
 
 	case OCONV, OCONVNOP:
-		if Thearch.Thechar == '5' {
+		if Thearch.LinkArch.Family == sys.ARM {
 			if n.Left.Type.IsFloat() {
 				if n.Type.Etype == TINT64 {
 					n = mkcall("float64toint64", n.Type, init, conv(n.Left, Types[TFLOAT64]))
@@ -1219,11 +1223,17 @@ opswitch:
 			// standard version takes key by reference.
 			// orderexpr made sure key is addressable.
 			key = Nod(OADDR, n.Right, nil)
-
 			p = "mapaccess1"
 		}
 
-		n = mkcall1(mapfn(p, t), Ptrto(t.Val()), init, typename(t), n.Left, key)
+		if w := t.Val().Width; w <= 1024 { // 1024 must match ../../../../runtime/hashmap.go:maxZero
+			n = mkcall1(mapfn(p, t), Ptrto(t.Val()), init, typename(t), n.Left, key)
+		} else {
+			p = "mapaccess1_fat"
+			z := zeroaddr(w)
+			n = mkcall1(mapfn(p, t), Ptrto(t.Val()), init, typename(t), n.Left, key, z)
+		}
+		n.NonNil = true // mapaccess always returns a non-nil pointer
 		n = Nod(OIND, n, nil)
 		n.Type = t.Val()
 		n.Typecheck = 1
@@ -1421,11 +1431,11 @@ opswitch:
 			r = walkexpr(r, init)
 			n = r
 		} else {
-			// makeslice(t *Type, nel int64, max int64) (ary []any)
+			// makeslice(et *Type, nel int64, max int64) (ary []any)
 			fn := syslook("makeslice")
 
 			fn = substArgTypes(fn, t.Elem()) // any-1
-			n = mkcall1(fn, n.Type, init, typename(n.Type), conv(l, Types[TINT64]), conv(r, Types[TINT64]))
+			n = mkcall1(fn, n.Type, init, typename(t.Elem()), conv(l, Types[TINT64]), conv(r, Types[TINT64]))
 		}
 
 	case ORUNESTR:
@@ -1532,6 +1542,19 @@ opswitch:
 		n = r
 
 	case OARRAYLIT, OMAPLIT, OSTRUCTLIT, OPTRLIT:
+		if isStaticCompositeLiteral(n) {
+			// n can be directly represented in the read-only data section.
+			// Make direct reference to the static data. See issue 12841.
+			vstat := staticname(n.Type, 0)
+			if n.Op == OSTRUCTLIT {
+				structlit(0, 1, n, vstat, init)
+			} else {
+				arraylit(0, 1, n, vstat, init)
+			}
+			n = vstat
+			n = typecheck(n, Erv)
+			break
+		}
 		var_ := temp(n.Type)
 		anylit(0, n, var_, init)
 		n = var_
@@ -1783,7 +1806,7 @@ func ascompatte(op Op, call *Node, isddd bool, nl *Type, lr []*Node, fp int, ini
 	var nn []*Node
 
 	// f(g()) where g has multiple return values
-	if r != nil && len(lr) <= 1 && r.Type.IsStruct() && r.Type.Funarg {
+	if r != nil && len(lr) <= 1 && r.Type.IsFuncArgStruct() {
 		// optimization - can do block copy
 		if eqtypenoname(r.Type, nl) {
 			arg := nodarg(nl, fp)
@@ -1825,7 +1848,7 @@ func ascompatte(op Op, call *Node, isddd bool, nl *Type, lr []*Node, fp int, ini
 			// special case --
 			// only if we are assigning a single ddd
 			// argument to a ddd parameter then it is
-			// passed thru unencapsulated
+			// passed through unencapsulated
 			if r != nil && len(lr) <= 1 && isddd && Eqtype(l.Type, r.Type) {
 				a := Nod(OAS, nodarg(l, fp), r)
 				a = convas(a, init)
@@ -1938,7 +1961,7 @@ func walkprint(nn *Node, init *Nodes) *Node {
 			on = substArgTypes(on, n.Type) // any-1
 		} else if Isint[et] {
 			if et == TUINT64 {
-				if (t.Sym.Pkg == Runtimepkg || compiling_runtime != 0) && t.Sym.Name == "hex" {
+				if (t.Sym.Pkg == Runtimepkg || compiling_runtime) && t.Sym.Name == "hex" {
 					on = syslook("printhex")
 				} else {
 					on = syslook("printuint")
@@ -1991,7 +2014,9 @@ func callnew(t *Type) *Node {
 	dowidth(t)
 	fn := syslook("newobject")
 	fn = substArgTypes(fn, t)
-	return mkcall1(fn, Ptrto(t), nil, typename(t))
+	v := mkcall1(fn, Ptrto(t), nil, typename(t))
+	v.NonNil = true
+	return v
 }
 
 func iscallret(n *Node) bool {
@@ -2041,7 +2066,7 @@ func isglobal(n *Node) bool {
 
 // Do we need a write barrier for the assignment l = r?
 func needwritebarrier(l *Node, r *Node) bool {
-	if use_writebarrier == 0 {
+	if !use_writebarrier {
 		return false
 	}
 
@@ -2550,7 +2575,7 @@ func paramstoheap(params *Type, out bool) []*Node {
 		}
 
 		// generate allocation & copying code
-		if compiling_runtime != 0 {
+		if compiling_runtime {
 			Yyerror("%v escapes to heap, not allowed in runtime.", v)
 		}
 		if prealloc[v] == nil {
@@ -2787,7 +2812,7 @@ func appendslice(n *Node, init *Nodes) *Node {
 	fn = substArgTypes(fn, s.Type.Elem(), s.Type.Elem())
 
 	// s = growslice(T, s, n)
-	nif.Nbody.Set1(Nod(OAS, s, mkcall1(fn, s.Type, &nif.Ninit, typename(s.Type), s, nn)))
+	nif.Nbody.Set1(Nod(OAS, s, mkcall1(fn, s.Type, &nif.Ninit, typename(s.Type.Elem()), s, nn)))
 	l = append(l, nif)
 
 	// s = s[:n]
@@ -2917,7 +2942,7 @@ func walkappend(n *Node, init *Nodes, dst *Node) *Node {
 	fn = substArgTypes(fn, ns.Type.Elem(), ns.Type.Elem())
 
 	nx.Nbody.Set1(Nod(OAS, ns,
-		mkcall1(fn, ns.Type, &nx.Ninit, typename(ns.Type), ns,
+		mkcall1(fn, ns.Type, &nx.Ninit, typename(ns.Type.Elem()), ns,
 			Nod(OADD, Nod(OLEN, ns, nil), na))))
 
 	l = append(l, nx)
@@ -3101,12 +3126,7 @@ func walkcompare(n *Node, init *Nodes) *Node {
 	default:
 		return n
 
-	case TARRAY:
-		if t.IsSlice() {
-			return n
-		}
-
-	case TSTRUCT:
+	case TARRAY, TSTRUCT:
 		break
 	}
 
@@ -3274,7 +3294,7 @@ func samecheap(a *Node, b *Node) bool {
 // The result of walkrotate MUST be assigned back to n, e.g.
 // 	n.Left = walkrotate(n.Left)
 func walkrotate(n *Node) *Node {
-	if Thearch.Thechar == '0' || Thearch.Thechar == '7' || Thearch.Thechar == '9' {
+	if Thearch.LinkArch.InFamily(sys.MIPS64, sys.ARM64, sys.PPC64) {
 		return n
 	}
 
@@ -3293,6 +3313,11 @@ func walkrotate(n *Node) *Node {
 
 	// Constants adding to width?
 	w := int(l.Type.Width * 8)
+
+	if Thearch.LinkArch.Family == sys.S390X && w != 32 && w != 64 {
+		// only supports 32-bit and 64-bit rotates
+		return n
+	}
 
 	if Smallintconst(l.Right) && Smallintconst(r.Right) {
 		sl := int(l.Right.Int64())
@@ -3401,7 +3426,7 @@ func walkdiv(n *Node, init *Nodes) *Node {
 	// if >= 0, nr is 1<<pow // 1 if nr is negative.
 
 	// TODO(minux)
-	if Thearch.Thechar == '0' || Thearch.Thechar == '7' || Thearch.Thechar == '9' {
+	if Thearch.LinkArch.InFamily(sys.MIPS64, sys.ARM64, sys.PPC64) {
 		return n
 	}
 

@@ -1476,6 +1476,12 @@ func TestFunc(t *testing.T) {
 	if i != 10 || j != 20 || k != 30 || l != (two{40, 50}) || m != 60 || n != 70 || o != 80 {
 		t.Errorf("Call returned %d, %d, %d, %v, %d, %g, %d; want 10, 20, 30, [40, 50], 60, 70, 80", i, j, k, l, m, n, o)
 	}
+
+	for i, v := range ret {
+		if v.CanAddr() {
+			t.Errorf("result %d is addressable", i)
+		}
+	}
 }
 
 type emptyStruct struct{}
@@ -4169,12 +4175,12 @@ func TestStructOfExportRules(t *testing.T) {
 		},
 		{
 			field:     StructField{Name: "", Type: TypeOf(ΦType{})},
-			mustPanic: true, // TODO(sbinet): creating a struct with UTF-8 fields not supported
+			mustPanic: false,
 			exported:  true,
 		},
 		{
 			field:     StructField{Name: "", Type: TypeOf(φType{})},
-			mustPanic: true, // TODO(sbinet): creating a struct with UTF-8 fields not supported
+			mustPanic: false,
 			exported:  false,
 		},
 		{
@@ -5668,6 +5674,42 @@ func TestNames(t *testing.T) {
 	}
 }
 
+func TestExported(t *testing.T) {
+	type ΦExported struct{}
+	type φUnexported struct{}
+	type BigP *big
+	type P int
+	type p *P
+	type P2 p
+	type p3 p
+
+	type exportTest struct {
+		v    interface{}
+		want bool
+	}
+	exportTests := []exportTest{
+		{D1{}, true},
+		{(*D1)(nil), true},
+		{big{}, false},
+		{(*big)(nil), false},
+		{(BigP)(nil), true},
+		{(*BigP)(nil), true},
+		{ΦExported{}, true},
+		{φUnexported{}, false},
+		{P(0), true},
+		{(p)(nil), false},
+		{(P2)(nil), true},
+		{(p3)(nil), false},
+	}
+
+	for i, test := range exportTests {
+		typ := TypeOf(test.v)
+		if got := IsExported(typ); got != test.want {
+			t.Errorf("%d: %s exported=%v, want %v", i, typ.Name(), got, test.want)
+		}
+	}
+}
+
 type embed struct {
 	EmbedWithUnexpMeth
 }
@@ -5678,5 +5720,16 @@ func TestNameBytesAreAligned(t *testing.T) {
 	v := uintptr(unsafe.Pointer(b))
 	if v%unsafe.Alignof((*byte)(nil)) != 0 {
 		t.Errorf("reflect.name.bytes pointer is not aligned: %x", v)
+	}
+}
+
+func TestMethodPkgPathReadable(t *testing.T) {
+	// Reading the Method type for an unexported method triggers an
+	// offset resolution via p.name.pkgPath(). Make sure it uses a
+	// valid base pointer for the offset.
+	v := ValueOf(embed{})
+	m := v.Type().Method(0)
+	if m.PkgPath != "reflect" {
+		t.Errorf(`PkgPath=%q, want "reflect"`, m.PkgPath)
 	}
 }

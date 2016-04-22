@@ -563,6 +563,35 @@ func getdyn(n *Node, top int) initGenType {
 	return mode
 }
 
+// isStaticCompositeLiteral reports whether n is a compile-time constant.
+func isStaticCompositeLiteral(n *Node) bool {
+	switch n.Op {
+	case OARRAYLIT:
+		if n.Type.IsSlice() {
+			return false
+		}
+	case OSTRUCTLIT:
+	case OLITERAL:
+		return true
+	default:
+		return false
+	}
+	for _, r := range n.List.Slice() {
+		if r.Op != OKEY {
+			Fatalf("isStaticCompositeLiteral: rhs not OKEY: %v", r)
+		}
+		index := r.Left
+		if n.Op == OARRAYLIT && index.Op != OLITERAL {
+			return false
+		}
+		value := r.Right
+		if !isStaticCompositeLiteral(value) {
+			return false
+		}
+	}
+	return true
+}
+
 func structlit(ctxt int, pass int, n *Node, var_ *Node, init *Nodes) {
 	for _, r := range n.List.Slice() {
 		if r.Op != OKEY {
@@ -1005,7 +1034,7 @@ func anylit(ctxt int, n *Node, var_ *Node, init *Nodes) {
 	t := n.Type
 	switch n.Op {
 	default:
-		Fatalf("anylit: not lit")
+		Fatalf("anylit: not lit, op=%v node=%v", opnames[n.Op], n)
 
 	case OPTRLIT:
 		if !t.IsPtr() {
@@ -1074,12 +1103,12 @@ func anylit(ctxt int, n *Node, var_ *Node, init *Nodes) {
 		structlit(ctxt, 3, n, var_, init)
 
 	case OARRAYLIT:
-		if t.Etype != TARRAY {
-			Fatalf("anylit: not array")
-		}
 		if t.IsSlice() {
 			slicelit(ctxt, n, var_, init)
 			break
+		}
+		if !t.IsArray() {
+			Fatalf("anylit: not array")
 		}
 
 		if var_.isSimpleName() && n.List.Len() > 4 {
@@ -1385,7 +1414,7 @@ func genAsInitNoCheck(n *Node, reportOnly bool) bool {
 		}
 
 		// nr is the array being converted to a slice
-		if nr.Type == nil || nr.Type.Etype != TARRAY || nr.Type.IsSlice() {
+		if nr.Type == nil || !nr.Type.IsArray() {
 			return false
 		}
 

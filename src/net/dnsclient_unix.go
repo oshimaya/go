@@ -16,6 +16,7 @@
 package net
 
 import (
+	"context"
 	"errors"
 	"io"
 	"math/rand"
@@ -26,10 +27,10 @@ import (
 
 // A dnsDialer provides dialing suitable for DNS queries.
 type dnsDialer interface {
-	dialDNS(string, string) (dnsConn, error)
+	dialDNS(ctx context.Context, network, addr string) (dnsConn, error)
 }
 
-var testHookDNSDialer = func(d time.Duration) dnsDialer { return &Dialer{Timeout: d} }
+var testHookDNSDialer = func() dnsDialer { return &Dialer{} }
 
 // A dnsConn represents a DNS transport endpoint.
 type dnsConn interface {
@@ -104,7 +105,7 @@ func (c *TCPConn) writeDNSQuery(msg *dnsMsg) error {
 	return nil
 }
 
-func (d *Dialer) dialDNS(network, server string) (dnsConn, error) {
+func (d *Dialer) dialDNS(ctx context.Context, network, server string) (dnsConn, error) {
 	switch network {
 	case "tcp", "tcp4", "tcp6", "udp", "udp4", "udp6":
 	default:
@@ -115,9 +116,9 @@ func (d *Dialer) dialDNS(network, server string) (dnsConn, error) {
 	// call back here to translate it. The DNS config parser has
 	// already checked that all the cfg.servers[i] are IP
 	// addresses, which Dial will use without a DNS lookup.
-	c, err := d.Dial(network, server)
+	c, err := d.DialContext(ctx, network, server)
 	if err != nil {
-		return nil, err
+		return nil, mapErr(err)
 	}
 	switch network {
 	case "tcp", "tcp4", "tcp6":
@@ -129,8 +130,8 @@ func (d *Dialer) dialDNS(network, server string) (dnsConn, error) {
 }
 
 // exchange sends a query on the connection and hopes for a response.
-func exchange(server, name string, qtype uint16, timeout time.Duration) (*dnsMsg, error) {
-	d := testHookDNSDialer(timeout)
+func exchange(ctx context.Context, server, name string, qtype uint16) (*dnsMsg, error) {
+	d := testHookDNSDialer()
 	out := dnsMsg{
 		dnsMsgHdr: dnsMsgHdr{
 			recursion_desired: true,
@@ -140,21 +141,21 @@ func exchange(server, name string, qtype uint16, timeout time.Duration) (*dnsMsg
 		},
 	}
 	for _, network := range []string{"udp", "tcp"} {
-		c, err := d.dialDNS(network, server)
+		c, err := d.dialDNS(ctx, network, server)
 		if err != nil {
 			return nil, err
 		}
 		defer c.Close()
-		if timeout > 0 {
-			c.SetDeadline(time.Now().Add(timeout))
+		if d, ok := ctx.Deadline(); ok && !d.IsZero() {
+			c.SetDeadline(d)
 		}
 		out.id = uint16(rand.Int()) ^ uint16(time.Now().UnixNano())
 		if err := c.writeDNSQuery(&out); err != nil {
-			return nil, err
+			return nil, mapErr(err)
 		}
 		in, err := c.readDNSResponse()
 		if err != nil {
-			return nil, err
+			return nil, mapErr(err)
 		}
 		if in.id != out.id {
 			return nil, errors.New("DNS message ID mismatch")
@@ -169,16 +170,24 @@ func exchange(server, name string, qtype uint16, timeout time.Duration) (*dnsMsg
 
 // Do a lookup for a single name, which must be rooted
 // (otherwise answer will not find the answers).
-func tryOneName(cfg *dnsConfig, name string, qtype uint16) (string, []dnsRR, error) {
+func tryOneName(ctx context.Context, cfg *dnsConfig, name string, qtype uint16) (string, []dnsRR, error) {
 	if len(cfg.servers) == 0 {
 		return "", nil, &DNSError{Err: "no DNS servers", Name: name}
 	}
+
 	timeout := time.Duration(cfg.timeout) * time.Second
+	deadline := time.Now().Add(timeout)
+	if old, ok := ctx.Deadline(); !ok || deadline.Before(old) {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+
 	var lastErr error
 	for i := 0; i < cfg.attempts; i++ {
 		for _, server := range cfg.servers {
 			server = JoinHostPort(server, "53")
-			msg, err := exchange(server, name, qtype, timeout)
+			msg, err := exchange(ctx, server, name, qtype)
 			if err != nil {
 				lastErr = &DNSError{
 					Err:    err.Error(),
@@ -296,7 +305,7 @@ func (conf *resolverConfig) releaseSema() {
 	<-conf.ch
 }
 
-func lookup(name string, qtype uint16) (cname string, rrs []dnsRR, err error) {
+func lookup(ctx context.Context, name string, qtype uint16) (cname string, rrs []dnsRR, err error) {
 	if !isDomainName(name) {
 		return "", nil, &DNSError{Err: "invalid domain name", Name: name}
 	}
@@ -305,7 +314,7 @@ func lookup(name string, qtype uint16) (cname string, rrs []dnsRR, err error) {
 	conf := resolvConf.dnsConfig
 	resolvConf.mu.RUnlock()
 	for _, fqdn := range conf.nameList(name) {
-		cname, rrs, err = tryOneName(conf, fqdn, qtype)
+		cname, rrs, err = tryOneName(ctx, conf, fqdn, qtype)
 		if err == nil {
 			break
 		}
@@ -319,8 +328,25 @@ func lookup(name string, qtype uint16) (cname string, rrs []dnsRR, err error) {
 	return
 }
 
+// avoidDNS reports whether this is a hostname for which we should not
+// use DNS. Currently this includes only .onion and .local names,
+// per RFC 7686 and RFC 6762, respectively. See golang.org/issue/13705.
+func avoidDNS(name string) bool {
+	if name == "" {
+		return true
+	}
+	if name[len(name)-1] == '.' {
+		name = name[:len(name)-1]
+	}
+	return stringsHasSuffixFold(name, ".onion") || stringsHasSuffixFold(name, ".local")
+}
+
 // nameList returns a list of names for sequential DNS queries.
 func (conf *dnsConfig) nameList(name string) []string {
+	if avoidDNS(name) {
+		return nil
+	}
+
 	// If name is rooted (trailing dot), try only that name.
 	rooted := len(name) > 0 && name[len(name)-1] == '.'
 	if rooted {
@@ -382,11 +408,11 @@ func (o hostLookupOrder) String() string {
 // Normally we let cgo use the C library resolver instead of
 // depending on our lookup code, so that Go and C get the same
 // answers.
-func goLookupHost(name string) (addrs []string, err error) {
-	return goLookupHostOrder(name, hostLookupFilesDNS)
+func goLookupHost(ctx context.Context, name string) (addrs []string, err error) {
+	return goLookupHostOrder(ctx, name, hostLookupFilesDNS)
 }
 
-func goLookupHostOrder(name string, order hostLookupOrder) (addrs []string, err error) {
+func goLookupHostOrder(ctx context.Context, name string, order hostLookupOrder) (addrs []string, err error) {
 	if order == hostLookupFilesDNS || order == hostLookupFiles {
 		// Use entries from /etc/hosts if they match.
 		addrs = lookupStaticHost(name)
@@ -394,7 +420,7 @@ func goLookupHostOrder(name string, order hostLookupOrder) (addrs []string, err 
 			return
 		}
 	}
-	ips, err := goLookupIPOrder(name, order)
+	ips, err := goLookupIPOrder(ctx, name, order)
 	if err != nil {
 		return
 	}
@@ -420,11 +446,11 @@ func goLookupIPFiles(name string) (addrs []IPAddr) {
 
 // goLookupIP is the native Go implementation of LookupIP.
 // The libc versions are in cgo_*.go.
-func goLookupIP(name string) (addrs []IPAddr, err error) {
-	return goLookupIPOrder(name, hostLookupFilesDNS)
+func goLookupIP(ctx context.Context, name string) (addrs []IPAddr, err error) {
+	return goLookupIPOrder(ctx, name, hostLookupFilesDNS)
 }
 
-func goLookupIPOrder(name string, order hostLookupOrder) (addrs []IPAddr, err error) {
+func goLookupIPOrder(ctx context.Context, name string, order hostLookupOrder) (addrs []IPAddr, err error) {
 	if order == hostLookupFilesDNS || order == hostLookupFiles {
 		addrs = goLookupIPFiles(name)
 		if len(addrs) > 0 || order == hostLookupFiles {
@@ -449,7 +475,7 @@ func goLookupIPOrder(name string, order hostLookupOrder) (addrs []IPAddr, err er
 	for _, fqdn := range conf.nameList(name) {
 		for _, qtype := range qtypes {
 			go func(qtype uint16) {
-				_, rrs, err := tryOneName(conf, fqdn, qtype)
+				_, rrs, err := tryOneName(ctx, conf, fqdn, qtype)
 				lane <- racer{fqdn, rrs, err}
 			}(qtype)
 		}
@@ -492,8 +518,8 @@ func goLookupIPOrder(name string, order hostLookupOrder) (addrs []IPAddr, err er
 // Normally we let cgo use the C library resolver instead of
 // depending on our lookup code, so that Go and C get the same
 // answers.
-func goLookupCNAME(name string) (cname string, err error) {
-	_, rrs, err := lookup(name, dnsTypeCNAME)
+func goLookupCNAME(ctx context.Context, name string) (cname string, err error) {
+	_, rrs, err := lookup(ctx, name, dnsTypeCNAME)
 	if err != nil {
 		return
 	}
@@ -506,7 +532,7 @@ func goLookupCNAME(name string) (cname string, err error) {
 // only if cgoLookupPTR is the stub in cgo_stub.go).
 // Normally we let cgo use the C library resolver instead of depending
 // on our lookup code, so that Go and C get the same answers.
-func goLookupPTR(addr string) ([]string, error) {
+func goLookupPTR(ctx context.Context, addr string) ([]string, error) {
 	names := lookupStaticAddr(addr)
 	if len(names) > 0 {
 		return names, nil
@@ -515,7 +541,7 @@ func goLookupPTR(addr string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, rrs, err := lookup(arpa, dnsTypePTR)
+	_, rrs, err := lookup(ctx, arpa, dnsTypePTR)
 	if err != nil {
 		return nil, err
 	}

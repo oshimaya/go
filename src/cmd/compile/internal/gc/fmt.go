@@ -189,6 +189,7 @@ var goopnames = []string{
 	OSUB:      "-",
 	OSWITCH:   "switch",
 	OXOR:      "^",
+	OXFALL:    "fallthrough",
 }
 
 // Fmt "%O":  Node opcodes
@@ -318,6 +319,12 @@ func Jconv(n *Node, flag FmtFlag) string {
 	if n.Assigned {
 		buf.WriteString(" assigned")
 	}
+	if n.Bounded {
+		buf.WriteString(" bounded")
+	}
+	if n.NonNil {
+		buf.WriteString(" nonnil")
+	}
 
 	if c == 0 && n.Used {
 		fmt.Fprintf(&buf, " used(%v)", n.Used)
@@ -336,7 +343,7 @@ func Vconv(v Val, flag FmtFlag) string {
 
 	case CTRUNE:
 		x := v.U.(*Mpint).Int64()
-		if ' ' <= x && x < 0x80 && x != '\\' && x != '\'' {
+		if ' ' <= x && x < utf8.RuneSelf && x != '\\' && x != '\'' {
 			return fmt.Sprintf("'%c'", int(x))
 		}
 		if 0 <= x && x < 1<<16 {
@@ -415,6 +422,7 @@ var etnames = []string{
 	TPTR64:      "PTR64",
 	TFUNC:       "FUNC",
 	TARRAY:      "ARRAY",
+	TSLICE:      "SLICE",
 	TSTRUCT:     "STRUCT",
 	TCHAN:       "CHAN",
 	TMAP:        "MAP",
@@ -586,16 +594,16 @@ func typefmt(t *Type, flag FmtFlag) string {
 		return "*" + t.Elem().String()
 
 	case TARRAY:
-		if t.IsArray() {
-			return fmt.Sprintf("[%d]%v", t.NumElem(), t.Elem())
-		}
 		if t.isDDDArray() {
 			return "[...]" + t.Elem().String()
 		}
+		return fmt.Sprintf("[%d]%v", t.NumElem(), t.Elem())
+
+	case TSLICE:
 		return "[]" + t.Elem().String()
 
 	case TCHAN:
-		switch t.Chan {
+		switch t.ChanDir() {
 		case Crecv:
 			return "<-chan " + t.Elem().String()
 
@@ -603,7 +611,7 @@ func typefmt(t *Type, flag FmtFlag) string {
 			return "chan<- " + t.Elem().String()
 		}
 
-		if t.Elem() != nil && t.Elem().IsChan() && t.Elem().Sym == nil && t.Elem().Chan == Crecv {
+		if t.Elem() != nil && t.Elem().IsChan() && t.Elem().Sym == nil && t.Elem().ChanDir() == Crecv {
 			return "chan (" + t.Elem().String() + ")"
 		}
 		return "chan " + t.Elem().String()
@@ -670,26 +678,27 @@ func typefmt(t *Type, flag FmtFlag) string {
 		return buf.String()
 
 	case TSTRUCT:
-		if t.Map != nil {
+		if m := t.StructType().Map; m != nil {
+			mt := m.MapType()
 			// Format the bucket struct for map[x]y as map.bucket[x]y.
 			// This avoids a recursive print that generates very long names.
-			if t.Map.Bucket == t {
-				return "map.bucket[" + t.Map.Key().String() + "]" + t.Map.Val().String()
+			if mt.Bucket == t {
+				return "map.bucket[" + m.Key().String() + "]" + m.Val().String()
 			}
 
-			if t.Map.Hmap == t {
-				return "map.hdr[" + t.Map.Key().String() + "]" + t.Map.Val().String()
+			if mt.Hmap == t {
+				return "map.hdr[" + m.Key().String() + "]" + m.Val().String()
 			}
 
-			if t.Map.Hiter == t {
-				return "map.iter[" + t.Map.Key().String() + "]" + t.Map.Val().String()
+			if mt.Hiter == t {
+				return "map.iter[" + m.Key().String() + "]" + m.Val().String()
 			}
 
 			Yyerror("unknown internal map type")
 		}
 
 		var buf bytes.Buffer
-		if t.Funarg {
+		if t.IsFuncArgStruct() {
 			buf.WriteString("(")
 			var flag1 FmtFlag
 			if fmtmode == FTypeId || fmtmode == FErr { // no argument names on function signature, and no "noescape"/"nosplit" tags
@@ -734,7 +743,10 @@ func typefmt(t *Type, flag FmtFlag) string {
 		if fmtmode == FExp {
 			Fatalf("cannot use TDDDFIELD with old exporter")
 		}
-		return fmt.Sprintf("%v <%v> %v", Econv(t.Etype), t.Sym, t.Wrapped())
+		return fmt.Sprintf("%v <%v> %v", Econv(t.Etype), t.Sym, t.DDDField())
+
+	case Txxx:
+		return "Txxx"
 	}
 
 	if fmtmode == FExp {
@@ -800,7 +812,7 @@ func stmtfmt(n *Node) string {
 		}
 
 	// Don't export "v = <N>" initializing statements, hope they're always
-	// preceded by the DCL which will be re-parsed and typecheck to reproduce
+	// preceded by the DCL which will be re-parsed and typechecked to reproduce
 	// the "v = <N>" again.
 	case OAS, OASWB:
 		if fmtmode == FExp && n.Right == nil {
@@ -1101,7 +1113,7 @@ func exprfmt(n *Node, prec int) string {
 		if n.Type != nil && n.Type.Etype != TIDEAL && n.Type.Etype != TNIL && n.Type != idealbool && n.Type != idealstring {
 			// Need parens when type begins with what might
 			// be misinterpreted as a unary operator: * or <-.
-			if n.Type.IsPtr() || (n.Type.IsChan() && n.Type.Chan == Crecv) {
+			if n.Type.IsPtr() || (n.Type.IsChan() && n.Type.ChanDir() == Crecv) {
 				return fmt.Sprintf("(%v)(%v)", n.Type, Vconv(n.Val(), 0))
 			} else {
 				return fmt.Sprintf("%v(%v)", n.Type, Vconv(n.Val(), 0))
@@ -1145,15 +1157,13 @@ func exprfmt(n *Node, prec int) string {
 		if n.Left != nil {
 			return fmt.Sprintf("[]%v", n.Left)
 		}
-		var f string
-		f += fmt.Sprintf("[]%v", n.Right)
-		return f // happens before typecheck
+		return fmt.Sprintf("[]%v", n.Right) // happens before typecheck
 
 	case OTMAP:
 		return fmt.Sprintf("map[%v]%v", n.Left, n.Right)
 
 	case OTCHAN:
-		switch n.Etype {
+		switch ChanDir(n.Etype) {
 		case Crecv:
 			return fmt.Sprintf("<-chan %v", n.Left)
 
@@ -1161,7 +1171,7 @@ func exprfmt(n *Node, prec int) string {
 			return fmt.Sprintf("chan<- %v", n.Left)
 
 		default:
-			if n.Left != nil && n.Left.Op == OTCHAN && n.Left.Sym == nil && n.Left.Etype == Crecv {
+			if n.Left != nil && n.Left.Op == OTCHAN && n.Left.Sym == nil && ChanDir(n.Left.Etype) == Crecv {
 				return fmt.Sprintf("chan (%v)", n.Left)
 			} else {
 				return fmt.Sprintf("chan %v", n.Left)

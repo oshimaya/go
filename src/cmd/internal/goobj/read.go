@@ -217,7 +217,7 @@ type FuncData struct {
 type Package struct {
 	ImportPath string   // import path denoting this package
 	Imports    []string // packages imported by this package
-	SymRefs    []SymID  // list of symbol names and versions refered to by this pack
+	SymRefs    []SymID  // list of symbol names and versions referred to by this pack
 	Syms       []*Sym   // symbols defined by this package
 	MaxVersion int      // maximum Version in any SymID in Syms
 }
@@ -229,11 +229,8 @@ var (
 
 	errCorruptArchive   = errors.New("corrupt archive")
 	errTruncatedArchive = errors.New("truncated archive")
-	errNotArchive       = errors.New("unrecognized archive format")
-
-	errCorruptObject   = errors.New("corrupt object file")
-	errTruncatedObject = errors.New("truncated object file")
-	errNotObject       = errors.New("unrecognized object file format")
+	errCorruptObject    = errors.New("corrupt object file")
+	errNotObject        = errors.New("unrecognized object file format")
 )
 
 // An objReader is an object file reader.

@@ -719,8 +719,8 @@ func scanframeworker(frame *stkframe, cache *pcvalueCache, gcw *gcWork) {
 	// Scan local variables if stack frame has been allocated.
 	size := frame.varp - frame.sp
 	var minsize uintptr
-	switch sys.TheChar {
-	case '7':
+	switch sys.ArchFamily {
+	case sys.ARM64:
 		minsize = sys.SpAlign
 	default:
 		minsize = sys.MinFrameSize
@@ -1132,14 +1132,21 @@ func gcDumpObject(label string, obj, off uintptr) {
 	}
 }
 
-// If gcBlackenPromptly is true we are in the second mark phase phase so we allocate black.
+// gcmarknewobject marks a newly allocated object black. obj must
+// not contain any non-nil pointers.
+//
+// This is nosplit so it can manipulate a gcWork without preemption.
+//
 //go:nowritebarrier
-func gcmarknewobject_m(obj, size uintptr) {
+//go:nosplit
+func gcmarknewobject(obj, size, scanSize uintptr) {
 	if useCheckmark && !gcBlackenPromptly { // The world should be stopped so this should not happen.
 		throw("gcmarknewobject called while doing checkmark")
 	}
 	heapBitsForAddr(obj).setMarked()
-	atomic.Xadd64(&work.bytesMarked, int64(size))
+	gcw := &getg().m.p.ptr().gcw
+	gcw.bytesMarked += uint64(size)
+	gcw.scanWork += int64(scanSize)
 }
 
 // Checkmarking

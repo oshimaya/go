@@ -24,6 +24,10 @@
 // Hudson, R., and Moss, J.E.B. Copying Garbage Collection without stopping the world.
 // Concurrency and Computation: Practice and Experience 15(3-5), 2003.
 //
+// TODO(austin): The rest of this comment is woefully out of date and
+// needs to be rewritten. There is no distinct scan phase any more and
+// we allocate black during GC.
+//
 //  0. Set phase = GCscan from GCoff.
 //  1. Wait for all P's to acknowledge phase change.
 //         At this point all goroutines have passed through a GC safepoint and
@@ -244,7 +248,7 @@ var gcBlackenPromptly bool
 
 const (
 	_GCoff             = iota // GC not running; sweeping in background, write barrier disabled
-	_GCmark                   // GC marking roots and workbufs, write barrier ENABLED
+	_GCmark                   // GC marking roots and workbufs: allocate black, write barrier ENABLED
 	_GCmarktermination        // GC mark termination: allocate black, P's help GC, write barrier ENABLED
 )
 
@@ -304,7 +308,8 @@ type gcControllerState struct {
 	// scanWork is the total scan work performed this cycle. This
 	// is updated atomically during the cycle. Updates occur in
 	// bounded batches, since it is both written and read
-	// throughout the cycle.
+	// throughout the cycle. At the end of the cycle, this is how
+	// much of the retained heap is scannable.
 	//
 	// Currently this is the bytes of heap scanned. For most uses,
 	// this is an opaque unit of work, but for estimation the
@@ -466,14 +471,18 @@ func (c *gcControllerState) startCycle() {
 // It should only be called when gcBlackenEnabled != 0 (because this
 // is when assists are enabled and the necessary statistics are
 // available).
+//
+// TODO: Consider removing the periodic controller update altogether.
+// Since we switched to allocating black, in theory we shouldn't have
+// to change the assist ratio. However, this is still a useful hook
+// that we've found many uses for when experimenting.
 func (c *gcControllerState) revise() {
 	// Compute the expected scan work remaining.
 	//
-	// Note that the scannable heap size is likely to increase
-	// during the GC cycle. This is why it's important to revise
-	// the assist ratio throughout the cycle: if the scannable
-	// heap size increases, the assist ratio based on the initial
-	// scannable heap size may target too little scan work.
+	// Note that we currently count allocations during GC as both
+	// scannable heap (heap_scan) and scan work completed
+	// (scanWork), so this difference won't be changed by
+	// allocations during GC.
 	//
 	// This particular estimate is a strict upper bound on the
 	// possible remaining scan work for the current heap.
@@ -1578,8 +1587,12 @@ func gcMark(start_time int64) {
 	work.markrootDone = true
 
 	for i := 0; i < int(gomaxprocs); i++ {
-		if !allp[i].gcw.empty() {
+		gcw := &allp[i].gcw
+		if !gcw.empty() {
 			throw("P has cached GC work at end of mark termination")
+		}
+		if gcw.scanWork != 0 || gcw.bytesMarked != 0 {
+			throw("P has unflushed stats at end of mark termination")
 		}
 	}
 
@@ -1589,27 +1602,8 @@ func gcMark(start_time int64) {
 
 	cachestats()
 
-	// Compute the reachable heap size at the beginning of the
-	// cycle. This is approximately the marked heap size at the
-	// end (which we know) minus the amount of marked heap that
-	// was allocated after marking began (which we don't know, but
-	// is approximately the amount of heap that was allocated
-	// since marking began).
-	allocatedDuringCycle := memstats.heap_live - work.initialHeapLive
-	if memstats.heap_live < work.initialHeapLive {
-		// This can happen if mCentral_UncacheSpan tightens
-		// the heap_live approximation.
-		allocatedDuringCycle = 0
-	}
-	if work.bytesMarked >= allocatedDuringCycle {
-		memstats.heap_reachable = work.bytesMarked - allocatedDuringCycle
-	} else {
-		// This can happen if most of the allocation during
-		// the cycle never became reachable from the heap.
-		// Just set the reachable heap approximation to 0 and
-		// let the heapminimum kick in below.
-		memstats.heap_reachable = 0
-	}
+	// Update the reachable heap stat.
+	memstats.heap_reachable = work.bytesMarked
 
 	// Trigger the next GC cycle when the allocated heap has grown
 	// by triggerRatio over the reachable heap size. Assume that

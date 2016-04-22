@@ -44,7 +44,7 @@ const (
 
 // domain represents the domain of a variable pair in which a set
 // of relations is known.  For example, relations learned for unsigned
-// pairs cannot be transfered to signed pairs because the same bit
+// pairs cannot be transferred to signed pairs because the same bit
 // representation can mean something else.
 type domain uint
 
@@ -296,6 +296,15 @@ func (ft *factsTable) update(v, w *Value, d domain, r relation) {
 	}
 }
 
+// isNonNegative returns true if v is known to be non-negative.
+func (ft *factsTable) isNonNegative(v *Value) bool {
+	if isNonNegative(v) {
+		return true
+	}
+	l, has := ft.limits[v.ID]
+	return has && (l.min >= 0 || l.umax <= math.MaxInt64)
+}
+
 // checkpoint saves the current state of known relations.
 // Called when descending on a branch.
 func (ft *factsTable) checkpoint() {
@@ -436,9 +445,6 @@ var (
 // else branch of the first comparison is executed, we already know that i < len(a).
 // The code for the second panic can be removed.
 func prove(f *Func) {
-	idom := dominators(f)
-	sdom := newSparseTree(f, idom)
-
 	// current node state
 	type walkState int
 	const (
@@ -462,8 +468,8 @@ func prove(f *Func) {
 	for len(work) > 0 {
 		node := work[len(work)-1]
 		work = work[:len(work)-1]
-		parent := idom[node.block.ID]
-		branch := getBranch(sdom, parent, node.block)
+		parent := f.idom[node.block.ID]
+		branch := getBranch(f.sdom, parent, node.block)
 
 		switch node.state {
 		case descend:
@@ -482,7 +488,7 @@ func prove(f *Func) {
 				block: node.block,
 				state: simplify,
 			})
-			for s := sdom.Child(node.block); s != nil; s = sdom.Sibling(s) {
+			for s := f.sdom.Child(node.block); s != nil; s = f.sdom.Sibling(s) {
 				work = append(work, bp{
 					block: s,
 					state: descend,
@@ -608,8 +614,7 @@ func simplifyBlock(ft *factsTable, b *Block) branch {
 	// to the upper bound than this is proven. Most useful in cases such as:
 	// if len(a) <= 1 { return }
 	// do something with a[1]
-	// TODO: use constant bounds to do isNonNegative.
-	if (c.Op == OpIsInBounds || c.Op == OpIsSliceInBounds) && isNonNegative(c.Args[0]) {
+	if (c.Op == OpIsInBounds || c.Op == OpIsSliceInBounds) && ft.isNonNegative(c.Args[0]) {
 		m := ft.get(a0, a1, signed)
 		if m != 0 && tr.r&m == m {
 			if b.Func.pass.debug > 0 {

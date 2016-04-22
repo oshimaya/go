@@ -324,7 +324,7 @@ func ismulticall(l Nodes) bool {
 // Copyret emits t1, t2, ... = n, where n is a function call,
 // and then returns the list t1, t2, ....
 func copyret(n *Node, order *Order) []*Node {
-	if !n.Type.IsStruct() || !n.Type.Funarg {
+	if !n.Type.IsFuncArgStruct() {
 		Fatalf("copyret %v %d", n.Type, n.Left.Type.Results().NumFields())
 	}
 
@@ -731,7 +731,7 @@ func orderstmt(n *Node, order *Order) {
 		default:
 			Fatalf("orderstmt range %v", n.Type)
 
-		case TARRAY:
+		case TARRAY, TSLICE:
 			if n.List.Len() < 2 || isblank(n.List.Second()) {
 				// for i := range x will only use x once, to compute len(x).
 				// No need to copy it.
