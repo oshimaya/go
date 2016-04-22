@@ -15,7 +15,7 @@ import (
         "runtime"
 )
 
-//go:generate go run mksyscall_windows.go -output zsyscall_windows.go syscall_windows.go security_windows.go
+//go:generate go run mksyscall_windows.go -systemdll -output zsyscall_windows.go syscall_windows.go security_windows.go
 
 type Handle uintptr
 
