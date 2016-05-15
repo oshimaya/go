@@ -29,12 +29,26 @@ import (
 	"time"
 )
 
-// Errors introduced by the HTTP server.
+// Errors used by the HTTP server.
 var (
-	ErrWriteAfterFlush = errors.New("Conn.Write called after Flush")
-	ErrBodyNotAllowed  = errors.New("http: request method or response status code does not allow body")
-	ErrHijacked        = errors.New("Conn has been hijacked")
-	ErrContentLength   = errors.New("Conn.Write wrote more than the declared Content-Length")
+	// ErrBodyNotAllowed is returned by ResponseWriter.Write calls
+	// when the HTTP method or response code does not permit a
+	// body.
+	ErrBodyNotAllowed = errors.New("http: request method or response status code does not allow body")
+
+	// ErrHijacked is returned by ResponseWriter.Write calls when
+	// the underlying connection has been hijacked using the
+	// Hijacker interfaced.
+	ErrHijacked = errors.New("http: connection has been hijacked")
+
+	// ErrContentLength is returned by ResponseWriter.Write calls
+	// when a Handler set a Content-Length response header with a
+	// declared size and then attempted to write more bytes than
+	// declared.
+	ErrContentLength = errors.New("http: wrote more than the declared Content-Length")
+
+	// Deprecated: ErrWriteAfterFlush is no longer used.
+	ErrWriteAfterFlush = errors.New("unused")
 )
 
 // A Handler responds to an HTTP request.
@@ -77,10 +91,24 @@ type ResponseWriter interface {
 	Header() Header
 
 	// Write writes the data to the connection as part of an HTTP reply.
-	// If WriteHeader has not yet been called, Write calls WriteHeader(http.StatusOK)
-	// before writing the data. If the Header does not contain a
-	// Content-Type line, Write adds a Content-Type set to the result of passing
-	// the initial 512 bytes of written data to DetectContentType.
+	//
+	// If WriteHeader has not yet been called, Write calls
+	// WriteHeader(http.StatusOK) before writing the data. If the Header
+	// does not contain a Content-Type line, Write adds a Content-Type set
+	// to the result of passing the initial 512 bytes of written data to
+	// DetectContentType.
+	//
+	// Depending on the HTTP protocol version and the client, calling
+	// Write or WriteHeader may prevent future reads on the
+	// Request.Body. For HTTP/1.x requests, handlers should read any
+	// needed request body data before writing the response. Once the
+	// headers have been flushed (due to either an explicit Flusher.Flush
+	// call or writing enough data to trigger a flush), the request body
+	// may be unavailable. For HTTP/2 requests, the Go HTTP server permits
+	// handlers to continue to read the request body while concurrently
+	// writing the response. However, such behavior may not be supported
+	// by all HTTP/2 clients. Handlers should read before writing if
+	// possible to maximize compatibility.
 	Write([]byte) (int, error)
 
 	// WriteHeader sends an HTTP response header with status code.
@@ -162,6 +190,12 @@ var (
 	// started the handler. The associated value will be of
 	// type *Server.
 	ServerContextKey = &contextKey{"http-server"}
+
+	// LocalAddrContextKey is a context key. It can be used in
+	// HTTP handlers with context.WithValue to access the address
+	// the local address the connection arrived on.
+	// The associated value will be of type net.Addr.
+	LocalAddrContextKey = &contextKey{"local-addr"}
 )
 
 // A conn represents the server side of an HTTP connection.
@@ -974,7 +1008,7 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	// Check for a explicit (and valid) Content-Length header.
 	hasCL := w.contentLength != -1
 
-	if w.wants10KeepAlive && (isHEAD || hasCL) {
+	if w.wants10KeepAlive && (isHEAD || hasCL || !bodyAllowedForStatus(w.status)) {
 		_, connectionHeaderSet := header["Connection"]
 		if !connectionHeaderSet {
 			setHeader.connection = "keep-alive"
@@ -1007,6 +1041,9 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	// replying, if the handler hasn't already done so. But we
 	// don't want to do an unbounded amount of reading here for
 	// DoS reasons, so we only try up to a threshold.
+	// TODO(bradfitz): where does RFC 2616 say that? See Issue 15527
+	// about HTTP/1.x Handlers concurrently reading and writing, like
+	// HTTP/2 handlers can do. Maybe this code should be relaxed?
 	if w.req.ContentLength != 0 && !w.closeAfterReply {
 		var discard, tooBig bool
 
@@ -2031,12 +2068,18 @@ func Serve(l net.Listener, handler Handler) error {
 // A Server defines parameters for running an HTTP server.
 // The zero value for Server is a valid configuration.
 type Server struct {
-	Addr           string        // TCP address to listen on, ":http" if empty
-	Handler        Handler       // handler to invoke, http.DefaultServeMux if nil
-	ReadTimeout    time.Duration // maximum duration before timing out read of the request
-	WriteTimeout   time.Duration // maximum duration before timing out write of the response
-	MaxHeaderBytes int           // maximum size of request headers, DefaultMaxHeaderBytes if 0
-	TLSConfig      *tls.Config   // optional TLS config, used by ListenAndServeTLS
+	Addr         string        // TCP address to listen on, ":http" if empty
+	Handler      Handler       // handler to invoke, http.DefaultServeMux if nil
+	ReadTimeout  time.Duration // maximum duration before timing out read of the request
+	WriteTimeout time.Duration // maximum duration before timing out write of the response
+	TLSConfig    *tls.Config   // optional TLS config, used by ListenAndServeTLS
+
+	// MaxHeaderBytes controls the maximum number of bytes the
+	// server will read parsing the request header's keys and
+	// values, including the request line. It does not limit the
+	// size of the request body.
+	// If zero, DefaultMaxHeaderBytes is used.
+	MaxHeaderBytes int
 
 	// TLSNextProto optionally specifies a function to take over
 	// ownership of the provided TLS connection when an NPN
@@ -2169,6 +2212,7 @@ func (srv *Server) Serve(l net.Listener) error {
 	// use cases yet.
 	baseCtx := context.Background()
 	ctx := context.WithValue(baseCtx, ServerContextKey, srv)
+	ctx = context.WithValue(ctx, LocalAddrContextKey, l.Addr())
 	for {
 		rw, e := l.Accept()
 		if e != nil {

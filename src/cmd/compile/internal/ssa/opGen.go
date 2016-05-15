@@ -47,7 +47,6 @@ const (
 	BlockRetJmp
 	BlockExit
 	BlockFirst
-	BlockDead
 )
 
 var blockString = [...]string{
@@ -88,7 +87,6 @@ var blockString = [...]string{
 	BlockRetJmp: "RetJmp",
 	BlockExit:   "Exit",
 	BlockFirst:  "First",
-	BlockDead:   "Dead",
 }
 
 func (k BlockKind) String() string { return blockString[k] }
@@ -120,28 +118,16 @@ const (
 	OpAMD64MOVSDstoreidx8
 	OpAMD64ADDQ
 	OpAMD64ADDL
-	OpAMD64ADDW
-	OpAMD64ADDB
 	OpAMD64ADDQconst
 	OpAMD64ADDLconst
-	OpAMD64ADDWconst
-	OpAMD64ADDBconst
 	OpAMD64SUBQ
 	OpAMD64SUBL
-	OpAMD64SUBW
-	OpAMD64SUBB
 	OpAMD64SUBQconst
 	OpAMD64SUBLconst
-	OpAMD64SUBWconst
-	OpAMD64SUBBconst
 	OpAMD64MULQ
 	OpAMD64MULL
-	OpAMD64MULW
-	OpAMD64MULB
 	OpAMD64MULQconst
 	OpAMD64MULLconst
-	OpAMD64MULWconst
-	OpAMD64MULBconst
 	OpAMD64HMULQ
 	OpAMD64HMULL
 	OpAMD64HMULW
@@ -165,28 +151,16 @@ const (
 	OpAMD64MODWU
 	OpAMD64ANDQ
 	OpAMD64ANDL
-	OpAMD64ANDW
-	OpAMD64ANDB
 	OpAMD64ANDQconst
 	OpAMD64ANDLconst
-	OpAMD64ANDWconst
-	OpAMD64ANDBconst
 	OpAMD64ORQ
 	OpAMD64ORL
-	OpAMD64ORW
-	OpAMD64ORB
 	OpAMD64ORQconst
 	OpAMD64ORLconst
-	OpAMD64ORWconst
-	OpAMD64ORBconst
 	OpAMD64XORQ
 	OpAMD64XORL
-	OpAMD64XORW
-	OpAMD64XORB
 	OpAMD64XORQconst
 	OpAMD64XORLconst
-	OpAMD64XORWconst
-	OpAMD64XORBconst
 	OpAMD64CMPQ
 	OpAMD64CMPL
 	OpAMD64CMPW
@@ -207,12 +181,8 @@ const (
 	OpAMD64TESTBconst
 	OpAMD64SHLQ
 	OpAMD64SHLL
-	OpAMD64SHLW
-	OpAMD64SHLB
 	OpAMD64SHLQconst
 	OpAMD64SHLLconst
-	OpAMD64SHLWconst
-	OpAMD64SHLBconst
 	OpAMD64SHRQ
 	OpAMD64SHRL
 	OpAMD64SHRW
@@ -235,12 +205,8 @@ const (
 	OpAMD64ROLBconst
 	OpAMD64NEGQ
 	OpAMD64NEGL
-	OpAMD64NEGW
-	OpAMD64NEGB
 	OpAMD64NOTQ
 	OpAMD64NOTL
-	OpAMD64NOTW
-	OpAMD64NOTB
 	OpAMD64BSFQ
 	OpAMD64BSFL
 	OpAMD64BSFW
@@ -280,8 +246,6 @@ const (
 	OpAMD64MOVWQZX
 	OpAMD64MOVLQSX
 	OpAMD64MOVLQZX
-	OpAMD64MOVBconst
-	OpAMD64MOVWconst
 	OpAMD64MOVLconst
 	OpAMD64MOVQconst
 	OpAMD64CVTTSD2SL
@@ -537,6 +501,10 @@ const (
 	OpGeq64U
 	OpGeq32F
 	OpGeq64F
+	OpAndB
+	OpOrB
+	OpEqB
+	OpNeqB
 	OpNot
 	OpNeg8
 	OpNeg16
@@ -1003,38 +971,6 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:        "ADDW",
-		argLen:      2,
-		commutative: true,
-		asm:         x86.AADDL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{0, 65535}, // AX CX DX BX SP BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:        "ADDB",
-		argLen:      2,
-		commutative: true,
-		asm:         x86.AADDL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{0, 65535}, // AX CX DX BX SP BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
 		name:    "ADDQconst",
 		auxType: auxInt64,
 		argLen:  1,
@@ -1052,36 +988,6 @@ var opcodeTable = [...]opInfo{
 	{
 		name:    "ADDLconst",
 		auxType: auxInt32,
-		argLen:  1,
-		asm:     x86.AADDL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65535}, // AX CX DX BX SP BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:    "ADDWconst",
-		auxType: auxInt16,
-		argLen:  1,
-		asm:     x86.AADDL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65535}, // AX CX DX BX SP BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:    "ADDBconst",
-		auxType: auxInt8,
 		argLen:  1,
 		asm:     x86.AADDL,
 		reg: regInfo{
@@ -1127,38 +1033,6 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:         "SUBW",
-		argLen:       2,
-		resultInArg0: true,
-		asm:          x86.ASUBL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "SUBB",
-		argLen:       2,
-		resultInArg0: true,
-		asm:          x86.ASUBL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
 		name:         "SUBQconst",
 		auxType:      auxInt64,
 		argLen:       1,
@@ -1177,38 +1051,6 @@ var opcodeTable = [...]opInfo{
 	{
 		name:         "SUBLconst",
 		auxType:      auxInt32,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.ASUBL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "SUBWconst",
-		auxType:      auxInt16,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.ASUBL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "SUBBconst",
-		auxType:      auxInt8,
 		argLen:       1,
 		resultInArg0: true,
 		asm:          x86.ASUBL,
@@ -1257,40 +1099,6 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:         "MULW",
-		argLen:       2,
-		commutative:  true,
-		resultInArg0: true,
-		asm:          x86.AIMULW,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "MULB",
-		argLen:       2,
-		commutative:  true,
-		resultInArg0: true,
-		asm:          x86.AIMULW,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
 		name:         "MULQconst",
 		auxType:      auxInt64,
 		argLen:       1,
@@ -1312,38 +1120,6 @@ var opcodeTable = [...]opInfo{
 		argLen:       1,
 		resultInArg0: true,
 		asm:          x86.AIMULL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "MULWconst",
-		auxType:      auxInt16,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.AIMULW,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "MULBconst",
-		auxType:      auxInt8,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.AIMULW,
 		reg: regInfo{
 			inputs: []inputInfo{
 				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
@@ -1705,40 +1481,6 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:         "ANDW",
-		argLen:       2,
-		commutative:  true,
-		resultInArg0: true,
-		asm:          x86.AANDL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "ANDB",
-		argLen:       2,
-		commutative:  true,
-		resultInArg0: true,
-		asm:          x86.AANDL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
 		name:         "ANDQconst",
 		auxType:      auxInt64,
 		argLen:       1,
@@ -1757,38 +1499,6 @@ var opcodeTable = [...]opInfo{
 	{
 		name:         "ANDLconst",
 		auxType:      auxInt32,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.AANDL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "ANDWconst",
-		auxType:      auxInt16,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.AANDL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "ANDBconst",
-		auxType:      auxInt8,
 		argLen:       1,
 		resultInArg0: true,
 		asm:          x86.AANDL,
@@ -1837,40 +1547,6 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:         "ORW",
-		argLen:       2,
-		commutative:  true,
-		resultInArg0: true,
-		asm:          x86.AORL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "ORB",
-		argLen:       2,
-		commutative:  true,
-		resultInArg0: true,
-		asm:          x86.AORL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
 		name:         "ORQconst",
 		auxType:      auxInt64,
 		argLen:       1,
@@ -1889,38 +1565,6 @@ var opcodeTable = [...]opInfo{
 	{
 		name:         "ORLconst",
 		auxType:      auxInt32,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.AORL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "ORWconst",
-		auxType:      auxInt16,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.AORL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "ORBconst",
-		auxType:      auxInt8,
 		argLen:       1,
 		resultInArg0: true,
 		asm:          x86.AORL,
@@ -1969,40 +1613,6 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:         "XORW",
-		argLen:       2,
-		commutative:  true,
-		resultInArg0: true,
-		asm:          x86.AXORL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "XORB",
-		argLen:       2,
-		commutative:  true,
-		resultInArg0: true,
-		asm:          x86.AXORL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-				{1, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
 		name:         "XORQconst",
 		auxType:      auxInt64,
 		argLen:       1,
@@ -2021,38 +1631,6 @@ var opcodeTable = [...]opInfo{
 	{
 		name:         "XORLconst",
 		auxType:      auxInt32,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.AXORL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "XORWconst",
-		auxType:      auxInt16,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.AXORL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "XORBconst",
-		auxType:      auxInt8,
 		argLen:       1,
 		resultInArg0: true,
 		asm:          x86.AXORL,
@@ -2351,38 +1929,6 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:         "SHLW",
-		argLen:       2,
-		resultInArg0: true,
-		asm:          x86.ASHLL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{1, 2},     // CX
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "SHLB",
-		argLen:       2,
-		resultInArg0: true,
-		asm:          x86.ASHLL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{1, 2},     // CX
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
 		name:         "SHLQconst",
 		auxType:      auxInt64,
 		argLen:       1,
@@ -2401,38 +1947,6 @@ var opcodeTable = [...]opInfo{
 	{
 		name:         "SHLLconst",
 		auxType:      auxInt32,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.ASHLL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "SHLWconst",
-		auxType:      auxInt16,
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.ASHLL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "SHLBconst",
-		auxType:      auxInt8,
 		argLen:       1,
 		resultInArg0: true,
 		asm:          x86.ASHLL,
@@ -2797,36 +2311,6 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:         "NEGW",
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.ANEGL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "NEGB",
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.ANEGL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
 		name:         "NOTQ",
 		argLen:       1,
 		resultInArg0: true,
@@ -2843,36 +2327,6 @@ var opcodeTable = [...]opInfo{
 	},
 	{
 		name:         "NOTL",
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.ANOTL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "NOTW",
-		argLen:       1,
-		resultInArg0: true,
-		asm:          x86.ANOTL,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-			clobbers: 8589934592, // FLAGS
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:         "NOTB",
 		argLen:       1,
 		resultInArg0: true,
 		asm:          x86.ANOTL,
@@ -3424,30 +2878,6 @@ var opcodeTable = [...]opInfo{
 			inputs: []inputInfo{
 				{0, 65535}, // AX CX DX BX SP BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
 			},
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:              "MOVBconst",
-		auxType:           auxInt8,
-		argLen:            0,
-		rematerializeable: true,
-		asm:               x86.AMOVB,
-		reg: regInfo{
-			outputs: []regMask{
-				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
-			},
-		},
-	},
-	{
-		name:              "MOVWconst",
-		auxType:           auxInt16,
-		argLen:            0,
-		rematerializeable: true,
-		asm:               x86.AMOVW,
-		reg: regInfo{
 			outputs: []regMask{
 				65519, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
 			},
@@ -4203,6 +3633,7 @@ var opcodeTable = [...]opInfo{
 	},
 	{
 		name:              "MOVOconst",
+		auxType:           auxInt128,
 		argLen:            0,
 		rematerializeable: true,
 		reg: regInfo{
@@ -4422,9 +3853,10 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:   "MOVWload",
-		argLen: 2,
-		asm:    arm.AMOVW,
+		name:    "MOVWload",
+		auxType: auxSymOff,
+		argLen:  2,
+		asm:     arm.AMOVW,
 		reg: regInfo{
 			inputs: []inputInfo{
 				{0, 31}, // R0 R1 R2 R3 SP
@@ -4435,9 +3867,10 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:   "MOVWstore",
-		argLen: 3,
-		asm:    arm.AMOVW,
+		name:    "MOVWstore",
+		auxType: auxSymOff,
+		argLen:  3,
+		asm:     arm.AMOVW,
 		reg: regInfo{
 			inputs: []inputInfo{
 				{0, 31}, // R0 R1 R2 R3 SP
@@ -4455,7 +3888,7 @@ var opcodeTable = [...]opInfo{
 	},
 	{
 		name:   "LessThan",
-		argLen: 2,
+		argLen: 1,
 		reg: regInfo{
 			inputs: []inputInfo{
 				{0, 32}, // FLAGS
@@ -5342,6 +4775,26 @@ var opcodeTable = [...]opInfo{
 	},
 	{
 		name:    "Geq64F",
+		argLen:  2,
+		generic: true,
+	},
+	{
+		name:    "AndB",
+		argLen:  2,
+		generic: true,
+	},
+	{
+		name:    "OrB",
+		argLen:  2,
+		generic: true,
+	},
+	{
+		name:    "EqB",
+		argLen:  2,
+		generic: true,
+	},
+	{
+		name:    "NeqB",
 		argLen:  2,
 		generic: true,
 	},

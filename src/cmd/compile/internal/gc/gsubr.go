@@ -8,7 +8,7 @@
 //	Portions Copyright © 2004,2006 Bruce Ellis
 //	Portions Copyright © 2005-2007 C H Forsyth (forsyth@terzarima.net)
 //	Revisions Copyright © 2000-2007 Lucent Technologies Inc. and others
-//	Portions Copyright © 2009 The Go Authors.  All rights reserved.
+//	Portions Copyright © 2009 The Go Authors. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -327,7 +327,7 @@ func Naddr(a *obj.Addr, n *Node) {
 		a := a // copy to let escape into Ctxt.Dconv
 		Debug['h'] = 1
 		Dump("naddr", n)
-		Fatalf("naddr: bad %v %v", Oconv(n.Op, 0), Ctxt.Dconv(a))
+		Fatalf("naddr: bad %v %v", n.Op, Ctxt.Dconv(a))
 
 	case OREGISTER:
 		a.Type = obj.TYPE_REG
@@ -422,7 +422,7 @@ func Naddr(a *obj.Addr, n *Node) {
 		if !n.Left.Type.IsStruct() || n.Left.Type.Field(0).Sym != n.Sym {
 			Debug['h'] = 1
 			Dump("naddr", n)
-			Fatalf("naddr: bad %v %v", Oconv(n.Op, 0), Ctxt.Dconv(a))
+			Fatalf("naddr: bad %v %v", n.Op, Ctxt.Dconv(a))
 		}
 		Naddr(a, n.Left)
 
@@ -430,28 +430,28 @@ func Naddr(a *obj.Addr, n *Node) {
 		if Thearch.LinkArch.Family == sys.I386 {
 			a.Width = 0
 		}
-		switch n.Val().Ctype() {
+		switch u := n.Val().U.(type) {
 		default:
 			Fatalf("naddr: const %v", Tconv(n.Type, FmtLong))
 
-		case CTFLT:
+		case *Mpflt:
 			a.Type = obj.TYPE_FCONST
-			a.Val = n.Val().U.(*Mpflt).Float64()
+			a.Val = u.Float64()
 
-		case CTINT, CTRUNE:
+		case *Mpint:
 			a.Sym = nil
 			a.Type = obj.TYPE_CONST
-			a.Offset = n.Int64()
+			a.Offset = u.Int64()
 
-		case CTSTR:
-			datagostring(n.Val().U.(string), a)
+		case string:
+			datagostring(u, a)
 
-		case CTBOOL:
+		case bool:
 			a.Sym = nil
 			a.Type = obj.TYPE_CONST
-			a.Offset = int64(obj.Bool2int(n.Val().U.(bool)))
+			a.Offset = int64(obj.Bool2int(u))
 
-		case CTNIL:
+		case *NilVal:
 			a.Sym = nil
 			a.Type = obj.TYPE_CONST
 			a.Offset = 0
@@ -465,7 +465,7 @@ func Naddr(a *obj.Addr, n *Node) {
 		}
 		if a.Type != obj.TYPE_MEM {
 			a := a // copy to let escape into Ctxt.Dconv
-			Fatalf("naddr: OADDR %v (from %v)", Ctxt.Dconv(a), Oconv(n.Left.Op, 0))
+			Fatalf("naddr: OADDR %v (from %v)", Ctxt.Dconv(a), n.Left.Op)
 		}
 		a.Type = obj.TYPE_ADDR
 

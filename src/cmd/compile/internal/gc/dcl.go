@@ -551,7 +551,7 @@ func funchdr(n *Node) {
 
 func funcargs(nt *Node) {
 	if nt.Op != OTFUNC {
-		Fatalf("funcargs %v", Oconv(nt.Op, 0))
+		Fatalf("funcargs %v", nt.Op)
 	}
 
 	// re-start the variable generation number
@@ -565,7 +565,7 @@ func funcargs(nt *Node) {
 	if nt.Left != nil {
 		n := nt.Left
 		if n.Op != ODCLFIELD {
-			Fatalf("funcargs receiver %v", Oconv(n.Op, 0))
+			Fatalf("funcargs receiver %v", n.Op)
 		}
 		if n.Left != nil {
 			n.Left.Op = ONAME
@@ -580,7 +580,7 @@ func funcargs(nt *Node) {
 
 	for _, n := range nt.List.Slice() {
 		if n.Op != ODCLFIELD {
-			Fatalf("funcargs in %v", Oconv(n.Op, 0))
+			Fatalf("funcargs in %v", n.Op)
 		}
 		if n.Left != nil {
 			n.Left.Op = ONAME
@@ -598,7 +598,7 @@ func funcargs(nt *Node) {
 	var i int = 0
 	for _, n := range nt.Rlist.Slice() {
 		if n.Op != ODCLFIELD {
-			Fatalf("funcargs out %v", Oconv(n.Op, 0))
+			Fatalf("funcargs out %v", n.Op)
 		}
 
 		if n.Left == nil {
@@ -755,17 +755,13 @@ func structfield(n *Node) *Field {
 		f.Broke = true
 	}
 
-	switch n.Val().Ctype() {
-	case CTSTR:
-		f.Note = new(string)
-		*f.Note = n.Val().U.(string)
-
+	switch u := n.Val().U.(type) {
+	case string:
+		f.Note = u
 	default:
 		Yyerror("field annotation must be string")
-		fallthrough
-
-	case CTxxx:
-		f.Note = nil
+	case nil:
+		// noop
 	}
 
 	if n.Left != nil && n.Left.Op == ONAME {
@@ -1252,7 +1248,7 @@ func addmethod(msym *Sym, t *Type, tpkg *Pkg, local, nointerface bool) {
 
 	// during import unexported method names should be in the type's package
 	if tpkg != nil && f.Sym != nil && !exportname(f.Sym.Name) && f.Sym.Pkg != tpkg {
-		Fatalf("imported method name %v in wrong package %s\n", Sconv(f.Sym, FmtSign), tpkg.Name)
+		Fatalf("imported method name %v in wrong package %s\n", sconv(f.Sym, FmtSign), tpkg.Name)
 	}
 
 	pa.Methods().Append(f)

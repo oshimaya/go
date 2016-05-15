@@ -8,7 +8,7 @@
 //	Portions Copyright © 2004,2006 Bruce Ellis
 //	Portions Copyright © 2005-2007 C H Forsyth (forsyth@terzarima.net)
 //	Revisions Copyright © 2000-2007 Lucent Technologies Inc. and others
-//	Portions Copyright © 2009 The Go Authors.  All rights reserved.
+//	Portions Copyright © 2009 The Go Authors. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -329,6 +329,36 @@ func machoreloc1(r *ld.Reloc, sectoff int64) int {
 	var v uint32
 
 	rs := r.Xsym
+
+	if r.Type == obj.R_PCREL {
+		if rs.Type == obj.SHOSTOBJ {
+			ld.Diag("pc-relative relocation of external symbol is not supported")
+			return -1
+		}
+		if r.Siz != 4 {
+			return -1
+		}
+
+		// emit a pair of "scattered" relocations that
+		// resolve to the difference of section addresses of
+		// the symbol and the instruction
+		// this value is added to the field being relocated
+		o1 := uint32(sectoff)
+		o1 |= 1 << 31 // scattered bit
+		o1 |= ld.MACHO_ARM_RELOC_SECTDIFF << 24
+		o1 |= 2 << 28 // size = 4
+
+		o2 := uint32(0)
+		o2 |= 1 << 31 // scattered bit
+		o2 |= ld.MACHO_ARM_RELOC_PAIR << 24
+		o2 |= 2 << 28 // size = 4
+
+		ld.Thearch.Lput(o1)
+		ld.Thearch.Lput(uint32(ld.Symaddr(rs)))
+		ld.Thearch.Lput(o2)
+		ld.Thearch.Lput(uint32(ld.Ctxt.Cursym.Value + int64(r.Off)))
+		return 0
+	}
 
 	if rs.Type == obj.SHOSTOBJ || r.Type == obj.R_CALLARM {
 		if rs.Dynid < 0 {

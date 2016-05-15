@@ -8,7 +8,6 @@ package pe
 import (
 	"debug/dwarf"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,8 +18,9 @@ type File struct {
 	FileHeader
 	OptionalHeader interface{} // of type *OptionalHeader32 or *OptionalHeader64
 	Sections       []*Section
-	Symbols        []*Symbol
-	StringTable    StringTable
+	Symbols        []*Symbol    // COFF symbols with auxiliary symbol records removed
+	_COFFSymbols   []COFFSymbol // all COFF symbols (including auxiliary symbol records)
+	_StringTable   _StringTable
 
 	closer io.Closer
 }
@@ -57,6 +57,8 @@ var (
 	sizeofOptionalHeader64 = uint16(binary.Size(OptionalHeader64{}))
 )
 
+// TODO(brainman): add Load function, as a replacement for NewFile, that does not call removeAuxSymbols (for performance)
+
 // NewFile creates a new File for accessing a PE binary in an underlying reader.
 func NewFile(r io.ReaderAt) (*File, error) {
 	f := new(File)
@@ -72,7 +74,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		var sign [4]byte
 		r.ReadAt(sign[:], signoff)
 		if !(sign[0] == 'P' && sign[1] == 'E' && sign[2] == 0 && sign[3] == 0) {
-			return nil, errors.New("Invalid PE File Format.")
+			return nil, fmt.Errorf("Invalid PE COFF file signature of %v.", sign)
 		}
 		base = signoff + 4
 	} else {
@@ -82,60 +84,28 @@ func NewFile(r io.ReaderAt) (*File, error) {
 	if err := binary.Read(sr, binary.LittleEndian, &f.FileHeader); err != nil {
 		return nil, err
 	}
-	if f.FileHeader.Machine != IMAGE_FILE_MACHINE_UNKNOWN && f.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 && f.FileHeader.Machine != IMAGE_FILE_MACHINE_I386 {
-		return nil, errors.New("Invalid PE File Format.")
+	switch f.FileHeader.Machine {
+	case IMAGE_FILE_MACHINE_UNKNOWN, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386:
+	default:
+		return nil, fmt.Errorf("Unrecognised COFF file header machine value of 0x%x.", f.FileHeader.Machine)
 	}
 
 	var err error
 
 	// Read string table.
-	f.StringTable, err = readStringTable(&f.FileHeader, sr)
+	f._StringTable, err = readStringTable(&f.FileHeader, sr)
 	if err != nil {
 		return nil, err
 	}
 
-	var ss []byte
-	if f.FileHeader.NumberOfSymbols > 0 {
-		// Get COFF string table, which is located at the end of the COFF symbol table.
-		sr.Seek(int64(f.FileHeader.PointerToSymbolTable+COFFSymbolSize*f.FileHeader.NumberOfSymbols), io.SeekStart)
-		var l uint32
-		if err := binary.Read(sr, binary.LittleEndian, &l); err != nil {
-			return nil, err
-		}
-		ss = make([]byte, l)
-		if _, err := r.ReadAt(ss, int64(f.FileHeader.PointerToSymbolTable+COFFSymbolSize*f.FileHeader.NumberOfSymbols)); err != nil {
-			return nil, err
-		}
-
-		// Process COFF symbol table.
-		sr.Seek(int64(f.FileHeader.PointerToSymbolTable), io.SeekStart)
-		aux := uint8(0)
-		for i := 0; i < int(f.FileHeader.NumberOfSymbols); i++ {
-			cs := new(COFFSymbol)
-			if err := binary.Read(sr, binary.LittleEndian, cs); err != nil {
-				return nil, err
-			}
-			if aux > 0 {
-				aux--
-				continue
-			}
-			var name string
-			if cs.Name[0] == 0 && cs.Name[1] == 0 && cs.Name[2] == 0 && cs.Name[3] == 0 {
-				si := int(binary.LittleEndian.Uint32(cs.Name[4:]))
-				name, _ = getString(ss, si)
-			} else {
-				name = cstring(cs.Name[:])
-			}
-			aux = cs.NumberOfAuxSymbols
-			s := &Symbol{
-				Name:          name,
-				Value:         cs.Value,
-				SectionNumber: cs.SectionNumber,
-				Type:          cs.Type,
-				StorageClass:  cs.StorageClass,
-			}
-			f.Symbols = append(f.Symbols, s)
-		}
+	// Read symbol table.
+	f._COFFSymbols, err = readCOFFSymbols(&f.FileHeader, sr)
+	if err != nil {
+		return nil, err
+	}
+	f.Symbols, err = removeAuxSymbols(f._COFFSymbols, f._StringTable)
+	if err != nil {
+		return nil, err
 	}
 
 	// Read optional header.
@@ -171,7 +141,7 @@ func NewFile(r io.ReaderAt) (*File, error) {
 		if err := binary.Read(sr, binary.LittleEndian, sh); err != nil {
 			return nil, err
 		}
-		name, err := sh.fullName(f.StringTable)
+		name, err := sh.fullName(f._StringTable)
 		if err != nil {
 			return nil, err
 		}
@@ -188,19 +158,34 @@ func NewFile(r io.ReaderAt) (*File, error) {
 			NumberOfLineNumbers:  sh.NumberOfLineNumbers,
 			Characteristics:      sh.Characteristics,
 		}
-		s.sr = io.NewSectionReader(r, int64(s.SectionHeader.Offset), int64(s.SectionHeader.Size))
+		r2 := r
+		if sh.PointerToRawData == 0 { // .bss must have all 0s
+			r2 = zeroReaderAt{}
+		}
+		s.sr = io.NewSectionReader(r2, int64(s.SectionHeader.Offset), int64(s.SectionHeader.Size))
 		s.ReaderAt = s.sr
 		f.Sections[i] = s
 	}
 	for i := range f.Sections {
 		var err error
-		f.Sections[i].Relocs, err = readRelocs(&f.Sections[i].SectionHeader, sr)
+		f.Sections[i]._Relocs, err = readRelocs(&f.Sections[i].SectionHeader, sr)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	return f, nil
+}
+
+// zeroReaderAt is ReaderAt that reads 0s.
+type zeroReaderAt struct{}
+
+// ReadAt writes len(p) 0s into p.
+func (w zeroReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
 }
 
 // getString extracts a string from symbol string table.

@@ -178,10 +178,11 @@ func Main() {
 	flag.StringVar(&flag_installsuffix, "installsuffix", "", "set pkg directory `suffix`")
 	obj.Flagcount("j", "debug runtime-initialized variables", &Debug['j'])
 	obj.Flagcount("l", "disable inlining", &Debug['l'])
+	flag.StringVar(&linkobj, "linkobj", "", "write linker-specific object to `file`")
 	obj.Flagcount("live", "debug liveness analysis", &debuglive)
 	obj.Flagcount("m", "print optimization decisions", &Debug['m'])
 	flag.BoolVar(&flag_msan, "msan", false, "build code compatible with C/C++ memory sanitizer")
-	flag.BoolVar(&newexport, "newexport", false, "use new export format") // TODO(gri) remove eventually (issue 13241)
+	flag.BoolVar(&newexport, "newexport", true, "use new export format") // TODO(gri) remove eventually (issue 15323)
 	flag.BoolVar(&nolocalimports, "nolocalimports", false, "reject local (relative) imports")
 	flag.StringVar(&outfile, "o", "", "write output to `file`")
 	flag.StringVar(&myimportpath, "p", "", "set expected package import `path`")
@@ -412,7 +413,7 @@ func Main() {
 		// Typecheck imported function bodies if debug['l'] > 1,
 		// otherwise lazily when used or re-exported.
 		for _, n := range importlist {
-			if len(n.Func.Inl.Slice()) != 0 {
+			if n.Func.Inl.Len() != 0 {
 				saveerrors()
 				typecheckinl(n)
 			}
@@ -772,7 +773,7 @@ func importfile(f *Val, indent []byte) {
 
 	if p != "empty archive" {
 		if !strings.HasPrefix(p, "go object ") {
-			Yyerror("import %s: not a go object file", file)
+			Yyerror("import %s: not a go object file: %s", file, p)
 			errorexit()
 		}
 

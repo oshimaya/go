@@ -334,6 +334,11 @@ func buildModeInit() {
 			}
 			return p
 		}
+		switch platform {
+		case "darwin/arm", "darwin/arm64":
+			codegenArg = "-shared"
+		default:
+		}
 		exeSuffix = ".a"
 		ldBuildmode = "c-archive"
 	case "c-shared":
@@ -356,6 +361,9 @@ func buildModeInit() {
 		case "android/arm", "android/arm64", "android/amd64", "android/386":
 			codegenArg = "-shared"
 			ldBuildmode = "pie"
+		case "darwin/arm", "darwin/arm64":
+			codegenArg = "-shared"
+			fallthrough
 		default:
 			ldBuildmode = "exe"
 		}
@@ -465,6 +473,7 @@ func runBuild(cmd *Command, args []string) {
 		p := pkgs[0]
 		p.target = *buildO
 		p.Stale = true // must build - not up to date
+		p.StaleReason = "build -o flag in use"
 		a := b.action(modeInstall, depMode, p)
 		b.do(a)
 		return
@@ -663,6 +672,12 @@ var (
 func init() {
 	goarch = buildContext.GOARCH
 	goos = buildContext.GOOS
+
+	if _, ok := osArchSupportsCgo[goos+"/"+goarch]; !ok {
+		fmt.Fprintf(os.Stderr, "cmd/go: unsupported GOOS/GOARCH pair %s/%s\n", goos, goarch)
+		os.Exit(2)
+	}
+
 	if goos == "windows" {
 		exeSuffix = ".exe"
 	}
@@ -836,6 +851,7 @@ func goFilesPackage(gofiles []string) *Package {
 
 	pkg.Target = pkg.target
 	pkg.Stale = true
+	pkg.StaleReason = "files named on command line"
 
 	computeStale(pkg)
 	return pkg
@@ -1316,6 +1332,13 @@ func (b *builder) do(root *action) {
 
 // build is the action for building a single package or command.
 func (b *builder) build(a *action) (err error) {
+	// Return an error for binary-only package.
+	// We only reach this if isStale believes the binary form is
+	// either not present or not usable.
+	if a.p.BinaryOnly {
+		return fmt.Errorf("missing or invalid package binary for binary-only package %s", a.p.ImportPath)
+	}
+
 	// Return an error if the package has CXX files but it's not using
 	// cgo nor SWIG, since the CXX files can only be processed by cgo
 	// and SWIG.
@@ -1333,6 +1356,7 @@ func (b *builder) build(a *action) (err error) {
 		return fmt.Errorf("can't build package %s because it contains Fortran files (%s) but it's not using cgo nor SWIG",
 			a.p.ImportPath, strings.Join(a.p.FFiles, ","))
 	}
+
 	defer func() {
 		if err != nil && err != errPrintedOutput {
 			err = fmt.Errorf("go build %s: %v", a.p.ImportPath, err)
@@ -3082,6 +3106,8 @@ func (b *builder) gccArchArgs() []string {
 		return []string{"-marm"} // not thumb
 	case "s390x":
 		return []string{"-m64", "-march=z196"}
+	case "mips64", "mips64le":
+		return []string{"-mabi=64"}
 	}
 	return nil
 }

@@ -24,14 +24,19 @@ type importer struct {
 	buf []byte // reused for reading strings
 
 	// object lists, in order of deserialization
-	strList  []string
-	pkgList  []*Pkg
-	typList  []*Type
-	funcList []*Node // nil entry means already declared
+	strList       []string
+	pkgList       []*Pkg
+	typList       []*Type
+	funcList      []*Node // nil entry means already declared
+	trackAllTypes bool
+
+	// for delayed type verification
+	cmpList []struct{ pt, t *Type }
 
 	// position encoding
-	prevFile string
-	prevLine int
+	posInfoFormat bool
+	prevFile      string
+	prevLine      int
 
 	// debugging support
 	debugFormat bool
@@ -54,6 +59,10 @@ func Import(in *bufio.Reader) {
 	default:
 		Fatalf("importer: invalid encoding format in export data: got %q; want 'c' or 'd'", format)
 	}
+
+	p.trackAllTypes = p.rawByte() == 'a'
+
+	p.posInfoFormat = p.bool()
 
 	// --- generic export data ---
 
@@ -142,7 +151,16 @@ func Import(in *bufio.Reader) {
 		if f := p.funcList[i]; f != nil {
 			// function not yet imported - read body and set it
 			funchdr(f)
-			f.Func.Inl.Set(p.stmtList())
+			body := p.stmtList()
+			if body == nil {
+				// Make sure empty body is not interpreted as
+				// no inlineable body (see also parser.fnbody)
+				// (not doing so can cause significant performance
+				// degradation due to unnecessary calls to empty
+				// functions).
+				body = []*Node{Nod(OEMPTY, nil, nil)}
+			}
+			f.Func.Inl.Set(body)
 			funcbody(f)
 		} else {
 			// function already imported - read body but discard declarations
@@ -163,12 +181,27 @@ func Import(in *bufio.Reader) {
 		Fatalf("importer: unexpected context %d", dclcontext)
 	}
 
+	p.verifyTypes()
+
 	// --- end of export data ---
 
 	typecheckok = tcok
 	resumecheckwidth()
 
 	testdclstack() // debugging only
+}
+
+func (p *importer) verifyTypes() {
+	for _, pair := range p.cmpList {
+		pt := pair.pt
+		t := pair.t
+		if !Eqtype(pt.Orig, t) {
+			// TODO(gri) Is this a possible regular error (stale files)
+			// or can this only happen if export/import is flawed?
+			// (if the latter, change to Fatalf here)
+			Yyerror("inconsistent definition for type %v during import\n\t%v (in %q)\n\t%v (in %q)", pt.Sym, Tconv(pt, FmtLong), pt.Sym.Importdef.Path, Tconv(t, FmtLong), importpkg.Path)
+		}
+	}
 }
 
 func (p *importer) pkg() *Pkg {
@@ -189,18 +222,18 @@ func (p *importer) pkg() *Pkg {
 
 	// we should never see an empty package name
 	if name == "" {
-		Fatalf("importer: empty package name in import")
+		Fatalf("importer: empty package name for path %q", path)
 	}
 
 	// we should never see a bad import path
 	if isbadimport(path) {
-		Fatalf("importer: bad path in import: %q", path)
+		Fatalf("importer: bad package path %q for package %s", path, name)
 	}
 
 	// an empty path denotes the package we are currently importing;
 	// it must be the first package we see
 	if (path == "") != (len(p.pkgList) == 0) {
-		panic(fmt.Sprintf("package path %q for pkg index %d", path, len(p.pkgList)))
+		Fatalf("importer: package path %q for pkg index %d", path, len(p.pkgList))
 	}
 
 	pkg := importpkg
@@ -210,7 +243,7 @@ func (p *importer) pkg() *Pkg {
 	if pkg.Name == "" {
 		pkg.Name = name
 	} else if pkg.Name != name {
-		Fatalf("importer: conflicting names %s and %s for package %q", pkg.Name, name, path)
+		Fatalf("importer: conflicting package names %s and %s for path %q", pkg.Name, name, path)
 	}
 	p.pkgList = append(p.pkgList, pkg)
 
@@ -268,7 +301,7 @@ func (p *importer) obj(tag int) {
 
 		if Debug['E'] > 0 {
 			fmt.Printf("import [%q] func %v \n", importpkg.Path, n)
-			if Debug['m'] > 2 && len(n.Func.Inl.Slice()) != 0 {
+			if Debug['m'] > 2 && n.Func.Inl.Len() != 0 {
 				fmt.Printf("inl body: %v\n", n.Func.Inl)
 			}
 		}
@@ -279,15 +312,20 @@ func (p *importer) obj(tag int) {
 }
 
 func (p *importer) pos() {
+	if !p.posInfoFormat {
+		return
+	}
+
 	file := p.prevFile
 	line := p.prevLine
-
 	if delta := p.int(); delta != 0 {
+		// line changed
 		line += delta
-	} else {
-		file = p.string()
-		line = p.int()
+	} else if n := p.int(); n >= 0 {
+		// file changed
+		file = p.prevFile[:n] + p.string()
 		p.prevFile = file
+		line = p.int()
 	}
 	p.prevLine = line
 
@@ -296,8 +334,42 @@ func (p *importer) pos() {
 
 func (p *importer) newtyp(etype EType) *Type {
 	t := typ(etype)
-	p.typList = append(p.typList, t)
+	if p.trackAllTypes {
+		p.typList = append(p.typList, t)
+	}
 	return t
+}
+
+// This is like the function importtype but it delays the
+// type identity check for types that have been seen already.
+// importer.importtype and importtype and (export.go) need to
+// remain in sync.
+func (p *importer) importtype(pt, t *Type) {
+	// override declaration in unsafe.go for Pointer.
+	// there is no way in Go code to define unsafe.Pointer
+	// so we have to supply it.
+	if incannedimport != 0 && importpkg.Name == "unsafe" && pt.Nod.Sym.Name == "Pointer" {
+		t = Types[TUNSAFEPTR]
+	}
+
+	if pt.Etype == TFORW {
+		n := pt.Nod
+		copytype(pt.Nod, t)
+		pt.Nod = n // unzero nod
+		pt.Sym.Importdef = importpkg
+		pt.Sym.Lastlineno = lineno
+		declare(n, PEXTERN)
+		checkwidth(pt)
+	} else {
+		// pt.Orig and t must be identical. Since t may not be
+		// fully set up yet, collect the types and verify identity
+		// later.
+		p.cmpList = append(p.cmpList, struct{ pt, t *Type }{pt, t})
+	}
+
+	if Debug['E'] != 0 {
+		fmt.Printf("import type %v %v\n", pt, Tconv(t, FmtLong))
+	}
 }
 
 func (p *importer) typ() *Type {
@@ -322,7 +394,13 @@ func (p *importer) typ() *Type {
 		// read underlying type
 		// parser.go:hidden_type
 		t0 := p.typ()
-		importtype(t, t0) // parser.go:hidden_import
+		if p.trackAllTypes {
+			// If we track all types, we cannot check equality of previously
+			// imported types until later. Use customized version of importtype.
+			p.importtype(t, t0)
+		} else {
+			importtype(t, t0)
+		}
 
 		// interfaces don't have associated methods
 		if t0.IsInterface() {
@@ -361,7 +439,7 @@ func (p *importer) typ() *Type {
 
 			if Debug['E'] > 0 {
 				fmt.Printf("import [%q] meth %v \n", importpkg.Path, n)
-				if Debug['m'] > 2 && len(n.Func.Inl.Slice()) != 0 {
+				if Debug['m'] > 2 && n.Func.Inl.Len() != 0 {
 					fmt.Printf("inl body: %v\n", n.Func.Inl)
 				}
 			}
@@ -450,7 +528,7 @@ func (p *importer) field() *Node {
 	p.pos()
 	sym := p.fieldName()
 	typ := p.typ()
-	note := p.note()
+	note := p.string()
 
 	var n *Node
 	if sym.Name != "" {
@@ -468,16 +546,9 @@ func (p *importer) field() *Node {
 		n = embedded(s, pkg)
 		n.Right = typenod(typ)
 	}
-	n.SetVal(note)
+	n.SetVal(Val{U: note})
 
 	return n
-}
-
-func (p *importer) note() (v Val) {
-	if s := p.string(); s != "" {
-		v.U = s
-	}
-	return
 }
 
 // parser.go:hidden_interfacedcl_list
@@ -508,7 +579,7 @@ func (p *importer) fieldName() *Sym {
 		// During imports, unqualified non-exported identifiers are from builtinpkg
 		// (see parser.go:sym). The binary exporter only exports blank as a non-exported
 		// identifier without qualification.
-		pkg = localpkg
+		pkg = builtinpkg
 	} else if name == "?" || name != "" && !exportname(name) {
 		if name == "?" {
 			name = ""
@@ -559,13 +630,16 @@ func (p *importer) param(named bool) *Node {
 		}
 		// TODO(gri) Supply function/method package rather than
 		// encoding the package for each parameter repeatedly.
-		pkg := p.pkg()
+		pkg := localpkg
+		if name != "_" {
+			pkg = p.pkg()
+		}
 		n.Left = newname(pkg.Lookup(name))
 	}
 
 	// TODO(gri) This is compiler-specific (escape info).
 	// Move into compiler-specific section eventually?
-	n.SetVal(p.note())
+	n.SetVal(Val{U: p.string()})
 
 	return n
 }
@@ -725,15 +799,10 @@ func (p *importer) node() *Node {
 		return n
 
 	case ONAME:
-		if p.bool() {
-			// "_"
-			// TODO(gri) avoid repeated "_" lookup
-			return mkname(Pkglookup("_", localpkg))
-		}
-		return NodSym(OXDOT, typenod(p.typ()), p.fieldSym())
-
-	case OPACK, ONONAME:
 		return mkname(p.sym())
+
+	// case OPACK, ONONAME:
+	// 	unreachable - should have been resolved by typechecking
 
 	case OTYPE:
 		if p.bool() {
@@ -747,12 +816,9 @@ func (p *importer) node() *Node {
 	// case OCLOSURE:
 	//	unimplemented
 
-	// case OCOMPLIT:
-	//	unimplemented
-
 	case OPTRLIT:
 		n := p.expr()
-		if !p.bool() /* !implicit, i.e. '&' operator*/ {
+		if !p.bool() /* !implicit, i.e. '&' operator */ {
 			if n.Op == OCOMPLIT {
 				// Special case for &T{...}: turn into (*T){...}.
 				n.Right = Nod(OIND, n.Right, nil)
@@ -764,18 +830,15 @@ func (p *importer) node() *Node {
 		return n
 
 	case OSTRUCTLIT:
-		n := Nod(OCOMPLIT, nil, nil)
-		if !p.bool() {
-			n.Right = typenod(p.typ())
-		}
-		n.List.Set(p.elemList())
+		n := Nod(OCOMPLIT, nil, typenod(p.typ()))
+		n.List.Set(p.elemList()) // special handling of field names
 		return n
 
-	case OARRAYLIT, OMAPLIT:
-		n := Nod(OCOMPLIT, nil, nil)
-		if !p.bool() {
-			n.Right = typenod(p.typ())
-		}
+	// case OARRAYLIT, OMAPLIT:
+	// 	unreachable - mapped to case OCOMPLIT below by exporter
+
+	case OCOMPLIT:
+		n := Nod(OCOMPLIT, nil, typenod(p.typ()))
 		n.List.Set(p.exprList())
 		return n
 
@@ -791,14 +854,7 @@ func (p *importer) node() *Node {
 
 	case OXDOT:
 		// see parser.new_dotname
-		obj := p.expr()
-		sel := p.fieldSym()
-		if obj.Op == OPACK {
-			s := restrictlookup(sel.Name, obj.Name.Pkg)
-			obj.Used = true
-			return oldname(s)
-		}
-		return NodSym(OXDOT, obj, sel)
+		return NodSym(OXDOT, p.expr(), p.fieldSym())
 
 	// case ODOTTYPE, ODOTTYPE2:
 	// 	unreachable - mapped to case ODOTTYPE below by exporter
@@ -815,12 +871,17 @@ func (p *importer) node() *Node {
 	// case OINDEX, OINDEXMAP, OSLICE, OSLICESTR, OSLICEARR, OSLICE3, OSLICE3ARR:
 	// 	unreachable - mapped to cases below by exporter
 
-	case OINDEX, OSLICE, OSLICE3:
+	case OINDEX:
 		return Nod(op, p.expr(), p.expr())
 
-	case OCOPY, OCOMPLEX:
-		n := builtinCall(op)
-		n.List.Set([]*Node{p.expr(), p.expr()})
+	case OSLICE, OSLICE3:
+		n := Nod(op, p.expr(), nil)
+		low, high := p.exprsOrNil()
+		var max *Node
+		if n.Op.IsSlice3() {
+			max = p.expr()
+		}
+		n.SetSliceBounds(low, high, max)
 		return n
 
 	// case OCONV, OCONVIFACE, OCONVNOP, OARRAYBYTESTR, OARRAYRUNESTR, OSTRARRAYBYTE, OSTRARRAYRUNE, ORUNESTR:
@@ -828,19 +889,13 @@ func (p *importer) node() *Node {
 
 	case OCONV:
 		n := Nod(OCALL, typenod(p.typ()), nil)
-		if p.bool() {
-			n.List.Set1(p.expr())
-		} else {
-			n.List.Set(p.exprList())
-		}
+		n.List.Set(p.exprList())
 		return n
 
-	case OREAL, OIMAG, OAPPEND, OCAP, OCLOSE, ODELETE, OLEN, OMAKE, ONEW, OPANIC, ORECOVER, OPRINT, OPRINTN:
+	case OCOPY, OCOMPLEX, OREAL, OIMAG, OAPPEND, OCAP, OCLOSE, ODELETE, OLEN, OMAKE, ONEW, OPANIC, ORECOVER, OPRINT, OPRINTN:
 		n := builtinCall(op)
-		if p.bool() {
-			n.List.Set1(p.expr())
-		} else {
-			n.List.Set(p.exprList())
+		n.List.Set(p.exprList())
+		if op == OAPPEND {
 			n.Isddd = p.bool()
 		}
 		return n
@@ -1006,7 +1061,8 @@ func (p *importer) node() *Node {
 		return nil
 
 	default:
-		Fatalf("importer: %s (%d) node not yet supported", opnames[op], op)
+		Fatalf("cannot import %s (%d) node\n"+
+			"==> please file an issue and assign to gri@\n", op, op)
 		panic("unreachable") // satisfy compiler
 	}
 }
@@ -1080,7 +1136,7 @@ func (p *importer) int64() int64 {
 }
 
 func (p *importer) string() string {
-	if debugFormat {
+	if p.debugFormat {
 		p.marker('s')
 	}
 	// if the string was seen before, i is its index (>= 0)

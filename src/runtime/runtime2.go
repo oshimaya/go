@@ -332,16 +332,17 @@ type g struct {
 	waitsince      int64  // approx time when the g become blocked
 	waitreason     string // if status==Gwaiting
 	schedlink      guintptr
-	preempt        bool   // preemption signal, duplicates stackguard0 = stackpreempt
-	paniconfault   bool   // panic (instead of crash) on unexpected fault address
-	preemptscan    bool   // preempted g does scan for gc
-	gcscandone     bool   // g has scanned stack; protected by _Gscan bit in status
-	gcscanvalid    bool   // false at start of gc cycle, true if G has not run since last scan
-	throwsplit     bool   // must not split stack
-	raceignore     int8   // ignore race detection events
-	sysblocktraced bool   // StartTrace has emitted EvGoInSyscall about this goroutine
-	sysexitticks   int64  // cputicks when syscall has returned (for tracing)
-	sysexitseq     uint64 // trace seq when syscall has returned (for tracing)
+	preempt        bool     // preemption signal, duplicates stackguard0 = stackpreempt
+	paniconfault   bool     // panic (instead of crash) on unexpected fault address
+	preemptscan    bool     // preempted g does scan for gc
+	gcscandone     bool     // g has scanned stack; protected by _Gscan bit in status
+	gcscanvalid    bool     // false at start of gc cycle, true if G has not run since last scan; transition from true to false by calling queueRescan and false to true by calling dequeueRescan
+	throwsplit     bool     // must not split stack
+	raceignore     int8     // ignore race detection events
+	sysblocktraced bool     // StartTrace has emitted EvGoInSyscall about this goroutine
+	sysexitticks   int64    // cputicks when syscall has returned (for tracing)
+	traceseq       uint64   // trace event sequencer
+	tracelastp     puintptr // last P emitted an event for this goroutine
 	lockedm        *m
 	sig            uint32
 	writebuf       []byte
@@ -351,9 +352,17 @@ type g struct {
 	gopc           uintptr // pc of go statement that created this goroutine
 	startpc        uintptr // pc of goroutine function
 	racectx        uintptr
-	waiting        *sudog // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
+	waiting        *sudog    // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
+	cgoCtxt        []uintptr // cgo traceback context
 
-	// Per-G gcController state
+	// Per-G GC state
+
+	// gcRescan is this G's index in work.rescan.list. If this is
+	// -1, this G is not on the rescan list.
+	//
+	// If gcphase != _GCoff and this G is visible to the garbage
+	// collector, writes to this are protected by work.rescan.lock.
+	gcRescan int32
 
 	// gcAssistBytes is this G's GC assist credit in terms of
 	// bytes allocated. If this is positive, then the G has credit
@@ -442,6 +451,7 @@ type p struct {
 	syscalltick uint32   // incremented on every system call
 	m           muintptr // back-link to associated m (nil if idle)
 	mcache      *mcache
+	racectx     uintptr
 
 	deferpool    [5][]*_defer // pool of available defer structs of different sizes (see panic.go)
 	deferpoolbuf [5][32]*_defer
@@ -522,9 +532,10 @@ type schedt struct {
 	runqsize int32
 
 	// Global cache of dead G's.
-	gflock mutex
-	gfree  *g
-	ngfree int32
+	gflock       mutex
+	gfreeStack   *g
+	gfreeNoStack *g
+	ngfree       int32
 
 	// Central cache of sudog structs.
 	sudoglock  mutex

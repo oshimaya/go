@@ -62,7 +62,7 @@ func ssaMarkMoves(s *gc.SSAGenState, b *ssa.Block) {
 	}
 	for i := len(b.Values) - 1; i >= 0; i-- {
 		v := b.Values[i]
-		if flive && (v.Op == ssa.OpAMD64MOVBconst || v.Op == ssa.OpAMD64MOVWconst || v.Op == ssa.OpAMD64MOVLconst || v.Op == ssa.OpAMD64MOVQconst) {
+		if flive && (v.Op == ssa.OpAMD64MOVLconst || v.Op == ssa.OpAMD64MOVQconst) {
 			// The "mark" is any non-nil Aux value.
 			v.Aux = v
 		}
@@ -141,7 +141,6 @@ func moveByType(t ssa.Type) obj.As {
 			panic(fmt.Sprintf("bad int register width %d:%s", t.Size(), t))
 		}
 	}
-	panic("bad register type")
 }
 
 // opregreg emits instructions for
@@ -160,7 +159,7 @@ func opregreg(op obj.As, dest, src int16) *obj.Prog {
 func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 	s.SetLineno(v.Line)
 	switch v.Op {
-	case ssa.OpAMD64ADDQ, ssa.OpAMD64ADDL, ssa.OpAMD64ADDW, ssa.OpAMD64ADDB:
+	case ssa.OpAMD64ADDQ, ssa.OpAMD64ADDL:
 		r := gc.SSARegNum(v)
 		r1 := gc.SSARegNum(v.Args[0])
 		r2 := gc.SSARegNum(v.Args[1])
@@ -193,12 +192,12 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 			p.To.Reg = r
 		}
 	// 2-address opcode arithmetic
-	case ssa.OpAMD64SUBQ, ssa.OpAMD64SUBL, ssa.OpAMD64SUBW, ssa.OpAMD64SUBB,
-		ssa.OpAMD64MULQ, ssa.OpAMD64MULL, ssa.OpAMD64MULW, ssa.OpAMD64MULB,
-		ssa.OpAMD64ANDQ, ssa.OpAMD64ANDL, ssa.OpAMD64ANDW, ssa.OpAMD64ANDB,
-		ssa.OpAMD64ORQ, ssa.OpAMD64ORL, ssa.OpAMD64ORW, ssa.OpAMD64ORB,
-		ssa.OpAMD64XORQ, ssa.OpAMD64XORL, ssa.OpAMD64XORW, ssa.OpAMD64XORB,
-		ssa.OpAMD64SHLQ, ssa.OpAMD64SHLL, ssa.OpAMD64SHLW, ssa.OpAMD64SHLB,
+	case ssa.OpAMD64SUBQ, ssa.OpAMD64SUBL,
+		ssa.OpAMD64MULQ, ssa.OpAMD64MULL,
+		ssa.OpAMD64ANDQ, ssa.OpAMD64ANDL,
+		ssa.OpAMD64ORQ, ssa.OpAMD64ORL,
+		ssa.OpAMD64XORQ, ssa.OpAMD64XORL,
+		ssa.OpAMD64SHLQ, ssa.OpAMD64SHLL,
 		ssa.OpAMD64SHRQ, ssa.OpAMD64SHRL, ssa.OpAMD64SHRW, ssa.OpAMD64SHRB,
 		ssa.OpAMD64SARQ, ssa.OpAMD64SARL, ssa.OpAMD64SARW, ssa.OpAMD64SARB,
 		ssa.OpAMD64ADDSS, ssa.OpAMD64ADDSD, ssa.OpAMD64SUBSS, ssa.OpAMD64SUBSD,
@@ -335,7 +334,7 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = r
 
-	case ssa.OpAMD64ADDQconst, ssa.OpAMD64ADDLconst, ssa.OpAMD64ADDWconst, ssa.OpAMD64ADDBconst:
+	case ssa.OpAMD64ADDQconst, ssa.OpAMD64ADDLconst:
 		r := gc.SSARegNum(v)
 		a := gc.SSARegNum(v.Args[0])
 		if r == a {
@@ -408,7 +407,7 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = r
 
-	case ssa.OpAMD64MULQconst, ssa.OpAMD64MULLconst, ssa.OpAMD64MULWconst, ssa.OpAMD64MULBconst:
+	case ssa.OpAMD64MULQconst, ssa.OpAMD64MULLconst:
 		r := gc.SSARegNum(v)
 		if r != gc.SSARegNum(v.Args[0]) {
 			v.Fatalf("input[0] and output not in same register %s", v.LongString())
@@ -424,11 +423,11 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		//p.From3.Type = obj.TYPE_REG
 		//p.From3.Reg = gc.SSARegNum(v.Args[0])
 
-	case ssa.OpAMD64SUBQconst, ssa.OpAMD64SUBLconst, ssa.OpAMD64SUBWconst, ssa.OpAMD64SUBBconst,
-		ssa.OpAMD64ANDQconst, ssa.OpAMD64ANDLconst, ssa.OpAMD64ANDWconst, ssa.OpAMD64ANDBconst,
-		ssa.OpAMD64ORQconst, ssa.OpAMD64ORLconst, ssa.OpAMD64ORWconst, ssa.OpAMD64ORBconst,
-		ssa.OpAMD64XORQconst, ssa.OpAMD64XORLconst, ssa.OpAMD64XORWconst, ssa.OpAMD64XORBconst,
-		ssa.OpAMD64SHLQconst, ssa.OpAMD64SHLLconst, ssa.OpAMD64SHLWconst, ssa.OpAMD64SHLBconst,
+	case ssa.OpAMD64SUBQconst, ssa.OpAMD64SUBLconst,
+		ssa.OpAMD64ANDQconst, ssa.OpAMD64ANDLconst,
+		ssa.OpAMD64ORQconst, ssa.OpAMD64ORLconst,
+		ssa.OpAMD64XORQconst, ssa.OpAMD64XORLconst,
+		ssa.OpAMD64SHLQconst, ssa.OpAMD64SHLLconst,
 		ssa.OpAMD64SHRQconst, ssa.OpAMD64SHRLconst, ssa.OpAMD64SHRWconst, ssa.OpAMD64SHRBconst,
 		ssa.OpAMD64SARQconst, ssa.OpAMD64SARLconst, ssa.OpAMD64SARWconst, ssa.OpAMD64SARBconst,
 		ssa.OpAMD64ROLQconst, ssa.OpAMD64ROLLconst, ssa.OpAMD64ROLWconst, ssa.OpAMD64ROLBconst:
@@ -497,7 +496,7 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p.From.Offset = v.AuxInt
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = gc.SSARegNum(v.Args[0])
-	case ssa.OpAMD64MOVBconst, ssa.OpAMD64MOVWconst, ssa.OpAMD64MOVLconst, ssa.OpAMD64MOVQconst:
+	case ssa.OpAMD64MOVLconst, ssa.OpAMD64MOVQconst:
 		x := gc.SSARegNum(v)
 		p := gc.Prog(v.Op.Asm())
 		p.From.Type = obj.TYPE_CONST
@@ -812,9 +811,9 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		if gc.Maxarg < v.AuxInt {
 			gc.Maxarg = v.AuxInt
 		}
-	case ssa.OpAMD64NEGQ, ssa.OpAMD64NEGL, ssa.OpAMD64NEGW, ssa.OpAMD64NEGB,
+	case ssa.OpAMD64NEGQ, ssa.OpAMD64NEGL,
 		ssa.OpAMD64BSWAPQ, ssa.OpAMD64BSWAPL,
-		ssa.OpAMD64NOTQ, ssa.OpAMD64NOTL, ssa.OpAMD64NOTW, ssa.OpAMD64NOTB:
+		ssa.OpAMD64NOTQ, ssa.OpAMD64NOTL:
 		r := gc.SSARegNum(v)
 		if r != gc.SSARegNum(v.Args[0]) {
 			v.Fatalf("input[0] and output not in same register %s", v.LongString())
@@ -883,7 +882,7 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		// Optimization - if the subsequent block has a load or store
 		// at the same address, we don't need to issue this instruction.
 		mem := v.Args[1]
-		for _, w := range v.Block.Succs[0].Values {
+		for _, w := range v.Block.Succs[0].Block().Values {
 			if w.Op == ssa.OpPhi {
 				if w.Type.IsMemory() {
 					mem = w
@@ -966,12 +965,12 @@ var blockJump = [...]struct {
 }
 
 var eqfJumps = [2][2]gc.FloatingEQNEJump{
-	{{x86.AJNE, 1}, {x86.AJPS, 1}}, // next == b.Succs[0]
-	{{x86.AJNE, 1}, {x86.AJPC, 0}}, // next == b.Succs[1]
+	{{Jump: x86.AJNE, Index: 1}, {Jump: x86.AJPS, Index: 1}}, // next == b.Succs[0]
+	{{Jump: x86.AJNE, Index: 1}, {Jump: x86.AJPC, Index: 0}}, // next == b.Succs[1]
 }
 var nefJumps = [2][2]gc.FloatingEQNEJump{
-	{{x86.AJNE, 0}, {x86.AJPC, 1}}, // next == b.Succs[0]
-	{{x86.AJNE, 0}, {x86.AJPS, 0}}, // next == b.Succs[1]
+	{{Jump: x86.AJNE, Index: 0}, {Jump: x86.AJPC, Index: 1}}, // next == b.Succs[0]
+	{{Jump: x86.AJNE, Index: 0}, {Jump: x86.AJPS, Index: 0}}, // next == b.Succs[1]
 }
 
 func ssaGenBlock(s *gc.SSAGenState, b, next *ssa.Block) {
@@ -979,10 +978,10 @@ func ssaGenBlock(s *gc.SSAGenState, b, next *ssa.Block) {
 
 	switch b.Kind {
 	case ssa.BlockPlain, ssa.BlockCall, ssa.BlockCheck:
-		if b.Succs[0] != next {
+		if b.Succs[0].Block() != next {
 			p := gc.Prog(obj.AJMP)
 			p.To.Type = obj.TYPE_BRANCH
-			s.Branches = append(s.Branches, gc.Branch{p, b.Succs[0]})
+			s.Branches = append(s.Branches, gc.Branch{P: p, B: b.Succs[0].Block()})
 		}
 	case ssa.BlockDefer:
 		// defer returns in rax:
@@ -995,11 +994,11 @@ func ssaGenBlock(s *gc.SSAGenState, b, next *ssa.Block) {
 		p.To.Reg = x86.REG_AX
 		p = gc.Prog(x86.AJNE)
 		p.To.Type = obj.TYPE_BRANCH
-		s.Branches = append(s.Branches, gc.Branch{p, b.Succs[1]})
-		if b.Succs[0] != next {
+		s.Branches = append(s.Branches, gc.Branch{P: p, B: b.Succs[1].Block()})
+		if b.Succs[0].Block() != next {
 			p := gc.Prog(obj.AJMP)
 			p.To.Type = obj.TYPE_BRANCH
-			s.Branches = append(s.Branches, gc.Branch{p, b.Succs[0]})
+			s.Branches = append(s.Branches, gc.Branch{P: p, B: b.Succs[0].Block()})
 		}
 	case ssa.BlockExit:
 		gc.Prog(obj.AUNDEF) // tell plive.go that we never reach here
@@ -1026,22 +1025,22 @@ func ssaGenBlock(s *gc.SSAGenState, b, next *ssa.Block) {
 		likely := b.Likely
 		var p *obj.Prog
 		switch next {
-		case b.Succs[0]:
+		case b.Succs[0].Block():
 			p = gc.Prog(jmp.invasm)
 			likely *= -1
 			p.To.Type = obj.TYPE_BRANCH
-			s.Branches = append(s.Branches, gc.Branch{p, b.Succs[1]})
-		case b.Succs[1]:
+			s.Branches = append(s.Branches, gc.Branch{P: p, B: b.Succs[1].Block()})
+		case b.Succs[1].Block():
 			p = gc.Prog(jmp.asm)
 			p.To.Type = obj.TYPE_BRANCH
-			s.Branches = append(s.Branches, gc.Branch{p, b.Succs[0]})
+			s.Branches = append(s.Branches, gc.Branch{P: p, B: b.Succs[0].Block()})
 		default:
 			p = gc.Prog(jmp.asm)
 			p.To.Type = obj.TYPE_BRANCH
-			s.Branches = append(s.Branches, gc.Branch{p, b.Succs[0]})
+			s.Branches = append(s.Branches, gc.Branch{P: p, B: b.Succs[0].Block()})
 			q := gc.Prog(obj.AJMP)
 			q.To.Type = obj.TYPE_BRANCH
-			s.Branches = append(s.Branches, gc.Branch{q, b.Succs[1]})
+			s.Branches = append(s.Branches, gc.Branch{P: q, B: b.Succs[1].Block()})
 		}
 
 		// liblink reorders the instruction stream as it sees fit.

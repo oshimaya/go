@@ -102,13 +102,18 @@ func mapbucket(t *Type) *Type {
 		valtype = Ptrto(valtype)
 	}
 
+	field := make([]*Field, 0, 5)
+
 	// The first field is: uint8 topbits[BUCKETSIZE].
 	arr := typArray(Types[TUINT8], BUCKETSIZE)
-	field := make([]*Field, 0, 5)
 	field = append(field, makefield("topbits", arr))
+
 	arr = typArray(keytype, BUCKETSIZE)
+	arr.Noalg = true
 	field = append(field, makefield("keys", arr))
+
 	arr = typArray(valtype, BUCKETSIZE)
+	arr.Noalg = true
 	field = append(field, makefield("values", arr))
 
 	// Make sure the overflow pointer is the last memory in the struct,
@@ -496,14 +501,11 @@ func isExportedField(ft *Field) bool {
 
 // dnameField dumps a reflect.name for a struct field.
 func dnameField(s *Sym, ot int, ft *Field) int {
-	var name, tag string
+	var name string
 	if ft.Sym != nil && ft.Embedded == 0 {
 		name = ft.Sym.Name
 	}
-	if ft.Note != nil {
-		tag = *ft.Note
-	}
-	nsym := dname(name, tag, nil, isExportedField(ft))
+	nsym := dname(name, ft.Note, nil, isExportedField(ft))
 	return dsymptrLSym(Linksym(s), ot, nsym, 0)
 }
 
@@ -686,7 +688,7 @@ var kinds = []int{
 	TCHAN:       obj.KindChan,
 	TMAP:        obj.KindMap,
 	TARRAY:      obj.KindArray,
-	TSLICE:      obj.KindArray,
+	TSLICE:      obj.KindSlice,
 	TFUNC:       obj.KindFunc,
 	TCOMPLEX64:  obj.KindComplex64,
 	TCOMPLEX128: obj.KindComplex128,
@@ -887,9 +889,6 @@ func dcommontype(s *Sym, ot int, t *Type) int {
 	ot = duint8(s, ot, t.Align) // fieldAlign
 
 	i = kinds[t.Etype]
-	if t.IsSlice() {
-		i = obj.KindSlice
-	}
 	if !haspointers(t) {
 		i |= obj.KindNoPointers
 	}
@@ -1392,6 +1391,11 @@ func dumptypestructs() {
 	}
 
 	// generate import strings for imported packages
+	if forceObjFileStability {
+		// Sorting the packages is not necessary but to compare binaries created
+		// using textual and binary format we sort by path to reduce differences.
+		sort.Sort(pkgByPath(pkgs))
+	}
 	for _, p := range pkgs {
 		if p.Direct {
 			dimportpath(p)
@@ -1429,6 +1433,12 @@ func dumptypestructs() {
 		dimportpath(mkpkg("main"))
 	}
 }
+
+type pkgByPath []*Pkg
+
+func (a pkgByPath) Len() int           { return len(a) }
+func (a pkgByPath) Less(i, j int) bool { return a[i].Path < a[j].Path }
+func (a pkgByPath) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
 func dalgsym(t *Type) *Sym {
 	var s *Sym

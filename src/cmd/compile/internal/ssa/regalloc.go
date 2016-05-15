@@ -488,11 +488,12 @@ func (s *regAllocState) init(f *Func) {
 	s.primary = make([]int32, f.NumBlocks())
 	for _, b := range f.Blocks {
 		best := -1
-		for i, p := range b.Preds {
+		for i, e := range b.Preds {
+			p := e.b
 			if blockOrder[p.ID] >= blockOrder[b.ID] {
 				continue // backward edge
 			}
-			if best == -1 || blockOrder[p.ID] > blockOrder[b.Preds[best].ID] {
+			if best == -1 || blockOrder[p.ID] > blockOrder[b.Preds[best].b.ID] {
 				best = i
 			}
 		}
@@ -706,7 +707,7 @@ func (s *regAllocState) regalloc(f *Func) {
 			}
 		} else if len(b.Preds) == 1 {
 			// Start regalloc state with the end state of the previous block.
-			s.setState(s.endRegs[b.Preds[0].ID])
+			s.setState(s.endRegs[b.Preds[0].b.ID])
 			if nphi > 0 {
 				f.Fatalf("phis in single-predecessor block")
 			}
@@ -731,7 +732,7 @@ func (s *regAllocState) regalloc(f *Func) {
 			if idx < 0 {
 				f.Fatalf("block with no primary predecessor %s", b)
 			}
-			p := b.Preds[idx]
+			p := b.Preds[idx].b
 			s.setState(s.endRegs[p.ID])
 
 			if s.f.pass.debug > regDebug {
@@ -859,13 +860,14 @@ func (s *regAllocState) regalloc(f *Func) {
 		// desired registers computed during liveness analysis.
 		// Note that we do this phase after startRegs is set above, so that
 		// we get the right behavior for a block which branches to itself.
-		for _, succ := range b.Succs {
+		for _, e := range b.Succs {
+			succ := e.b
 			// TODO: prioritize likely successor?
 			for _, x := range s.startRegs[succ.ID] {
 				desired.add(x.vid, x.r)
 			}
 			// Process phi ops in succ.
-			pidx := predIdx(succ, b)
+			pidx := e.i
 			for _, v := range succ.Values {
 				if v.Op != OpPhi {
 					break
@@ -1194,7 +1196,7 @@ func (s *regAllocState) regalloc(f *Func) {
 		// the merge point and promote them to registers now.
 		if len(b.Succs) == 1 {
 			// For this to be worthwhile, the loop must have no calls in it.
-			top := b.Succs[0]
+			top := b.Succs[0].b
 			loop := s.loopnest.b2l[top.ID]
 			if loop == nil || loop.header != top || loop.containsCall {
 				goto badloop
@@ -1309,20 +1311,25 @@ func (s *regAllocState) regalloc(f *Func) {
 						// Start with live at end.
 						for _, li := range s.live[ss.ID] {
 							if s.isLoopSpillCandidate(loop, s.orig[li.ID]) {
+								// s.live contains original IDs, use s.orig above to map back to *Value
 								entryCandidates.setBit(li.ID, uint(whichExit))
 							}
 						}
 						// Control can also be live.
-						if ss.Control != nil && s.isLoopSpillCandidate(loop, ss.Control) {
-							entryCandidates.setBit(ss.Control.ID, uint(whichExit))
+						if ss.Control != nil && s.orig[ss.Control.ID] != nil && s.isLoopSpillCandidate(loop, s.orig[ss.Control.ID]) {
+							entryCandidates.setBit(s.orig[ss.Control.ID].ID, uint(whichExit))
 						}
 						// Walk backwards, filling in locally live values, removing those defined.
 						for i := len(ss.Values) - 1; i >= 0; i-- {
 							v := ss.Values[i]
-							entryCandidates.remove(v.ID) // Cannot be an issue, only keeps the sets smaller.
+							vorig := s.orig[v.ID]
+							if vorig != nil {
+								entryCandidates.remove(vorig.ID) // Cannot be an issue, only keeps the sets smaller.
+							}
 							for _, a := range v.Args {
-								if s.isLoopSpillCandidate(loop, a) {
-									entryCandidates.setBit(a.ID, uint(whichExit))
+								aorig := s.orig[a.ID]
+								if aorig != nil && s.isLoopSpillCandidate(loop, aorig) {
+									entryCandidates.setBit(aorig.ID, uint(whichExit))
 								}
 							}
 						}
@@ -1452,7 +1459,7 @@ sinking:
 			if len(d.Preds) > 1 {
 				panic("Should be impossible given critical edges removed")
 			}
-			p := d.Preds[0] // block in loop exiting to d.
+			p := d.Preds[0].b // block in loop exiting to d.
 
 			endregs := s.endRegs[p.ID]
 			for _, regrec := range endregs {
@@ -1570,7 +1577,8 @@ func (s *regAllocState) shuffle(stacklive [][]ID) {
 			continue
 		}
 		e.b = b
-		for i, p := range b.Preds {
+		for i, edge := range b.Preds {
+			p := edge.b
 			e.p = p
 			e.setup(i, s.endRegs[p.ID], s.startRegs[b.ID], stacklive[p.ID])
 			e.process()
@@ -2065,7 +2073,7 @@ func (s *regAllocState) computeLive() {
 
 			// Propagate backwards to the start of the block
 			// Assumes Values have been scheduled.
-			phis := phis[:0]
+			phis = phis[:0]
 			for i := len(b.Values) - 1; i >= 0; i-- {
 				v := b.Values[i]
 				live.remove(v.ID)
@@ -2112,18 +2120,19 @@ func (s *regAllocState) computeLive() {
 
 			// For each predecessor of b, expand its list of live-at-end values.
 			// invariant: live contains the values live at the start of b (excluding phi inputs)
-			for i, p := range b.Preds {
+			for i, e := range b.Preds {
+				p := e.b
 				// Compute additional distance for the edge.
 				// Note: delta must be at least 1 to distinguish the control
 				// value use from the first user in a successor block.
 				delta := int32(normalDistance)
 				if len(p.Succs) == 2 {
-					if p.Succs[0] == b && p.Likely == BranchLikely ||
-						p.Succs[1] == b && p.Likely == BranchUnlikely {
+					if p.Succs[0].b == b && p.Likely == BranchLikely ||
+						p.Succs[1].b == b && p.Likely == BranchUnlikely {
 						delta = likelyDistance
 					}
-					if p.Succs[0] == b && p.Likely == BranchUnlikely ||
-						p.Succs[1] == b && p.Likely == BranchLikely {
+					if p.Succs[0].b == b && p.Likely == BranchUnlikely ||
+						p.Succs[1].b == b && p.Likely == BranchLikely {
 						delta = unlikelyDistance
 					}
 				}

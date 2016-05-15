@@ -300,7 +300,7 @@ type Field struct {
 	// or interface Type.
 	Offset int64
 
-	Note *string // literal string annotation
+	Note string // literal string annotation
 }
 
 // End returns the offset of the first byte immediately after this field.
@@ -330,6 +330,12 @@ func (f *Fields) Slice() []*Field {
 		return nil
 	}
 	return *f.s
+}
+
+// Index returns the i'th element of Fields.
+// It panics if f does not have at least i+1 elements.
+func (f *Fields) Index(i int) *Field {
+	return (*f.s)[i]
 }
 
 // Set sets f to a slice.
@@ -845,7 +851,7 @@ func (t *Type) Alignment() int64 {
 }
 
 func (t *Type) SimpleString() string {
-	return Econv(t.Etype)
+	return t.Etype.String()
 }
 
 // Compare compares types for purposes of the SSA back
@@ -986,6 +992,8 @@ func (t *Type) cmp(x *Type) ssa.Cmp {
 				return ssa.CMPlt // bucket maps are least
 			}
 			return t.StructType().Map.cmp(x.StructType().Map)
+		} else if x.StructType().Map.MapType().Bucket == x {
+			return ssa.CMPgt // bucket maps are least
 		} // If t != t.Map.Bucket, fall through to general case
 
 		fallthrough
@@ -997,15 +1005,7 @@ func (t *Type) cmp(x *Type) ssa.Cmp {
 				return cmpForNe(t1.Embedded < x1.Embedded)
 			}
 			if t1.Note != x1.Note {
-				if t1.Note == nil {
-					return ssa.CMPlt
-				}
-				if x1.Note == nil {
-					return ssa.CMPgt
-				}
-				if *t1.Note != *x1.Note {
-					return cmpForNe(*t1.Note < *x1.Note)
-				}
+				return cmpForNe(t1.Note < x1.Note)
 			}
 			if c := t1.Sym.cmpsym(x1.Sym); c != ssa.CMPeq {
 				return c

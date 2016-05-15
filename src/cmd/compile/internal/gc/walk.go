@@ -70,7 +70,7 @@ func walk(fn *Node) {
 	}
 
 	heapmoves()
-	if Debug['W'] != 0 && len(Curfn.Func.Enter.Slice()) > 0 {
+	if Debug['W'] != 0 && Curfn.Func.Enter.Len() > 0 {
 		s := fmt.Sprintf("enter %v", Curfn.Func.Nname.Sym)
 		dumplist(s, Curfn.Func.Enter)
 	}
@@ -159,7 +159,7 @@ func walkstmt(n *Node) *Node {
 		if n.Op == ONAME {
 			Yyerror("%v is not a top level statement", n.Sym)
 		} else {
-			Yyerror("%v is not a top level statement", Oconv(n.Op, 0))
+			Yyerror("%v is not a top level statement", n.Op)
 		}
 		Dump("nottop", n)
 
@@ -1241,35 +1241,28 @@ opswitch:
 	case ORECV:
 		Fatalf("walkexpr ORECV") // should see inside OAS only
 
-	case OSLICE, OSLICEARR, OSLICESTR:
+	case OSLICE, OSLICEARR, OSLICESTR, OSLICE3, OSLICE3ARR:
 		n.Left = walkexpr(n.Left, init)
-		n.Right.Left = walkexpr(n.Right.Left, init)
-		if n.Right.Left != nil && iszero(n.Right.Left) {
-			// Reduce x[0:j] to x[:j].
-			n.Right.Left = nil
+		low, high, max := n.SliceBounds()
+		low = walkexpr(low, init)
+		if low != nil && iszero(low) {
+			// Reduce x[0:j] to x[:j] and x[0:j:k] to x[:j:k].
+			low = nil
 		}
-		n.Right.Right = walkexpr(n.Right.Right, init)
-		n = reduceSlice(n)
-
-	case OSLICE3, OSLICE3ARR:
-		n.Left = walkexpr(n.Left, init)
-		n.Right.Left = walkexpr(n.Right.Left, init)
-		if n.Right.Left != nil && iszero(n.Right.Left) {
-			// Reduce x[0:j:k] to x[:j:k].
-			n.Right.Left = nil
-		}
-		n.Right.Right.Left = walkexpr(n.Right.Right.Left, init)
-		n.Right.Right.Right = walkexpr(n.Right.Right.Right, init)
-
-		r := n.Right.Right.Right
-		if r != nil && r.Op == OCAP && samesafeexpr(n.Left, r.Left) {
-			// Reduce x[i:j:cap(x)] to x[i:j].
-			n.Right.Right = n.Right.Right.Left
-			if n.Op == OSLICE3 {
-				n.Op = OSLICE
-			} else {
-				n.Op = OSLICEARR
+		high = walkexpr(high, init)
+		max = walkexpr(max, init)
+		n.SetSliceBounds(low, high, max)
+		if n.Op.IsSlice3() {
+			if max != nil && max.Op == OCAP && samesafeexpr(n.Left, max.Left) {
+				// Reduce x[i:j:cap(x)] to x[i:j].
+				if n.Op == OSLICE3 {
+					n.Op = OSLICE
+				} else {
+					n.Op = OSLICEARR
+				}
+				n = reduceSlice(n)
 			}
+		} else {
 			n = reduceSlice(n)
 		}
 
@@ -1425,8 +1418,9 @@ opswitch:
 			a := Nod(OAS, var_, nil) // zero temp
 			a = typecheck(a, Etop)
 			init.Append(a)
-			r := Nod(OSLICE, var_, Nod(OKEY, nil, l)) // arr[:l]
-			r = conv(r, n.Type)                       // in case n.Type is named.
+			r := Nod(OSLICE, var_, nil) // arr[:l]
+			r.SetSliceBounds(nil, l, nil)
+			r = conv(r, n.Type) // in case n.Type is named.
 			r = typecheck(r, Erv)
 			r = walkexpr(r, init)
 			n = r
@@ -1511,7 +1505,7 @@ opswitch:
 		// ifaceeq(i1 any-1, i2 any-2) (ret bool);
 	case OCMPIFACE:
 		if !Eqtype(n.Left.Type, n.Right.Type) {
-			Fatalf("ifaceeq %v %v %v", Oconv(n.Op, 0), n.Left.Type, n.Right.Type)
+			Fatalf("ifaceeq %v %v %v", n.Op, n.Left.Type, n.Right.Type)
 		}
 		var fn *Node
 		if n.Left.Type.IsEmptyInterface() {
@@ -1596,13 +1590,15 @@ opswitch:
 	return n
 }
 
+// TODO(josharian): combine this with its caller and simplify
 func reduceSlice(n *Node) *Node {
-	r := n.Right.Right
-	if r != nil && r.Op == OLEN && samesafeexpr(n.Left, r.Left) {
+	low, high, max := n.SliceBounds()
+	if high != nil && high.Op == OLEN && samesafeexpr(n.Left, high.Left) {
 		// Reduce x[i:len(x)] to x[i:].
-		n.Right.Right = nil
+		high = nil
 	}
-	if (n.Op == OSLICE || n.Op == OSLICESTR) && n.Right.Left == nil && n.Right.Right == nil {
+	n.SetSliceBounds(low, high, max)
+	if (n.Op == OSLICE || n.Op == OSLICESTR) && low == nil && high == nil {
 		// Reduce x[:] to x.
 		if Debug_slice > 0 {
 			Warn("slice: omit slice operation")
@@ -1655,7 +1651,7 @@ func ascompatee(op Op, nl, nr []*Node, init *Nodes) []*Node {
 		var nln, nrn Nodes
 		nln.Set(nl)
 		nrn.Set(nr)
-		Yyerror("error in shape across %v %v %v / %d %d [%s]", Hconv(nln, FmtSign), Oconv(op, 0), Hconv(nrn, FmtSign), len(nl), len(nr), Curfn.Func.Nname.Sym.Name)
+		Yyerror("error in shape across %v %v %v / %d %d [%s]", hconv(nln, FmtSign), op, hconv(nrn, FmtSign), len(nl), len(nr), Curfn.Func.Nname.Sym.Name)
 	}
 	return nn
 }
@@ -1739,6 +1735,7 @@ func mkdotargslice(lr0, nn []*Node, l *Field, fp int, init *Nodes, ddd *Node) []
 	}
 
 	tslice := typSlice(l.Type.Elem())
+	tslice.Noalg = true
 
 	var n *Node
 	if len(lr0) == 0 {
@@ -1869,9 +1866,9 @@ func ascompatte(op Op, call *Node, isddd bool, nl *Type, lr []*Node, fp int, ini
 				l1 := dumptypes(nl, "expected")
 				l2 := dumpnodetypes(lr0, "given")
 				if l != nil {
-					Yyerror("not enough arguments to %v\n\t%s\n\t%s", Oconv(op, 0), l1, l2)
+					Yyerror("not enough arguments to %v\n\t%s\n\t%s", op, l1, l2)
 				} else {
-					Yyerror("too many arguments to %v\n\t%s\n\t%s", Oconv(op, 0), l1, l2)
+					Yyerror("too many arguments to %v\n\t%s\n\t%s", op, l1, l2)
 				}
 			}
 
@@ -2145,7 +2142,7 @@ func applywritebarrier(n *Node) *Node {
 
 func convas(n *Node, init *Nodes) *Node {
 	if n.Op != OAS {
-		Fatalf("convas: not OAS %v", Oconv(n.Op, 0))
+		Fatalf("convas: not OAS %v", n.Op)
 	}
 
 	n.Typecheck = 1
@@ -2288,7 +2285,7 @@ func reorder3(all []*Node) []*Node {
 
 		switch l.Op {
 		default:
-			Fatalf("reorder3 unexpected lvalue %v", Oconv(l.Op, FmtSharp))
+			Fatalf("reorder3 unexpected lvalue %#v", l.Op)
 
 		case ONAME:
 			break
@@ -2748,8 +2745,7 @@ func addstr(n *Node, init *Nodes) *Node {
 			prealloc[slice] = prealloc[n]
 		}
 		slice.List.Set(args[1:]) // skip buf arg
-		args = []*Node{buf}
-		args = append(args, slice)
+		args = []*Node{buf, slice}
 		slice.Esc = EscNone
 	}
 
@@ -2816,14 +2812,15 @@ func appendslice(n *Node, init *Nodes) *Node {
 	l = append(l, nif)
 
 	// s = s[:n]
-	nt := Nod(OSLICE, s, Nod(OKEY, nil, nn))
+	nt := Nod(OSLICE, s, nil)
+	nt.SetSliceBounds(nil, nn, nil)
 	nt.Etype = 1
 	l = append(l, Nod(OAS, s, nt))
 
 	if haspointers(l1.Type.Elem()) {
 		// copy(s[len(l1):], l2)
-		nptr1 := Nod(OSLICE, s, Nod(OKEY, Nod(OLEN, l1, nil), nil))
-
+		nptr1 := Nod(OSLICE, s, nil)
+		nptr1.SetSliceBounds(Nod(OLEN, l1, nil), nil, nil)
 		nptr1.Etype = 1
 		nptr2 := l2
 		fn := syslook("typedslicecopy")
@@ -2835,8 +2832,8 @@ func appendslice(n *Node, init *Nodes) *Node {
 	} else if instrumenting {
 		// rely on runtime to instrument copy.
 		// copy(s[len(l1):], l2)
-		nptr1 := Nod(OSLICE, s, Nod(OKEY, Nod(OLEN, l1, nil), nil))
-
+		nptr1 := Nod(OSLICE, s, nil)
+		nptr1.SetSliceBounds(Nod(OLEN, l1, nil), nil, nil)
 		nptr1.Etype = 1
 		nptr2 := l2
 		var fn *Node
@@ -2950,7 +2947,8 @@ func walkappend(n *Node, init *Nodes, dst *Node) *Node {
 	nn := temp(Types[TINT])
 	l = append(l, Nod(OAS, nn, Nod(OLEN, ns, nil))) // n = len(s)
 
-	nx = Nod(OSLICE, ns, Nod(OKEY, nil, Nod(OADD, nn, na))) // ...s[:n+argc]
+	nx = Nod(OSLICE, ns, nil) // ...s[:n+argc]
+	nx.SetSliceBounds(nil, Nod(OADD, nn, na), nil)
 	nx.Etype = 1
 	l = append(l, Nod(OAS, ns, nx)) // s = s[:n+argc]
 
@@ -3426,7 +3424,7 @@ func walkdiv(n *Node, init *Nodes) *Node {
 	// if >= 0, nr is 1<<pow // 1 if nr is negative.
 
 	// TODO(minux)
-	if Thearch.LinkArch.InFamily(sys.MIPS64, sys.ARM64, sys.PPC64) {
+	if Thearch.LinkArch.InFamily(sys.MIPS64, sys.PPC64) {
 		return n
 	}
 
@@ -3485,6 +3483,16 @@ func walkdiv(n *Node, init *Nodes) *Node {
 			n2 := Nod(OMUL, n1, nr)
 			n = Nod(OSUB, nl, n2)
 			goto ret
+		}
+
+		// TODO(zhongwei) Test shows that TUINT8, TINT8, TUINT16 and TINT16's "quick division" method
+		// on current arm64 backend is slower than hardware div instruction on ARM64 due to unnecessary
+		// data movement between registers. It could be enabled when generated code is good enough.
+		if Thearch.LinkArch.Family == sys.ARM64 {
+			switch Simtype[nl.Type.Etype] {
+			case TUINT8, TINT8, TUINT16, TINT16:
+				return n
+			}
 		}
 
 		switch Simtype[nl.Type.Etype] {
@@ -3790,7 +3798,7 @@ func usefield(n *Node) {
 
 	switch n.Op {
 	default:
-		Fatalf("usefield %v", Oconv(n.Op, 0))
+		Fatalf("usefield %v", n.Op)
 
 	case ODOT, ODOTPTR:
 		break
@@ -3809,7 +3817,7 @@ func usefield(n *Node) {
 	if field == nil {
 		Fatalf("usefield %v %v without paramfld", n.Left.Type, n.Sym)
 	}
-	if field.Note == nil || !strings.Contains(*field.Note, "go:\"track\"") {
+	if !strings.Contains(field.Note, "go:\"track\"") {
 		return
 	}
 

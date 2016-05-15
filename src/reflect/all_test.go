@@ -3902,6 +3902,9 @@ func TestSliceOf(t *testing.T) {
 	// check construction and use of type not in binary
 	type T int
 	st := SliceOf(TypeOf(T(1)))
+	if got, want := st.String(), "[]reflect_test.T"; got != want {
+		t.Errorf("SliceOf(T(1)).String()=%q, want %q", got, want)
+	}
 	v := MakeSlice(st, 10, 10)
 	runtime.GC()
 	for i := 0; i < v.Len(); i++ {
@@ -4207,7 +4210,7 @@ func TestStructOfExportRules(t *testing.T) {
 			}
 			exported := isExported(n)
 			if exported != test.exported {
-				t.Errorf("test-%d: got exported=%v want exported=%v", exported, test.exported)
+				t.Errorf("test-%d: got exported=%v want exported=%v", i, exported, test.exported)
 			}
 		})
 	}
@@ -4517,7 +4520,7 @@ func TestStructOfWithInterface(t *testing.T) {
 			if table.impl {
 				t.Errorf("test-%d: type=%v fails to implement Iface.\n", i, table.typ)
 			} else {
-				t.Errorf("test-%d: type=%v should NOT implement Iface\n", table.typ)
+				t.Errorf("test-%d: type=%v should NOT implement Iface\n", i, table.typ)
 			}
 			continue
 		}
@@ -4745,7 +4748,7 @@ func TestFuncOf(t *testing.T) {
 		if len(args) != 1 {
 			t.Errorf("args == %v, want exactly one arg", args)
 		} else if args[0].Type() != TypeOf(K("")) {
-			t.Errorf("args[0] is type %v, want %v", args[0].Type, TypeOf(K("")))
+			t.Errorf("args[0] is type %v, want %v", args[0].Type(), TypeOf(K("")))
 		} else if args[0].String() != "gopher" {
 			t.Errorf("args[0] = %q, want %q", args[0].String(), "gopher")
 		}
@@ -4757,7 +4760,7 @@ func TestFuncOf(t *testing.T) {
 	if len(outs) != 1 {
 		t.Fatalf("v.Call returned %v, want exactly one result", outs)
 	} else if outs[0].Type() != TypeOf(V(0)) {
-		t.Fatalf("c.Call[0] is type %v, want %v", outs[0].Type, TypeOf(V(0)))
+		t.Fatalf("c.Call[0] is type %v, want %v", outs[0].Type(), TypeOf(V(0)))
 	}
 	f := outs[0].Float()
 	if f != 3.14 {
@@ -5218,6 +5221,41 @@ func TestLargeGCProg(t *testing.T) {
 	fv.Call([]Value{ValueOf([256]*byte{})})
 }
 
+func fieldIndexRecover(t Type, i int) (recovered interface{}) {
+	defer func() {
+		recovered = recover()
+	}()
+
+	t.Field(i)
+	return
+}
+
+// Issue 15046.
+func TestTypeFieldOutOfRangePanic(t *testing.T) {
+	typ := TypeOf(struct{ X int }{10})
+	testIndices := [...]struct {
+		i         int
+		mustPanic bool
+	}{
+		0: {-2, true},
+		1: {0, false},
+		2: {1, true},
+		3: {1 << 10, true},
+	}
+	for i, tt := range testIndices {
+		recoveredErr := fieldIndexRecover(typ, tt.i)
+		if tt.mustPanic {
+			if recoveredErr == nil {
+				t.Errorf("#%d: fieldIndex %d expected to panic", i, tt.i)
+			}
+		} else {
+			if recoveredErr != nil {
+				t.Errorf("#%d: got err=%v, expected no panic", i, recoveredErr)
+			}
+		}
+	}
+}
+
 // Issue 9179.
 func TestCallGC(t *testing.T) {
 	f := func(a, b, c, d, e string) {
@@ -5395,6 +5433,9 @@ func verifyGCBitsSlice(t *testing.T, typ Type, cap int, bits []byte) {
 	bits = rep(cap, bits)
 	for len(bits) > 2 && bits[len(bits)-1] == 0 {
 		bits = bits[:len(bits)-1]
+	}
+	if len(bits) == 2 && bits[0] == 0 && bits[1] == 0 {
+		bits = bits[:0]
 	}
 	if !bytes.Equal(heapBits, bits) {
 		t.Errorf("heapBits incorrect for make(%v, 0, %v)\nhave %v\nwant %v", typ, cap, heapBits, bits)
@@ -5651,25 +5692,33 @@ func TestChanAlloc(t *testing.T) {
 	// allocs < 0.5 condition will trigger and this test should be fixed.
 }
 
+type TheNameOfThisTypeIsExactly255BytesLongSoWhenTheCompilerPrependsTheReflectTestPackageNameAndExtraStarTheLinkerRuntimeAndReflectPackagesWillHaveToCorrectlyDecodeTheSecondLengthByte0123456789_0123456789_0123456789_0123456789_0123456789_012345678 int
+
 type nameTest struct {
 	v    interface{}
 	want string
 }
 
 var nameTests = []nameTest{
-	{int32(0), "int32"},
-	{D1{}, "D1"},
-	{[]D1{}, ""},
-	{(chan D1)(nil), ""},
-	{(func() D1)(nil), ""},
-	{(<-chan D1)(nil), ""},
-	{(chan<- D1)(nil), ""},
+	{(*int32)(nil), "int32"},
+	{(*D1)(nil), "D1"},
+	{(*[]D1)(nil), ""},
+	{(*chan D1)(nil), ""},
+	{(*func() D1)(nil), ""},
+	{(*<-chan D1)(nil), ""},
+	{(*chan<- D1)(nil), ""},
+	{(*interface{})(nil), ""},
+	{(*interface {
+		F()
+	})(nil), ""},
+	{(*TheNameOfThisTypeIsExactly255BytesLongSoWhenTheCompilerPrependsTheReflectTestPackageNameAndExtraStarTheLinkerRuntimeAndReflectPackagesWillHaveToCorrectlyDecodeTheSecondLengthByte0123456789_0123456789_0123456789_0123456789_0123456789_012345678)(nil), "TheNameOfThisTypeIsExactly255BytesLongSoWhenTheCompilerPrependsTheReflectTestPackageNameAndExtraStarTheLinkerRuntimeAndReflectPackagesWillHaveToCorrectlyDecodeTheSecondLengthByte0123456789_0123456789_0123456789_0123456789_0123456789_012345678"},
 }
 
 func TestNames(t *testing.T) {
 	for _, test := range nameTests {
-		if got := TypeOf(test.v).Name(); got != test.want {
-			t.Errorf("%T Name()=%q, want %q", test.v, got, test.want)
+		typ := TypeOf(test.v).Elem()
+		if got := typ.Name(); got != test.want {
+			t.Errorf("%v Name()=%q, want %q", typ, got, test.want)
 		}
 	}
 }
@@ -5731,5 +5780,26 @@ func TestMethodPkgPathReadable(t *testing.T) {
 	m := v.Type().Method(0)
 	if m.PkgPath != "reflect" {
 		t.Errorf(`PkgPath=%q, want "reflect"`, m.PkgPath)
+	}
+}
+
+func TestTypeStrings(t *testing.T) {
+	type stringTest struct {
+		typ  Type
+		want string
+	}
+	stringTests := []stringTest{
+		{TypeOf(func(int) {}), "func(int)"},
+		{FuncOf([]Type{TypeOf(int(0))}, nil, false), "func(int)"},
+		{TypeOf(XM{}), "reflect_test.XM"},
+		{TypeOf(new(XM)), "*reflect_test.XM"},
+		{TypeOf(new(XM).String), "func() string"},
+		{TypeOf(new(XM)).Method(0).Type, "func(*reflect_test.XM) string"},
+	}
+
+	for i, test := range stringTests {
+		if got, want := test.typ.String(), test.want; got != want {
+			t.Errorf("type %d String()=%q, want %q", i, got, want)
+		}
 	}
 }

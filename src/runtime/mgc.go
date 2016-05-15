@@ -762,7 +762,7 @@ var work struct {
 	alldone note
 
 	// Number of roots of various root types. Set by gcMarkRootPrepare.
-	nDataRoots, nBSSRoots, nSpanRoots, nStackRoots int
+	nDataRoots, nBSSRoots, nSpanRoots, nStackRoots, nRescanRoots int
 
 	// markrootDone indicates that roots have been marked at least
 	// once during the current GC cycle. This is checked by root
@@ -828,6 +828,14 @@ var work struct {
 	assistQueue struct {
 		lock       mutex
 		head, tail guintptr
+	}
+
+	// rescan is a list of G's that need to be rescanned during
+	// mark termination. A G adds itself to this list when it
+	// first invalidates its stack scan.
+	rescan struct {
+		lock mutex
+		list []guintptr
 	}
 
 	// Timing/utilization stats for this cycle.
@@ -1078,13 +1086,6 @@ top:
 		// cached workbufs.
 		atomic.Xadd(&work.nwait, -1)
 
-		// Rescan global data and BSS. There may still work
-		// workers running at this point, so bump "jobs" down
-		// before "next" so they won't try running root jobs
-		// until we set next.
-		atomic.Store(&work.markrootJobs, uint32(fixedRootCount+work.nDataRoots+work.nBSSRoots))
-		atomic.Store(&work.markrootNext, fixedRootCount)
-
 		// GC is set up for mark 2. Let Gs blocked on the
 		// transition lock go while we flush caches.
 		semrelease(&work.markDoneSema)
@@ -1265,6 +1266,13 @@ func gcMarkTermination() {
 
 	// Free stack spans. This must be done between GC cycles.
 	systemstack(freeStackSpans)
+
+	// Best-effort remove stack barriers so they don't get in the
+	// way of things like GDB and perf.
+	lock(&allglock)
+	myallgs := allgs
+	unlock(&allglock)
+	gcTryRemoveAllStackBarriers(myallgs)
 
 	// Print gctrace before dropping worldsema. As soon as we drop
 	// worldsema another cycle could start and smash the stats
@@ -1729,13 +1737,21 @@ func gcCopySpans() {
 func gcResetMarkState() {
 	// This may be called during a concurrent phase, so make sure
 	// allgs doesn't change.
+	if !(gcphase == _GCoff || gcphase == _GCmarktermination) {
+		// Accessing gcRescan is unsafe.
+		throw("bad GC phase")
+	}
 	lock(&allglock)
 	for _, gp := range allgs {
 		gp.gcscandone = false  // set to true in gcphasework
 		gp.gcscanvalid = false // stack has not been scanned
+		gp.gcRescan = -1
 		gp.gcAssistBytes = 0
 	}
 	unlock(&allglock)
+
+	// Clear rescan list.
+	work.rescan.list = work.rescan.list[:0]
 
 	work.bytesMarked = 0
 	work.initialHeapLive = memstats.heap_live

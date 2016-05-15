@@ -26,9 +26,6 @@ func applyRewrite(f *Func, rb func(*Block) bool, rv func(*Value, *Config) bool) 
 	for {
 		change := false
 		for _, b := range f.Blocks {
-			if b.Kind == BlockDead {
-				continue
-			}
 			if b.Control != nil && b.Control.Op == OpCopy {
 				for b.Control.Op == OpCopy {
 					b.SetControl(b.Control.Args[0])
@@ -53,23 +50,7 @@ func applyRewrite(f *Func, rb func(*Block) bool, rv func(*Value, *Config) bool) 
 					if a.Op != OpCopy {
 						continue
 					}
-					x := a.Args[0]
-					// Rewriting can generate OpCopy loops.
-					// They are harmless (see removePredecessor),
-					// but take care to stop if we find a cycle.
-					slow := x // advances every other iteration
-					var advance bool
-					for x.Op == OpCopy {
-						x = x.Args[0]
-						if slow == x {
-							break
-						}
-						if advance {
-							slow = slow.Args[0]
-						}
-						advance = !advance
-					}
-					v.SetArg(i, x)
+					v.SetArg(i, copySource(a))
 					change = true
 					for a.Uses == 0 {
 						b := a.Args[0]
@@ -90,7 +71,7 @@ func applyRewrite(f *Func, rb func(*Block) bool, rv func(*Value, *Config) bool) 
 			break
 		}
 	}
-	// remove clobbered copies
+	// remove clobbered values
 	for _, b := range f.Blocks {
 		j := 0
 		for i, v := range b.Values {
@@ -161,7 +142,6 @@ func mergeSym(x, y interface{}) interface{} {
 		return x
 	}
 	panic(fmt.Sprintf("mergeSym with two non-nil syms %s %s", x, y))
-	return nil
 }
 func canMergeSym(x, y interface{}) bool {
 	return x == nil || y == nil
@@ -337,7 +317,7 @@ func mergePoint(b *Block, a ...*Value) *Block {
 			// Don't know which way to go back. Abort.
 			return nil
 		}
-		b = b.Preds[0]
+		b = b.Preds[0].b
 		d--
 	}
 	return nil // too far away
@@ -361,9 +341,19 @@ found:
 		if len(b.Preds) > 1 {
 			return nil
 		}
-		b = b.Preds[0]
+		b = b.Preds[0].b
 		d--
 
 	}
 	return nil // too far away
+}
+
+// clobber invalidates v.  Returns true.
+// clobber is used by rewrite rules to:
+//   A) make sure v is really dead and never used again.
+//   B) decrement use counts of v's args.
+func clobber(v *Value) bool {
+	v.reset(OpInvalid)
+	// Note: leave v.Block intact.  The Block field is used after clobber.
+	return true
 }

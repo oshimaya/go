@@ -30,16 +30,16 @@ func phiopt(f *Func) {
 			continue
 		}
 
-		pb0, b0 := b, b.Preds[0]
+		pb0, b0 := b, b.Preds[0].b
 		for len(b0.Succs) == 1 && len(b0.Preds) == 1 {
-			pb0, b0 = b0, b0.Preds[0]
+			pb0, b0 = b0, b0.Preds[0].b
 		}
 		if b0.Kind != BlockIf {
 			continue
 		}
-		pb1, b1 := b, b.Preds[1]
+		pb1, b1 := b, b.Preds[1].b
 		for len(b1.Succs) == 1 && len(b1.Preds) == 1 {
-			pb1, b1 = b1, b1.Preds[0]
+			pb1, b1 = b1, b1.Preds[0].b
 		}
 		if b1 != b0 {
 			continue
@@ -48,9 +48,9 @@ func phiopt(f *Func) {
 
 		// reverse is the predecessor from which the truth value comes.
 		var reverse int
-		if b0.Succs[0] == pb0 && b0.Succs[1] == pb1 {
+		if b0.Succs[0].b == pb0 && b0.Succs[1].b == pb1 {
 			reverse = 0
-		} else if b0.Succs[0] == pb1 && b0.Succs[1] == pb0 {
+		} else if b0.Succs[0].b == pb1 && b0.Succs[1].b == pb0 {
 			reverse = 1
 		} else {
 			b.Fatalf("invalid predecessors\n")
@@ -84,7 +84,7 @@ func phiopt(f *Func) {
 			// of value are not seen if a is false.
 			if v.Args[reverse].Op == OpConstBool && v.Args[reverse].AuxInt == 1 {
 				if tmp := v.Args[1-reverse]; f.sdom.isAncestorEq(tmp.Block, b) {
-					v.reset(OpOr8)
+					v.reset(OpOrB)
 					v.SetArgs2(b0.Control, tmp)
 					if f.pass.debug > 0 {
 						f.Config.Warnl(b.Line, "converted OpPhi to %v", v.Op)
@@ -100,7 +100,7 @@ func phiopt(f *Func) {
 			// of value are not seen if a is false.
 			if v.Args[1-reverse].Op == OpConstBool && v.Args[1-reverse].AuxInt == 0 {
 				if tmp := v.Args[reverse]; f.sdom.isAncestorEq(tmp.Block, b) {
-					v.reset(OpAnd8)
+					v.reset(OpAndB)
 					v.SetArgs2(b0.Control, tmp)
 					if f.pass.debug > 0 {
 						f.Config.Warnl(b.Line, "converted OpPhi to %v", v.Op)

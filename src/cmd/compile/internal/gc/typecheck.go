@@ -278,7 +278,7 @@ OpSwitch:
 	default:
 		Dump("typecheck", n)
 
-		Fatalf("typecheck %v", Oconv(n.Op, 0))
+		Fatalf("typecheck %v", n.Op)
 
 	// names
 	case OLITERAL:
@@ -611,7 +611,7 @@ OpSwitch:
 				aop = assignop(l.Type, r.Type, nil)
 				if aop != 0 {
 					if r.Type.IsInterface() && !l.Type.IsInterface() && !l.Type.IsComparable() {
-						Yyerror("invalid operation: %v (operator %v not defined on %s)", n, Oconv(op, 0), typekind(l.Type))
+						Yyerror("invalid operation: %v (operator %v not defined on %s)", n, op, typekind(l.Type))
 						n.Type = nil
 						return n
 					}
@@ -633,7 +633,7 @@ OpSwitch:
 				aop = assignop(r.Type, l.Type, nil)
 				if aop != 0 {
 					if l.Type.IsInterface() && !r.Type.IsInterface() && !r.Type.IsComparable() {
-						Yyerror("invalid operation: %v (operator %v not defined on %s)", n, Oconv(op, 0), typekind(r.Type))
+						Yyerror("invalid operation: %v (operator %v not defined on %s)", n, op, typekind(r.Type))
 						n.Type = nil
 						return n
 					}
@@ -664,7 +664,7 @@ OpSwitch:
 		}
 
 		if !okfor[op][et] {
-			Yyerror("invalid operation: %v (operator %v not defined on %s)", n, Oconv(op, 0), typekind(t))
+			Yyerror("invalid operation: %v (operator %v not defined on %s)", n, op, typekind(t))
 			n.Type = nil
 			return n
 		}
@@ -774,7 +774,7 @@ OpSwitch:
 			return n
 		}
 		if !okfor[n.Op][t.Etype] {
-			Yyerror("invalid operation: %v %v", Oconv(n.Op, 0), t)
+			Yyerror("invalid operation: %v %v", n.Op, t)
 			n.Type = nil
 			return n
 		}
@@ -861,7 +861,7 @@ OpSwitch:
 			}
 
 			if n.Type.Etype != TFUNC || n.Type.Recv() == nil {
-				Yyerror("type %v has no method %v", n.Left.Type, Sconv(n.Right.Sym, FmtShort))
+				Yyerror("type %v has no method %v", n.Left.Type, sconv(n.Right.Sym, FmtShort))
 				n.Type = nil
 				return n
 			}
@@ -1105,14 +1105,19 @@ OpSwitch:
 		n.Type = nil
 		break OpSwitch
 
-	case OSLICE:
+	case OSLICE, OSLICE3:
 		ok |= Erv
 		n.Left = typecheck(n.Left, top)
-		n.Right.Left = typecheck(n.Right.Left, Erv)
-		n.Right.Right = typecheck(n.Right.Right, Erv)
+		low, high, max := n.SliceBounds()
+		hasmax := n.Op.IsSlice3()
+		low = typecheck(low, Erv)
+		high = typecheck(high, Erv)
+		max = typecheck(max, Erv)
 		n.Left = defaultlit(n.Left, nil)
-		n.Right.Left = indexlit(n.Right.Left)
-		n.Right.Right = indexlit(n.Right.Right)
+		low = indexlit(low)
+		high = indexlit(high)
+		max = indexlit(max)
+		n.SetSliceBounds(low, high, max)
 		l := n.Left
 		if l.Type.IsArray() {
 			if !islvalue(n.Left) {
@@ -1134,78 +1139,22 @@ OpSwitch:
 		}
 		var tp *Type
 		if t.IsString() {
+			if hasmax {
+				Yyerror("invalid operation %v (3-index slice of string)", n)
+				n.Type = nil
+				return n
+			}
 			n.Type = t
 			n.Op = OSLICESTR
 		} else if t.IsPtr() && t.Elem().IsArray() {
 			tp = t.Elem()
 			n.Type = typSlice(tp.Elem())
 			dowidth(n.Type)
-			n.Op = OSLICEARR
-		} else if t.IsSlice() {
-			n.Type = t
-		} else {
-			Yyerror("cannot slice %v (type %v)", l, t)
-			n.Type = nil
-			return n
-		}
-
-		lo := n.Right.Left
-		if lo != nil && !checksliceindex(l, lo, tp) {
-			n.Type = nil
-			return n
-		}
-		hi := n.Right.Right
-		if hi != nil && !checksliceindex(l, hi, tp) {
-			n.Type = nil
-			return n
-		}
-		if !checksliceconst(lo, hi) {
-			n.Type = nil
-			return n
-		}
-		break OpSwitch
-
-	case OSLICE3:
-		ok |= Erv
-		n.Left = typecheck(n.Left, top)
-		n.Right.Left = typecheck(n.Right.Left, Erv)
-		n.Right.Right.Left = typecheck(n.Right.Right.Left, Erv)
-		n.Right.Right.Right = typecheck(n.Right.Right.Right, Erv)
-		n.Left = defaultlit(n.Left, nil)
-		n.Right.Left = indexlit(n.Right.Left)
-		n.Right.Right.Left = indexlit(n.Right.Right.Left)
-		n.Right.Right.Right = indexlit(n.Right.Right.Right)
-		l := n.Left
-		if l.Type.IsArray() {
-			if !islvalue(n.Left) {
-				Yyerror("invalid operation %v (slice of unaddressable value)", n)
-				n.Type = nil
-				return n
+			if hasmax {
+				n.Op = OSLICE3ARR
+			} else {
+				n.Op = OSLICEARR
 			}
-
-			n.Left = Nod(OADDR, n.Left, nil)
-			n.Left.Implicit = true
-			n.Left = typecheck(n.Left, Erv)
-			l = n.Left
-		}
-
-		t := l.Type
-		if t == nil {
-			n.Type = nil
-			return n
-		}
-		if t.IsString() {
-			Yyerror("invalid operation %v (3-index slice of string)", n)
-			n.Type = nil
-			return n
-		}
-
-		var tp *Type
-		if t.IsPtr() && t.Elem().IsArray() {
-			tp = t.Elem()
-			n.Type = typSlice(tp.Elem())
-			dowidth(n.Type)
-			n.Op = OSLICE3ARR
 		} else if t.IsSlice() {
 			n.Type = t
 		} else {
@@ -1214,22 +1163,19 @@ OpSwitch:
 			return n
 		}
 
-		lo := n.Right.Left
-		if lo != nil && !checksliceindex(l, lo, tp) {
+		if low != nil && !checksliceindex(l, low, tp) {
 			n.Type = nil
 			return n
 		}
-		mid := n.Right.Right.Left
-		if mid != nil && !checksliceindex(l, mid, tp) {
+		if high != nil && !checksliceindex(l, high, tp) {
 			n.Type = nil
 			return n
 		}
-		hi := n.Right.Right.Right
-		if hi != nil && !checksliceindex(l, hi, tp) {
+		if max != nil && !checksliceindex(l, max, tp) {
 			n.Type = nil
 			return n
 		}
-		if !checksliceconst(lo, hi) || !checksliceconst(lo, mid) || !checksliceconst(mid, hi) {
+		if !checksliceconst(low, high) || !checksliceconst(low, max) || !checksliceconst(high, max) {
 			n.Type = nil
 			return n
 		}
@@ -1368,7 +1314,7 @@ OpSwitch:
 
 	case OCAP, OLEN, OREAL, OIMAG:
 		ok |= Erv
-		if !onearg(n, "%v", Oconv(n.Op, 0)) {
+		if !onearg(n, "%v", n.Op) {
 			n.Type = nil
 			return n
 		}
@@ -1434,7 +1380,7 @@ OpSwitch:
 		break OpSwitch
 
 	badcall1:
-		Yyerror("invalid argument %v for %v", Nconv(n.Left, FmtLong), Oconv(n.Op, 0))
+		Yyerror("invalid argument %v for %v", Nconv(n.Left, FmtLong), n.Op)
 		n.Type = nil
 		return n
 
@@ -1517,7 +1463,7 @@ OpSwitch:
 		break OpSwitch
 
 	case OCLOSE:
-		if !onearg(n, "%v", Oconv(n.Op, 0)) {
+		if !onearg(n, "%v", n.Op) {
 			n.Type = nil
 			return n
 		}
@@ -2338,19 +2284,19 @@ func twoarg(n *Node) bool {
 		return true
 	}
 	if n.List.Len() == 0 {
-		Yyerror("missing argument to %v - %v", Oconv(n.Op, 0), n)
+		Yyerror("missing argument to %v - %v", n.Op, n)
 		return false
 	}
 
 	n.Left = n.List.First()
 	if n.List.Len() == 1 {
-		Yyerror("missing argument to %v - %v", Oconv(n.Op, 0), n)
+		Yyerror("missing argument to %v - %v", n.Op, n)
 		n.List.Set(nil)
 		return false
 	}
 
 	if n.List.Len() > 2 {
-		Yyerror("too many arguments to %v - %v", Oconv(n.Op, 0), n)
+		Yyerror("too many arguments to %v - %v", n.Op, n)
 		n.List.Set(nil)
 		return false
 	}
@@ -2420,7 +2366,7 @@ func looktypedot(n *Node, t *Type, dostrcmp int) bool {
 
 	// disallow T.m if m requires *T receiver
 	if f2.Type.Recv().Type.IsPtr() && !t.IsPtr() && f2.Embedded != 2 && !isifacemethod(f2.Type) {
-		Yyerror("invalid method expression %v (needs pointer receiver: (*%v).%v)", n, t, Sconv(f2.Sym, FmtShort))
+		Yyerror("invalid method expression %v (needs pointer receiver: (*%v).%v)", n, t, sconv(f2.Sym, FmtShort))
 		return false
 	}
 
@@ -2716,7 +2662,7 @@ func typecheckaste(op Op, call *Node, isddd bool, tstruct *Type, nl Nodes, desc 
 		if call != nil {
 			Yyerror("invalid use of ... in call to %v", call)
 		} else {
-			Yyerror("invalid use of ... in %v", Oconv(op, 0))
+			Yyerror("invalid use of ... in %v", op)
 		}
 	}
 
@@ -2736,7 +2682,7 @@ notenough:
 				Yyerror("not enough arguments in call to %v", call)
 			}
 		} else {
-			Yyerror("not enough arguments to %v", Oconv(op, 0))
+			Yyerror("not enough arguments to %v", op)
 		}
 		if n != nil {
 			n.Diag = 1
@@ -2749,7 +2695,7 @@ toomany:
 	if call != nil {
 		Yyerror("too many arguments in call to %v", call)
 	} else {
-		Yyerror("too many arguments to %v", Oconv(op, 0))
+		Yyerror("too many arguments to %v", op)
 	}
 	goto out
 }
@@ -3153,8 +3099,6 @@ func islvalue(n *Node) bool {
 			return false
 		}
 		fallthrough
-
-		// fall through
 	case OIND, ODOTPTR, OCLOSUREVAR, OPARAM:
 		return true
 
@@ -3662,7 +3606,7 @@ func typecheckdef(n *Node) *Node {
 
 	switch n.Op {
 	default:
-		Fatalf("typecheckdef %v", Oconv(n.Op, 0))
+		Fatalf("typecheckdef %v", n.Op)
 
 		// not really syms
 	case OGOTO, OLABEL:
@@ -3858,11 +3802,8 @@ func markbreak(n *Node, implicit *Node) {
 		ORANGE:
 		implicit = n
 		fallthrough
-
-		// fall through
 	default:
 		markbreak(n.Left, implicit)
-
 		markbreak(n.Right, implicit)
 		markbreaklist(n.Ninit, implicit)
 		markbreaklist(n.Nbody, implicit)
@@ -3958,7 +3899,7 @@ func (n *Node) isterminating() bool {
 }
 
 func checkreturn(fn *Node) {
-	if fn.Type.Results().NumFields() != 0 && len(fn.Nbody.Slice()) != 0 {
+	if fn.Type.Results().NumFields() != 0 && fn.Nbody.Len() != 0 {
 		markbreaklist(fn.Nbody, nil)
 		if !fn.Nbody.isterminating() {
 			yyerrorl(fn.Func.Endlineno, "missing return at end of function")

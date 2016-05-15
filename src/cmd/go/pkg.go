@@ -39,8 +39,10 @@ type Package struct {
 	Goroot        bool   `json:",omitempty"` // is this package found in the Go root?
 	Standard      bool   `json:",omitempty"` // is this package part of the standard Go library?
 	Stale         bool   `json:",omitempty"` // would 'go install' do anything for this package?
+	StaleReason   string `json:",omitempty"` // why is Stale true?
 	Root          string `json:",omitempty"` // Go root or Go path dir containing this package
 	ConflictDir   string `json:",omitempty"` // Dir is hidden by this other directory
+	BinaryOnly    bool   `json:",omitempty"` // package cannot be recompiled
 
 	// Source files
 	GoFiles        []string `json:",omitempty"` // .go source files (excluding CgoFiles, TestGoFiles, XTestGoFiles)
@@ -152,6 +154,8 @@ func (p *Package) copyBuild(pp *build.Package) {
 	p.Doc = pp.Doc
 	p.Root = pp.Root
 	p.ConflictDir = pp.ConflictDir
+	p.BinaryOnly = pp.BinaryOnly
+
 	// TODO? Target
 	p.Goroot = pp.Goroot
 	p.Standard = p.Goroot && p.ImportPath != "" && isStandardImportPath(p.ImportPath)
@@ -1045,7 +1049,15 @@ func (p *Package) load(stk *importStack, bp *build.Package, err error) *Package 
 		}
 	}
 
-	computeBuildID(p)
+	if p.BinaryOnly {
+		// For binary-only package, use build ID from supplied package binary.
+		buildID, err := readBuildID(p)
+		if err == nil {
+			p.buildID = buildID
+		}
+	} else {
+		computeBuildID(p)
+	}
 	return p
 }
 
@@ -1085,7 +1097,7 @@ func packageList(roots []*Package) []*Package {
 // at the named pkgs (command-line arguments).
 func computeStale(pkgs ...*Package) {
 	for _, p := range packageList(pkgs) {
-		p.Stale = isStale(p)
+		p.Stale, p.StaleReason = isStale(p)
 	}
 }
 
@@ -1356,40 +1368,50 @@ var isGoRelease = strings.HasPrefix(runtime.Version(), "go1")
 // standard library, even in release versions. This makes
 // 'go build -tags netgo' work, among other things.
 
-// isStale reports whether package p needs to be rebuilt.
-func isStale(p *Package) bool {
+// isStale reports whether package p needs to be rebuilt,
+// along with the reason why.
+func isStale(p *Package) (bool, string) {
 	if p.Standard && (p.ImportPath == "unsafe" || buildContext.Compiler == "gccgo") {
 		// fake, builtin package
-		return false
+		return false, "builtin package"
 	}
 	if p.Error != nil {
-		return true
+		return true, "errors loading package"
+	}
+	if p.Stale {
+		return true, p.StaleReason
 	}
 
-	// A package without Go sources means we only found
-	// the installed .a file. Since we don't know how to rebuild
-	// it, it can't be stale, even if -a is set. This enables binary-only
-	// distributions of Go packages, although such binaries are
-	// only useful with the specific version of the toolchain that
-	// created them.
-	if len(p.gofiles) == 0 && !p.usesSwig() {
-		return false
+	// If this is a package with no source code, it cannot be rebuilt.
+	// If the binary is missing, we mark the package stale so that
+	// if a rebuild is needed, that rebuild attempt will produce a useful error.
+	// (Some commands, such as 'go list', do not attempt to rebuild.)
+	if p.BinaryOnly {
+		if p.target == "" {
+			// Fail if a build is attempted.
+			return true, "no source code for package, but no install target"
+		}
+		if _, err := os.Stat(p.target); err != nil {
+			// Fail if a build is attempted.
+			return true, "no source code for package, but cannot access install target: " + err.Error()
+		}
+		return false, "no source code for package"
 	}
 
 	// If the -a flag is given, rebuild everything.
 	if buildA {
-		return true
+		return true, "build -a flag in use"
 	}
 
-	// If there's no install target or it's already marked stale, we have to rebuild.
-	if p.target == "" || p.Stale {
-		return true
+	// If there's no install target, we have to rebuild.
+	if p.target == "" {
+		return true, "no install target"
 	}
 
 	// Package is stale if completely unbuilt.
 	fi, err := os.Stat(p.target)
 	if err != nil {
-		return true
+		return true, "cannot stat install target"
 	}
 
 	// Package is stale if the expected build ID differs from the
@@ -1402,13 +1424,13 @@ func isStale(p *Package) bool {
 	// See issue 8290 and issue 10702.
 	targetBuildID, err := readBuildID(p)
 	if err == nil && targetBuildID != p.buildID {
-		return true
+		return true, "build ID mismatch"
 	}
 
 	// Package is stale if a dependency is.
 	for _, p1 := range p.deps {
 		if p1.Stale {
-			return true
+			return true, "stale dependency"
 		}
 	}
 
@@ -1431,7 +1453,7 @@ func isStale(p *Package) bool {
 	// install is to run make.bash, which will remove the old package archives
 	// before rebuilding.)
 	if p.Standard && isGoRelease {
-		return false
+		return false, "standard package in Go release distribution"
 	}
 
 	// Time-based staleness.
@@ -1446,7 +1468,7 @@ func isStale(p *Package) bool {
 	// Package is stale if a dependency is, or if a dependency is newer.
 	for _, p1 := range p.deps {
 		if p1.target != "" && olderThan(p1.target) {
-			return true
+			return true, "newer dependency"
 		}
 	}
 
@@ -1465,10 +1487,10 @@ func isStale(p *Package) bool {
 	// taken care of above (at least when the installed Go is a released version).
 	if p.Root != goroot {
 		if olderThan(buildToolchain.compiler()) {
-			return true
+			return true, "newer compiler"
 		}
 		if p.build.IsCommand() && olderThan(buildToolchain.linker()) {
-			return true
+			return true, "newer linker"
 		}
 	}
 
@@ -1513,11 +1535,11 @@ func isStale(p *Package) bool {
 	srcs := stringList(p.GoFiles, p.CFiles, p.CXXFiles, p.MFiles, p.HFiles, p.FFiles, p.SFiles, p.CgoFiles, p.SysoFiles, p.SwigFiles, p.SwigCXXFiles)
 	for _, src := range srcs {
 		if olderThan(filepath.Join(p.Dir, src)) {
-			return true
+			return true, "newer source file"
 		}
 	}
 
-	return false
+	return false, ""
 }
 
 // computeBuildID computes the build ID for p, leaving it in p.buildID.

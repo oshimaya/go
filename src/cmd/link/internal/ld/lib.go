@@ -8,7 +8,7 @@
 //	Portions Copyright © 2004,2006 Bruce Ellis
 //	Portions Copyright © 2005-2007 C H Forsyth (forsyth@terzarima.net)
 //	Revisions Copyright © 2000-2007 Lucent Technologies Inc. and others
-//	Portions Copyright © 2009 The Go Authors.  All rights reserved.
+//	Portions Copyright © 2009 The Go Authors. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -63,7 +63,7 @@ import (
 //	Portions Copyright © 2004,2006 Bruce Ellis
 //	Portions Copyright © 2005-2007 C H Forsyth (forsyth@terzarima.net)
 //	Revisions Copyright © 2000-2007 Lucent Technologies Inc. and others
-//	Portions Copyright © 2009 The Go Authors.  All rights reserved.
+//	Portions Copyright © 2009 The Go Authors. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -196,6 +196,7 @@ var (
 	Funcalign          int
 	iscgo              bool
 	elfglobalsymndx    int
+	flag_dumpdep       bool
 	flag_installsuffix string
 	flag_race          int
 	flag_msan          int
@@ -570,7 +571,8 @@ func loadlib() {
 
 	// cmd/7l doesn't support cgo internal linking
 	// This is https://golang.org/issue/10373.
-	if iscgo && goarch == "arm64" {
+	// mips64x doesn't support cgo internal linking either (golang.org/issue/14449)
+	if iscgo && (goarch == "arm64" || goarch == "mips64" || goarch == "mips64le") {
 		Linkmode = LinkExternal
 	}
 
@@ -1090,6 +1092,9 @@ func hostlink() {
 			argv = append(argv, "-Wl,-pagezero_size,4000000")
 		}
 	case BuildmodePIE:
+		if UseRelro() {
+			argv = append(argv, "-Wl,-z,relro")
+		}
 		argv = append(argv, "-pie")
 	case BuildmodeCShared:
 		if HEADTYPE == obj.Hdarwin {
@@ -1203,6 +1208,24 @@ func hostlink() {
 
 	argv = append(argv, ldflag...)
 
+	if flag_race != 0 {
+		// On a system where the toolchain creates position independent
+		// executables by default, tsan initialization can fail. So we pass
+		// -no-pie here, but support for that flag is quite new and we test
+		// for its support first.
+		src := filepath.Join(tmpdir, "trivial.c")
+		if err := ioutil.WriteFile(src, []byte{}, 0666); err != nil {
+			Ctxt.Diag("WriteFile trivial.c failed: %v", err)
+		}
+		cmd := exec.Command(argv[0], "-c", "-no-pie", "trivial.c")
+		cmd.Dir = tmpdir
+		out, err := cmd.CombinedOutput()
+		supported := err == nil && !bytes.Contains(out, []byte("unrecognized"))
+		if supported {
+			argv = append(argv, "-no-pie")
+		}
+	}
+
 	for _, p := range strings.Fields(extldflags) {
 		argv = append(argv, p)
 
@@ -1279,6 +1302,8 @@ func hostlinkArchArgs() []string {
 		return []string{"-marm"}
 	case sys.ARM64:
 		// nothing needed
+	case sys.MIPS64:
+		return []string{"-mabi=64"}
 	}
 	return nil
 }
@@ -1498,9 +1523,10 @@ func ldshlibsyms(shlib string) {
 		}
 		lsym := Linklookup(Ctxt, elfsym.Name, 0)
 		// Because loadlib above loads all .a files before loading any shared
-		// libraries, any symbols we find that duplicate symbols already
-		// loaded should be ignored (the symbols from the .a files "win").
-		if lsym.Type != 0 {
+		// libraries, any non-dynimport symbols we find that duplicate symbols
+		// already loaded should be ignored (the symbols from the .a files
+		// "win").
+		if lsym.Type != 0 && lsym.Type != obj.SDYNIMPORT {
 			continue
 		}
 		lsym.Type = obj.SDYNIMPORT

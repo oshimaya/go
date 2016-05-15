@@ -867,6 +867,9 @@ func (t *rtype) Name() string {
 	if hasPrefix(s, "func(") {
 		return ""
 	}
+	if hasPrefix(s, "interface {") {
+		return ""
+	}
 	switch s[0] {
 	case '[', '*', '<':
 		return ""
@@ -1175,7 +1178,7 @@ func (tag StructTag) Lookup(key string) (value string, ok bool) {
 // Field returns the i'th struct field.
 func (t *structType) Field(i int) (f StructField) {
 	if i < 0 || i >= len(t.fields) {
-		return
+		panic("reflect: Field index out of bounds")
 	}
 	p := &t.fields[i]
 	f.Type = toType(p.typ)
@@ -1982,6 +1985,7 @@ func FuncOf(in, out []Type, variadic bool) Type {
 	if len(args) > 50 {
 		panic("reflect.FuncOf does not support more than 50 arguments")
 	}
+	ft.tflag = 0
 	ft.hash = hash
 	ft.inCount = uint16(len(in))
 	ft.outCount = uint16(len(out))
@@ -2248,6 +2252,7 @@ func SliceOf(t Type) Type {
 	prototype := *(**sliceType)(unsafe.Pointer(&islice))
 	slice := new(sliceType)
 	*slice = *prototype
+	slice.tflag = 0
 	slice.str = resolveReflectName(newName(s, "", "", false))
 	slice.hash = fnv1(typ.hash, '[')
 	slice.elem = typ
@@ -2754,7 +2759,6 @@ func typeptrdata(t *rtype) uintptr {
 	default:
 		panic("reflect.typeptrdata: unexpected type, " + t.String())
 	}
-	return 0
 }
 
 // See cmd/compile/internal/gc/reflect.go for derivation of constant.

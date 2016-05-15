@@ -38,46 +38,67 @@ type dnsConn interface {
 
 	SetDeadline(time.Time) error
 
-	// readDNSResponse reads a DNS response message from the DNS
-	// transport endpoint and returns the received DNS response
-	// message.
-	readDNSResponse() (*dnsMsg, error)
-
-	// writeDNSQuery writes a DNS query message to the DNS
-	// connection endpoint.
-	writeDNSQuery(*dnsMsg) error
+	// dnsRoundTrip executes a single DNS transaction, returning a
+	// DNS response message for the provided DNS query message.
+	dnsRoundTrip(query *dnsMsg) (*dnsMsg, error)
 }
 
-func (c *UDPConn) readDNSResponse() (*dnsMsg, error) {
-	b := make([]byte, 512) // see RFC 1035
-	n, err := c.Read(b)
-	if err != nil {
-		return nil, err
-	}
-	msg := &dnsMsg{}
-	if !msg.Unpack(b[:n]) {
-		return nil, errors.New("cannot unmarshal DNS message")
-	}
-	return msg, nil
+func (c *UDPConn) dnsRoundTrip(query *dnsMsg) (*dnsMsg, error) {
+	return dnsRoundTripUDP(c, query)
 }
 
-func (c *UDPConn) writeDNSQuery(msg *dnsMsg) error {
-	b, ok := msg.Pack()
+// dnsRoundTripUDP implements the dnsRoundTrip interface for RFC 1035's
+// "UDP usage" transport mechanism. c should be a packet-oriented connection,
+// such as a *UDPConn.
+func dnsRoundTripUDP(c io.ReadWriter, query *dnsMsg) (*dnsMsg, error) {
+	b, ok := query.Pack()
 	if !ok {
-		return errors.New("cannot marshal DNS message")
+		return nil, errors.New("cannot marshal DNS message")
 	}
 	if _, err := c.Write(b); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+
+	b = make([]byte, 512) // see RFC 1035
+	for {
+		n, err := c.Read(b)
+		if err != nil {
+			return nil, err
+		}
+		resp := &dnsMsg{}
+		if !resp.Unpack(b[:n]) || !resp.IsResponseTo(query) {
+			// Ignore invalid responses as they may be malicious
+			// forgery attempts. Instead continue waiting until
+			// timeout. See golang.org/issue/13281.
+			continue
+		}
+		return resp, nil
+	}
 }
 
-func (c *TCPConn) readDNSResponse() (*dnsMsg, error) {
-	b := make([]byte, 1280) // 1280 is a reasonable initial size for IP over Ethernet, see RFC 4035
+func (c *TCPConn) dnsRoundTrip(out *dnsMsg) (*dnsMsg, error) {
+	return dnsRoundTripTCP(c, out)
+}
+
+// dnsRoundTripTCP implements the dnsRoundTrip interface for RFC 1035's
+// "TCP usage" transport mechanism. c should be a stream-oriented connection,
+// such as a *TCPConn.
+func dnsRoundTripTCP(c io.ReadWriter, query *dnsMsg) (*dnsMsg, error) {
+	b, ok := query.Pack()
+	if !ok {
+		return nil, errors.New("cannot marshal DNS message")
+	}
+	l := len(b)
+	b = append([]byte{byte(l >> 8), byte(l)}, b...)
+	if _, err := c.Write(b); err != nil {
+		return nil, err
+	}
+
+	b = make([]byte, 1280) // 1280 is a reasonable initial size for IP over Ethernet, see RFC 4035
 	if _, err := io.ReadFull(c, b[:2]); err != nil {
 		return nil, err
 	}
-	l := int(b[0])<<8 | int(b[1])
+	l = int(b[0])<<8 | int(b[1])
 	if l > len(b) {
 		b = make([]byte, l)
 	}
@@ -85,24 +106,14 @@ func (c *TCPConn) readDNSResponse() (*dnsMsg, error) {
 	if err != nil {
 		return nil, err
 	}
-	msg := &dnsMsg{}
-	if !msg.Unpack(b[:n]) {
+	resp := &dnsMsg{}
+	if !resp.Unpack(b[:n]) {
 		return nil, errors.New("cannot unmarshal DNS message")
 	}
-	return msg, nil
-}
-
-func (c *TCPConn) writeDNSQuery(msg *dnsMsg) error {
-	b, ok := msg.Pack()
-	if !ok {
-		return errors.New("cannot marshal DNS message")
+	if !resp.IsResponseTo(query) {
+		return nil, errors.New("invalid DNS response")
 	}
-	l := uint16(len(b))
-	b = append([]byte{byte(l >> 8), byte(l)}, b...)
-	if _, err := c.Write(b); err != nil {
-		return err
-	}
-	return nil
+	return resp, nil
 }
 
 func (d *Dialer) dialDNS(ctx context.Context, network, server string) (dnsConn, error) {
@@ -150,15 +161,9 @@ func exchange(ctx context.Context, server, name string, qtype uint16) (*dnsMsg, 
 			c.SetDeadline(d)
 		}
 		out.id = uint16(rand.Int()) ^ uint16(time.Now().UnixNano())
-		if err := c.writeDNSQuery(&out); err != nil {
-			return nil, mapErr(err)
-		}
-		in, err := c.readDNSResponse()
+		in, err := c.dnsRoundTrip(&out)
 		if err != nil {
 			return nil, mapErr(err)
-		}
-		if in.id != out.id {
-			return nil, errors.New("DNS message ID mismatch")
 		}
 		if in.truncated { // see RFC 5966
 			continue
@@ -175,8 +180,7 @@ func tryOneName(ctx context.Context, cfg *dnsConfig, name string, qtype uint16) 
 		return "", nil, &DNSError{Err: "no DNS servers", Name: name}
 	}
 
-	timeout := time.Duration(cfg.timeout) * time.Second
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(cfg.timeout)
 	if old, ok := ctx.Deadline(); !ok || deadline.Before(old) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, deadline)
@@ -186,7 +190,6 @@ func tryOneName(ctx context.Context, cfg *dnsConfig, name string, qtype uint16) 
 	var lastErr error
 	for i := 0; i < cfg.attempts; i++ {
 		for _, server := range cfg.servers {
-			server = JoinHostPort(server, "53")
 			msg, err := exchange(ctx, server, name, qtype)
 			if err != nil {
 				lastErr = &DNSError{
@@ -197,6 +200,12 @@ func tryOneName(ctx context.Context, cfg *dnsConfig, name string, qtype uint16) 
 				if nerr, ok := err.(Error); ok && nerr.Timeout() {
 					lastErr.(*DNSError).IsTimeout = true
 				}
+				continue
+			}
+			// libresolv continues to the next server when it receives
+			// an invalid referral response. See golang.org/issue/15434.
+			if msg.rcode == dnsRcodeSuccess && !msg.authoritative && !msg.recursion_available && len(msg.answer) == 0 && len(msg.extra) == 0 {
+				lastErr = &DNSError{Err: "lame referral", Name: name, Server: server}
 				continue
 			}
 			cname, rrs, err := answer(name, server, msg, qtype)
@@ -352,23 +361,23 @@ func (conf *dnsConfig) nameList(name string) []string {
 	if rooted {
 		return []string{name}
 	}
+
+	hasNdots := count(name, '.') >= conf.ndots
+	name += "."
+
 	// Build list of search choices.
 	names := make([]string, 0, 1+len(conf.search))
 	// If name has enough dots, try unsuffixed first.
-	if count(name, '.') >= conf.ndots {
-		names = append(names, name+".")
+	if hasNdots {
+		names = append(names, name)
 	}
 	// Try suffixes.
 	for _, suffix := range conf.search {
-		suffixed := name + "." + suffix
-		if suffixed[len(suffixed)-1] != '.' {
-			suffixed += "."
-		}
-		names = append(names, suffixed)
+		names = append(names, name+suffix)
 	}
 	// Try unsuffixed, if not tried first above.
-	if count(name, '.') < conf.ndots {
-		names = append(names, name+".")
+	if !hasNdots {
+		names = append(names, name)
 	}
 	return names
 }
