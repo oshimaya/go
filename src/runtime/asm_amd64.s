@@ -526,6 +526,7 @@ TEXT runtime·jmpdefer(SB), NOSPLIT, $0-16
 	MOVQ	fv+0(FP), DX	// fn
 	MOVQ	argp+8(FP), BX	// caller sp
 	LEAQ	-8(BX), SP	// caller sp after CALL
+	MOVQ	-8(SP), BP	// restore BP as if deferreturn returned (harmless if framepointers not in use)
 	SUBQ	$5, (SP)	// return to CALL again
 	MOVQ	0(DX), BX
 	JMP	BX	// but first run the deferred function
@@ -1786,7 +1787,7 @@ partial_success9to15:
 	JB loop9to15
 	JMP fail
 _16_or_more:
-	CMPQ AX, $17
+	CMPQ AX, $16
 	JA   _17_to_31
 	MOVOU (BP), X1
 	LEAQ -15(DI)(DX*1), DX
