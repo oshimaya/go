@@ -9,6 +9,7 @@ package http_test
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -1993,6 +1994,26 @@ func TestTimeoutHandlerStartTimerWhenServing(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != StatusNoContent {
 		t.Errorf("got res.StatusCode %d, want %v", res.StatusCode, StatusNoContent)
+	}
+}
+
+// https://golang.org/issue/15948
+func TestTimeoutHandlerEmptyResponse(t *testing.T) {
+	defer afterTest(t)
+	var handler HandlerFunc = func(w ResponseWriter, _ *Request) {
+		// No response.
+	}
+	timeout := 300 * time.Millisecond
+	ts := httptest.NewServer(TimeoutHandler(handler, timeout, ""))
+	defer ts.Close()
+
+	res, err := Get(ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != StatusOK {
+		t.Errorf("got res.StatusCode %d, want %v", res.StatusCode, StatusOK)
 	}
 }
 
@@ -4164,6 +4185,38 @@ func testServerContext_ServerContextKey(t *testing.T, h2 bool) {
 		t.Fatal(err)
 	}
 	res.Body.Close()
+}
+
+// https://golang.org/issue/15960
+func TestHandlerSetTransferEncodingChunked(t *testing.T) {
+	defer afterTest(t)
+	ht := newHandlerTest(HandlerFunc(func(w ResponseWriter, r *Request) {
+		w.Header().Set("Transfer-Encoding", "chunked")
+		w.Write([]byte("hello"))
+	}))
+	resp := ht.rawResponse("GET / HTTP/1.1\nHost: foo")
+	const hdr = "Transfer-Encoding: chunked"
+	if n := strings.Count(resp, hdr); n != 1 {
+		t.Errorf("want 1 occurrence of %q in response, got %v\nresponse: %v", hdr, n, resp)
+	}
+}
+
+// https://golang.org/issue/16063
+func TestHandlerSetTransferEncodingGzip(t *testing.T) {
+	defer afterTest(t)
+	ht := newHandlerTest(HandlerFunc(func(w ResponseWriter, r *Request) {
+		w.Header().Set("Transfer-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		gz.Write([]byte("hello"))
+		gz.Close()
+	}))
+	resp := ht.rawResponse("GET / HTTP/1.1\nHost: foo")
+	for _, v := range []string{"gzip", "chunked"} {
+		hdr := "Transfer-Encoding: " + v
+		if n := strings.Count(resp, hdr); n != 1 {
+			t.Errorf("want 1 occurrence of %q in response, got %v\nresponse: %v", hdr, n, resp)
+		}
+	}
 }
 
 func BenchmarkClientServer(b *testing.B) {

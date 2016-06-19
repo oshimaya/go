@@ -2573,6 +2573,9 @@ func (s *state) call(n *Node, k callKind) *ssa.Value {
 		}
 		i := s.expr(fn.Left)
 		itab := s.newValue1(ssa.OpITab, Types[TUINTPTR], i)
+		if k != callNormal {
+			s.nilCheck(itab)
+		}
 		itabidx := fn.Xoffset + 3*int64(Widthptr) + 8 // offset of fun field in runtime.itab
 		itab = s.newValue1I(ssa.OpOffPtr, Types[TUINTPTR], itabidx, itab)
 		if k == callNormal {
@@ -4378,7 +4381,7 @@ func (e *ssaExport) SplitStruct(name ssa.LocalSlot, i int) ssa.LocalSlot {
 // namedAuto returns a new AUTO variable with the given name and type.
 func (e *ssaExport) namedAuto(name string, typ ssa.Type) ssa.GCNode {
 	t := typ.(*Type)
-	s := Lookup(name)
+	s := &Sym{Name: name, Pkg: autopkg}
 	n := Nod(ONAME, nil, nil)
 	s.Def = n
 	s.Def.Used = true
