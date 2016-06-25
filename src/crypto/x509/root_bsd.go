@@ -10,5 +10,5 @@ package x509
 var certFiles = []string{
 	"/usr/local/share/certs/ca-root-nss.crt", // FreeBSD/DragonFly
 	"/etc/ssl/cert.pem",                      // OpenBSD
-	"/etc/openssl/certs/ca-certificates.crt", // NetBSD
+	"/etc/ssl/certs/ca-certificates.crt",	  // NetBSD
 }
