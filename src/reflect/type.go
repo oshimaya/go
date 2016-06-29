@@ -268,6 +268,9 @@ const (
 	// a program, the type *T also exists and reusing the str data
 	// saves binary size.
 	tflagExtraStar tflag = 1 << 1
+
+	// tflagNamed means the type has a name.
+	tflagNamed tflag = 1 << 2
 )
 
 // rtype is the common implementation of most values.
@@ -463,15 +466,13 @@ func (n name) tagLen() int {
 
 func (n name) name() (s string) {
 	if n.bytes == nil {
-		return ""
+		return
 	}
-	nl := n.nameLen()
-	if nl == 0 {
-		return ""
-	}
+	b := (*[4]byte)(unsafe.Pointer(n.bytes))
+
 	hdr := (*stringHeader)(unsafe.Pointer(&s))
-	hdr.Data = unsafe.Pointer(n.data(3))
-	hdr.Len = nl
+	hdr.Data = unsafe.Pointer(&b[3])
+	hdr.Len = int(b[1])<<8 | int(b[2])
 	return s
 }
 
@@ -659,16 +660,10 @@ type typeOff int32 // offset to an *rtype
 type textOff int32 // offset from top of text section
 
 func (t *rtype) nameOff(off nameOff) name {
-	if off == 0 {
-		return name{}
-	}
 	return name{(*byte)(resolveNameOff(unsafe.Pointer(t), int32(off)))}
 }
 
 func (t *rtype) typeOff(off typeOff) *rtype {
-	if off == 0 {
-		return nil
-	}
 	return (*rtype)(resolveTypeOff(unsafe.Pointer(t), int32(off)))
 }
 
@@ -820,6 +815,9 @@ func (t *rtype) NumMethod() int {
 		tt := (*interfaceType)(unsafe.Pointer(t))
 		return tt.NumMethod()
 	}
+	if t.tflag&tflagUncommon == 0 {
+		return 0 // avoid methodCache lock in zero case
+	}
 	return len(t.exportedMethods())
 }
 
@@ -890,34 +888,10 @@ func hasPrefix(s, prefix string) bool {
 }
 
 func (t *rtype) Name() string {
-	s := t.String()
-	switch s[0] {
-	case 'm':
-		if hasPrefix(s, "map[") {
-			return ""
-		}
-	case 's':
-		if hasPrefix(s, "struct {") {
-			return ""
-		}
-	case 'c':
-		if hasPrefix(s, "chan ") {
-			return ""
-		}
-		if hasPrefix(s, "chan<-") {
-			return ""
-		}
-	case 'f':
-		if hasPrefix(s, "func(") {
-			return ""
-		}
-	case 'i':
-		if hasPrefix(s, "interface {") {
-			return ""
-		}
-	case '[', '*', '<':
+	if t.tflag&tflagNamed == 0 {
 		return ""
 	}
+	s := t.String()
 	i := len(s) - 1
 	for i >= 0 {
 		if s[i] == '.' {

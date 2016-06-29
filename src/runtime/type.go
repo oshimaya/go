@@ -19,6 +19,7 @@ type tflag uint8
 const (
 	tflagUncommon  tflag = 1 << 0
 	tflagExtraStar tflag = 1 << 1
+	tflagNamed     tflag = 1 << 2
 )
 
 // Needs to be in sync with ../cmd/compile/internal/ld/decodesym.go:/^func.commonsize,
@@ -116,29 +117,10 @@ func hasPrefix(s, prefix string) bool {
 }
 
 func (t *_type) name() string {
+	if t.tflag&tflagNamed == 0 {
+		return ""
+	}
 	s := t.string()
-	if hasPrefix(s, "map[") {
-		return ""
-	}
-	if hasPrefix(s, "struct {") {
-		return ""
-	}
-	if hasPrefix(s, "chan ") {
-		return ""
-	}
-	if hasPrefix(s, "chan<-") {
-		return ""
-	}
-	if hasPrefix(s, "func(") {
-		return ""
-	}
-	if hasPrefix(s, "interface {") {
-		return ""
-	}
-	switch s[0] {
-	case '[', '*', '<':
-		return ""
-	}
 	i := len(s) - 1
 	for i >= 0 {
 		if s[i] == '.' {
@@ -188,32 +170,29 @@ func resolveNameOff(ptrInModule unsafe.Pointer, off nameOff) name {
 		return name{}
 	}
 	base := uintptr(ptrInModule)
-	var md *moduledata
-	for next := &firstmoduledata; next != nil; next = next.next {
-		if base >= next.types && base < next.etypes {
-			md = next
-			break
-		}
-	}
-	if md == nil {
-		reflectOffsLock()
-		res, found := reflectOffs.m[int32(off)]
-		reflectOffsUnlock()
-		if !found {
-			println("runtime: nameOff", hex(off), "base", hex(base), "not in ranges:")
-			for next := &firstmoduledata; next != nil; next = next.next {
-				println("\ttypes", hex(next.types), "etypes", hex(next.etypes))
+	for md := &firstmoduledata; md != nil; md = md.next {
+		if base >= md.types && base < md.etypes {
+			res := md.types + uintptr(off)
+			if res > md.etypes {
+				println("runtime: nameOff", hex(off), "out of range", hex(md.types), "-", hex(md.etypes))
+				throw("runtime: name offset out of range")
 			}
-			throw("runtime: name offset base pointer out of range")
+			return name{(*byte)(unsafe.Pointer(res))}
 		}
-		return name{(*byte)(res)}
 	}
-	res := md.types + uintptr(off)
-	if res > md.etypes {
-		println("runtime: nameOff", hex(off), "out of range", hex(md.types), "-", hex(md.etypes))
-		throw("runtime: name offset out of range")
+
+	// No module found. see if it is a run time name.
+	reflectOffsLock()
+	res, found := reflectOffs.m[int32(off)]
+	reflectOffsUnlock()
+	if !found {
+		println("runtime: nameOff", hex(off), "base", hex(base), "not in ranges:")
+		for next := &firstmoduledata; next != nil; next = next.next {
+			println("\ttypes", hex(next.types), "etypes", hex(next.etypes))
+		}
+		throw("runtime: name offset base pointer out of range")
 	}
-	return name{(*byte)(unsafe.Pointer(res))}
+	return name{(*byte)(res)}
 }
 
 func (t *_type) nameOff(off nameOff) name {
