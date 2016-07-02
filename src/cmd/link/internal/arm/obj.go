@@ -100,6 +100,7 @@ func archinit() {
 
 	case obj.Hlinux,
 		obj.Hfreebsd,
+		obj.Hnetbsd,
 		obj.Hnacl,
 		obj.Hdarwin:
 		break
