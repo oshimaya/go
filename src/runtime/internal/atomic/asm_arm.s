@@ -22,7 +22,23 @@ TEXT runtime∕internal∕atomic·armcas(SB),NOSPLIT,$0-13
 	MOVW	valptr+0(FP), R1
 	MOVW	old+4(FP), R2
 	MOVW	new+8(FP), R3
+
+	MOVB	runtime·goarm(SB), R11
+	CMP	$6, R11
+	BLT	casl
+cas0:
+	LD	(R1), R0
+	CMP	R0, R2
+	BNE	casfail
+	STR	R3, (R1)
+	LD	(R1), R0
+	CMP	R0, R3
+	BNE	cas0
+	MOVW	$1, R0
+	MOVB	R0, ret+12(FP)
+	RET
 casl:
+
 	LDREX	(R1), R0
 	CMP	R0, R2
 	BNE	casfail
