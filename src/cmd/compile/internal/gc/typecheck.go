@@ -1912,6 +1912,12 @@ OpSwitch:
 		n.Type = Ptrto(Types[TUINTPTR])
 		break OpSwitch
 
+	case OIDATA:
+		// Whoever creates the OIDATA node must know a priori the concrete type at that moment,
+		// usually by just having checked the OITAB.
+		Fatalf("cannot typecheck interface data %v", n)
+		break OpSwitch
+
 	case OSPTR:
 		ok |= Erv
 		n.Left = typecheck(n.Left, Erv)
@@ -3185,6 +3191,9 @@ func samesafeexpr(l *Node, r *Node) bool {
 
 	case OINDEX:
 		return samesafeexpr(l.Left, r.Left) && samesafeexpr(l.Right, r.Right)
+
+	case OLITERAL:
+		return eqval(l.Val(), r.Val())
 	}
 
 	return false

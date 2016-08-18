@@ -149,6 +149,18 @@ func canMergeSym(x, y interface{}) bool {
 	return x == nil || y == nil
 }
 
+// isArg returns whether s is an arg symbol
+func isArg(s interface{}) bool {
+	_, ok := s.(*ArgSymbol)
+	return ok
+}
+
+// isAuto returns whether s is an auto symbol
+func isAuto(s interface{}) bool {
+	_, ok := s.(*AutoSymbol)
+	return ok
+}
+
 // nlz returns the number of leading zeros.
 func nlz(x int64) int64 {
 	// log2(0) == 1, so nlz(0) == 64
@@ -205,6 +217,11 @@ func is32Bit(n int64) bool {
 	return n == int64(int32(n))
 }
 
+// is16Bit reports whether n can be represented as a signed 16 bit integer.
+func is16Bit(n int64) bool {
+	return n == int64(int16(n))
+}
+
 // b2i translates a boolean value to 0 or 1 for assigning to auxInt.
 func b2i(b bool) int64 {
 	if b {
@@ -252,6 +269,19 @@ func isSamePtr(p1, p2 *Value) bool {
 		return p1.Args[1] == p2.Args[1] && isSamePtr(p1.Args[0], p2.Args[0])
 	}
 	return false
+}
+
+// moveSize returns the number of bytes an aligned MOV instruction moves
+func moveSize(align int64, c *Config) int64 {
+	switch {
+	case align%8 == 0 && c.IntSize == 8:
+		return 8
+	case align%4 == 0:
+		return 4
+	case align%2 == 0:
+		return 2
+	}
+	return 1
 }
 
 // mergePoint finds a block among a's blocks which dominates b and is itself
