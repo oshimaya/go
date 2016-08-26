@@ -114,7 +114,6 @@ archinit(void)
 		break;
 	case Hlinux:		/* elf64 executable */
 	case Hfreebsd:		/* freebsd */
-	case Hnetbsd:		/* netbsd */
 	case Hopenbsd:		/* openbsd */
 	case Hdragonfly:	/* dragonfly */
 	case Hsolaris:		/* solaris */
@@ -126,6 +125,16 @@ archinit(void)
 			INITDAT = 0;
 		if(INITRND == -1)
 			INITRND = 4096;
+		break;
+	case Hnetbsd:		/* netbsd */
+		elfinit();
+		HEADR = ELFRESERVE;
+		if(INITTEXT == -1)
+			INITTEXT = (1<<22)+HEADR;
+		if(INITDAT == -1)
+			INITDAT = 0;
+		if(INITRND == -1)
+			INITRND = 0x200000;
 		break;
 	case Hnacl:
 		elfinit();
