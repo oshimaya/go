@@ -121,6 +121,15 @@ case "$GOHOSTARCH" in
 386) mflag=-m32;;
 amd64) mflag=-m64;;
 esac
+
+# In gcc 4.8 on NetBSD 7.0, need -march=armv5 flag for arm target.
+# Default target of gcc is generic-arm. however some assemble-sources
+# in golang use operator for armv5 or lator.
+
+if [ "$GOARCH" == "arm" -o -z '$GOARCH' -a "$(uname -sp)" == "NetBSD earm" ]; then
+		mflag="-march=armv5"
+fi
+
 if [ "$(uname)" == "Darwin" ]; then
 	# golang.org/issue/5261
 	mflag="$mflag -mmacosx-version-min=10.6"
