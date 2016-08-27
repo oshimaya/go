@@ -5,6 +5,7 @@
 #include "runtime.h"
 #include "defs_GOOS_GOARCH.h"
 #include "os_GOOS.h"
+#include "arch_GOARCH.h"
 #include "signal_unix.h"
 #include "stack.h"
 #include "textflag.h"
@@ -36,6 +37,7 @@ extern int32 runtime·lwp_self(void);
 // From NetBSD's <sys/sysctl.h>
 #define	CTL_HW	6
 #define	HW_NCPUONLINE	16
+#define	HW_PAGESIZE	7
 
 static int32
 getncpu(void)
@@ -55,6 +57,23 @@ getncpu(void)
 		return out;
 	else
 		return 1;
+}
+
+static uintptr
+getphyspagesize(void)
+{
+	uint32 mib[2];
+	uintptr out, nout;
+	int32 ret;
+	mib[0] = CTL_HW;
+	mib[1] = HW_PAGESIZE;
+	nout = sizeof out;
+	out = 0;
+	ret = runtime·sysctl(mib, 2, (byte*)&out, &nout, nil, 0);
+	if(ret >= 0)
+		return out;
+	else
+		return PhysPageSize;
 }
 
 #pragma textflag NOSPLIT
@@ -239,6 +258,7 @@ void
 runtime·osinit(void)
 {
 	runtime·ncpu = getncpu();
+	runtime·physpagesz = getphyspagesize();
 }
 
 #pragma textflag NOSPLIT

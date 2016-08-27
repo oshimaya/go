@@ -330,7 +330,11 @@ scanblock(byte *b, uintptr n, byte *ptrmask)
 			if(obj == nil)
 				continue;
 			if(obj < arena_start || obj >= arena_used) {
+#ifndef GOOS_netbsd
 				if((uintptr)obj < PhysPageSize && runtime·invalidptr) {
+#else
+				if((uintptr)obj < runtime·physpagesz && runtime·invalidptr) {
+#endif
 					s = nil;
 					goto badobj;
 				}
@@ -1893,7 +1897,11 @@ runtime·MHeap_MapBits(MHeap *h)
 
 	n = (h->arena_used - h->arena_start) / (PtrSize*wordsPerBitmapByte);
 	n = ROUND(n, bitmapChunk);
+#ifndef GOOS_netbsd
 	n = ROUND(n, PhysPageSize);
+#else
+	n = ROUND(n, runtime·physpagesz);
+#endif
 	if(h->bitmap_mapped >= n)
 		return;
 

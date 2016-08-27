@@ -82,7 +82,11 @@ runtime·MHeap_MapSpans(MHeap *h)
 	n = (uintptr)h->arena_used;
 	n -= (uintptr)h->arena_start;
 	n = n / PageSize * sizeof(h->spans[0]);
+#ifndef GOOS_netbsd
 	n = ROUND(n, PhysPageSize);
+#else
+	n = ROUND(n, runtime·physpagesz);
+#endif
 	if(h->spans_mapped >= n)
 		return;
 	runtime·SysMap((byte*)h->spans + h->spans_mapped, n - h->spans_mapped, h->arena_reserved, &mstats.other_sys);
