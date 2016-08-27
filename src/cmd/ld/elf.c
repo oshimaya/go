@@ -55,8 +55,8 @@ elfinit(void)
 
 	// 32-bit architectures
 	case '5':
-		// we use EABI on both linux/arm and freebsd/arm.
-		if(HEADTYPE == Hlinux || HEADTYPE == Hfreebsd)
+		// we use EABI on linux/arm, freebsd/arm.and netbsd/arm
+		if(HEADTYPE == Hlinux || HEADTYPE == Hfreebsd || HEADTYPE == Hnetbsd)
 			hdr.flags = 0x5000002; // has entry point, Version5 EABI
 		// fallthrough
 	default:
