@@ -35,7 +35,7 @@ extern int32 runtime·lwp_self(void);
 
 // From NetBSD's <sys/sysctl.h>
 #define	CTL_HW	6
-#define	HW_NCPU	3
+#define	HW_NCPUONLINE	16
 
 static int32
 getncpu(void)
@@ -47,7 +47,7 @@ getncpu(void)
 
 	// Fetch hw.ncpu via sysctl.
 	mib[0] = CTL_HW;
-	mib[1] = HW_NCPU;
+	mib[1] = HW_NCPUONLINE;
 	nout = sizeof out;
 	out = 0;
 	ret = runtime·sysctl(mib, 2, (byte*)&out, &nout, nil, 0);
