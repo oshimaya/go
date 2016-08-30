@@ -508,6 +508,32 @@ func TestHandshakeClientAES256GCMSHA384(t *testing.T) {
 	runClientTestTLS12(t, test)
 }
 
+func TestHandshakeClientAES128CBCSHA256(t *testing.T) {
+	test := &clientTest{
+		name:    "AES128-SHA256",
+		command: []string{"openssl", "s_server", "-cipher", "AES128-SHA256"},
+	}
+	runClientTestTLS12(t, test)
+}
+
+func TestHandshakeClientECDHERSAAES128CBCSHA256(t *testing.T) {
+	test := &clientTest{
+		name:    "ECDHE-RSA-AES128-SHA256",
+		command: []string{"openssl", "s_server", "-cipher", "ECDHE-RSA-AES128-SHA256"},
+	}
+	runClientTestTLS12(t, test)
+}
+
+func TestHandshakeClientECDHEECDSAAES128CBCSHA256(t *testing.T) {
+	test := &clientTest{
+		name:    "ECDHE-ECDSA-AES128-SHA256",
+		command: []string{"openssl", "s_server", "-cipher", "ECDHE-ECDSA-AES128-SHA256"},
+		cert:    testECDSACertificate,
+		key:     testECDSAPrivateKey,
+	}
+	runClientTestTLS12(t, test)
+}
+
 func TestHandshakeClientCertRSA(t *testing.T) {
 	config := testConfig.clone()
 	cert, _ := X509KeyPair([]byte(clientCertificatePEM), []byte(clientKeyPEM))
@@ -622,19 +648,30 @@ func TestClientResumption(t *testing.T) {
 		t.Fatal("first ticket doesn't match ticket after resumption")
 	}
 
-	key2 := randomKey()
-	serverConfig.SetSessionTicketKeys([][32]byte{key2})
+	key1 := randomKey()
+	serverConfig.SetSessionTicketKeys([][32]byte{key1})
 
 	testResumeState("InvalidSessionTicketKey", false)
 	testResumeState("ResumeAfterInvalidSessionTicketKey", true)
 
-	serverConfig.SetSessionTicketKeys([][32]byte{randomKey(), key2})
+	key2 := randomKey()
+	serverConfig.SetSessionTicketKeys([][32]byte{key2, key1})
 	ticket = getTicket()
 	testResumeState("KeyChange", true)
 	if bytes.Equal(ticket, getTicket()) {
 		t.Fatal("new ticket wasn't included while resuming")
 	}
 	testResumeState("KeyChangeFinish", true)
+
+	// Reset serverConfig to ensure that calling SetSessionTicketKeys
+	// before the serverConfig is used works.
+	serverConfig = &Config{
+		CipherSuites: []uint16{TLS_RSA_WITH_RC4_128_SHA, TLS_ECDHE_RSA_WITH_RC4_128_SHA},
+		Certificates: testConfig.Certificates,
+	}
+	serverConfig.SetSessionTicketKeys([][32]byte{key2})
+
+	testResumeState("FreshConfig", true)
 
 	clientConfig.CipherSuites = []uint16{TLS_ECDHE_RSA_WITH_RC4_128_SHA}
 	testResumeState("DifferentCipherSuite", false)
@@ -688,6 +725,47 @@ func TestLRUClientSessionCache(t *testing.T) {
 	if s, ok := cache.Get(keys[0]); !ok || s != nil {
 		t.Fatalf("failed to add nil entry to cache")
 	}
+}
+
+func TestHandshakeClientKeyLog(t *testing.T) {
+	config := testConfig.clone()
+	buf := &bytes.Buffer{}
+	config.KeyLogWriter = buf
+
+	// config.Rand is zero reader, so client random is all-0
+	var zeroRandom = strings.Repeat("0", 64)
+
+	test := &clientTest{
+		name:    "KeyLogWriter",
+		command: []string{"openssl", "s_server"},
+		config:  config,
+		validate: func(state ConnectionState) error {
+			var format, clientRandom, masterSecret string
+			if _, err := fmt.Fscanf(buf, "%s %s %s\n", &format, &clientRandom, &masterSecret); err != nil {
+				return fmt.Errorf("failed to parse KeyLogWriter: " + err.Error())
+			}
+			if format != "CLIENT_RANDOM" {
+				return fmt.Errorf("got key log format %q, wanted CLIENT_RANDOM", format)
+			}
+			if clientRandom != zeroRandom {
+				return fmt.Errorf("got key log client random %q, wanted %q", clientRandom, zeroRandom)
+			}
+
+			// Master secret is random from server; check length only
+			if len(masterSecret) != 96 {
+				return fmt.Errorf("got wrong length master secret in key log %v, want 96", len(masterSecret))
+			}
+
+			// buf should contain no more lines
+			var trailingGarbage string
+			if _, err := fmt.Fscanln(buf, &trailingGarbage); err == nil {
+				return fmt.Errorf("expected exactly one key in log, got trailing garbage %q", trailingGarbage)
+			}
+
+			return nil
+		},
+	}
+	runClientTestTLS10(t, test)
 }
 
 func TestHandshakeClientALPNMatch(t *testing.T) {

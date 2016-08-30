@@ -266,13 +266,13 @@ const (
 	ABC
 	ABCL
 	ABEQ
-	ABGE
+	ABGE // not LT = G/E/U
 	ABGT
-	ABLE
+	ABLE // not GT = L/E/U
 	ABLT
-	ABNE
-	ABVC
-	ABVS
+	ABNE // not EQ = L/G/U
+	ABVC // apparently Unordered-clear
+	ABVS // apparently Unordered-set
 	ACMP
 	ACMPU
 	ACNTLZW
@@ -483,6 +483,10 @@ const (
 	ACMPWU
 	ADIVD
 	ADIVDCC
+	ADIVDE
+	ADIVDECC
+	ADIVDEU
+	ADIVDEUCC
 	ADIVDVCC
 	ADIVDV
 	ADIVDU
