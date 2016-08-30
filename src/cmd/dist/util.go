@@ -518,14 +518,18 @@ func xgetgoarm() string {
 		// sense to auto-detect the setting.
 		return "7"
 	}
+	if goos == "netbsd" {
+		// NetBSD go/arm support only earmv6hf or earmv7hf now.
+		// Any armv5 (or before) devices cannot work.
+		return "6"
+	}
 	if gohostarch != "arm" || goos != gohostos {
 		// Conservative default for cross-compilation.
 		return "5"
 	}
-	if goos == "freebsd" || goos == "openbsd"  || goos == "netbsd"{
+	if goos == "freebsd" || goos == "openbsd" {
 		// FreeBSD has broken VFP support.
 		// OpenBSD currently only supports softfloat.
-		// NetBSD supports many arm machines with armv5 cpu.
 		return "5"
 	}
 
