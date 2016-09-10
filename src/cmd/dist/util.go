@@ -522,6 +522,12 @@ func xgetgoarm() string {
 		// Conservative default for cross-compilation.
 		return "5"
 	}
+	if goos == "netbsd" {
+		// NetBSD supports many arm machines with armv5 cpu.
+		// Howerver, some go sources use some instruction for armv6
+		// or lator. For example src/sync/atomic/asm_arm.s
+		return "6"
+	}
 	if goos == "freebsd" || goos == "openbsd"  || goos == "netbsd"{
 		// FreeBSD has broken VFP support.
 		// OpenBSD currently only supports softfloat.
