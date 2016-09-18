@@ -360,7 +360,7 @@ func relocsym(ctxt *Link, s *Symbol) {
 
 		// We need to be able to reference dynimport symbols when linking against
 		// shared libraries, and Solaris needs it always
-		if HEADTYPE != obj.Hsolaris && r.Sym != nil && r.Sym.Type == obj.SDYNIMPORT && !ctxt.DynlinkingGo() {
+		if Headtype != obj.Hsolaris && r.Sym != nil && r.Sym.Type == obj.SDYNIMPORT && !ctxt.DynlinkingGo() {
 			if !(SysArch.Family == sys.PPC64 && Linkmode == LinkExternal && r.Sym.Name == ".TOC.") {
 				ctxt.Diag("unhandled relocation for %s (type %d rtype %d)", r.Sym.Name, r.Sym.Type, r.Type)
 			}
@@ -399,9 +399,9 @@ func relocsym(ctxt *Link, s *Symbol) {
 			}
 
 		case obj.R_TLS_LE:
-			isAndroidX86 := goos == "android" && (SysArch.InFamily(sys.AMD64, sys.I386))
+			isAndroidX86 := obj.GOOS == "android" && (SysArch.InFamily(sys.AMD64, sys.I386))
 
-			if Linkmode == LinkExternal && Iself && HEADTYPE != obj.Hopenbsd && !isAndroidX86 {
+			if Linkmode == LinkExternal && Iself && Headtype != obj.Hopenbsd && !isAndroidX86 {
 				r.Done = 0
 				if r.Sym == nil {
 					r.Sym = ctxt.Tlsg
@@ -424,18 +424,18 @@ func relocsym(ctxt *Link, s *Symbol) {
 				// related to the fact that our own TLS storage happens
 				// to take up 8 bytes.
 				o = 8 + r.Sym.Value
-			} else if Iself || ctxt.Headtype == obj.Hplan9 || ctxt.Headtype == obj.Hdarwin || isAndroidX86 {
+			} else if Iself || Headtype == obj.Hplan9 || Headtype == obj.Hdarwin || isAndroidX86 {
 				o = int64(ctxt.Tlsoffset) + r.Add
-			} else if ctxt.Headtype == obj.Hwindows {
+			} else if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
 				o = r.Add
 			} else {
-				log.Fatalf("unexpected R_TLS_LE relocation for %s", Headstr(ctxt.Headtype))
+				log.Fatalf("unexpected R_TLS_LE relocation for %v", Headtype)
 			}
 
 		case obj.R_TLS_IE:
-			isAndroidX86 := goos == "android" && (SysArch.InFamily(sys.AMD64, sys.I386))
+			isAndroidX86 := obj.GOOS == "android" && (SysArch.InFamily(sys.AMD64, sys.I386))
 
-			if Linkmode == LinkExternal && Iself && HEADTYPE != obj.Hopenbsd && !isAndroidX86 {
+			if Linkmode == LinkExternal && Iself && Headtype != obj.Hopenbsd && !isAndroidX86 {
 				r.Done = 0
 				if r.Sym == nil {
 					r.Sym = ctxt.Tlsg
@@ -448,7 +448,20 @@ func relocsym(ctxt *Link, s *Symbol) {
 				}
 				break
 			}
-			log.Fatalf("cannot handle R_TLS_IE when linking internally")
+			if Buildmode == BuildmodePIE && Iself {
+				// We are linking the final executable, so we
+				// can optimize any TLS IE relocation to LE.
+				if Thearch.TLSIEtoLE == nil {
+					log.Fatalf("internal linking of TLS IE not supported on %v", SysArch.Family)
+				}
+				Thearch.TLSIEtoLE(s, int(off), int(r.Siz))
+				o = int64(ctxt.Tlsoffset)
+				// TODO: o += r.Add when SysArch.Family != sys.AMD64?
+				// Why do we treat r.Add differently on AMD64?
+				// Is the external linker using Xadd at all?
+			} else {
+				log.Fatalf("cannot handle R_TLS_IE (sym %s) when linking internally", s.Name)
+			}
 
 		case obj.R_ADDR:
 			if Linkmode == LinkExternal && r.Sym.Type != obj.SCONST {
@@ -473,7 +486,7 @@ func relocsym(ctxt *Link, s *Symbol) {
 					if SysArch.Family == sys.AMD64 {
 						o = 0
 					}
-				} else if HEADTYPE == obj.Hdarwin {
+				} else if Headtype == obj.Hdarwin {
 					// ld64 for arm64 has a bug where if the address pointed to by o exists in the
 					// symbol table (dynid >= 0), or is inside a symbol that exists in the symbol
 					// table, then it will add o twice into the relocated value.
@@ -487,10 +500,10 @@ func relocsym(ctxt *Link, s *Symbol) {
 							o += Symaddr(ctxt, rs)
 						}
 					}
-				} else if HEADTYPE == obj.Hwindows {
+				} else if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
 					// nothing to do
 				} else {
-					ctxt.Diag("unhandled pcrel relocation for %s", headstring)
+					ctxt.Diag("unhandled pcrel relocation for %s", Headtype)
 				}
 
 				break
@@ -555,7 +568,7 @@ func relocsym(ctxt *Link, s *Symbol) {
 					if SysArch.Family == sys.AMD64 {
 						o = 0
 					}
-				} else if HEADTYPE == obj.Hdarwin {
+				} else if Headtype == obj.Hdarwin {
 					if r.Type == obj.R_CALL {
 						if rs.Type != obj.SHOSTOBJ {
 							o += int64(uint64(Symaddr(ctxt, rs)) - rs.Sect.Vaddr)
@@ -567,7 +580,7 @@ func relocsym(ctxt *Link, s *Symbol) {
 					} else {
 						o += int64(r.Siz)
 					}
-				} else if HEADTYPE == obj.Hwindows && SysArch.Family == sys.AMD64 { // only amd64 needs PCREL
+				} else if (Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui) && SysArch.Family == sys.AMD64 { // only amd64 needs PCREL
 					// PE/COFF's PC32 relocation uses the address after the relocated
 					// bytes as the base. Compensate by skewing the addend.
 					o += int64(r.Siz)
@@ -575,7 +588,7 @@ func relocsym(ctxt *Link, s *Symbol) {
 					// relocated address, compensate that.
 					o -= int64(s.Sect.Vaddr - PEBASE)
 				} else {
-					ctxt.Diag("unhandled pcrel relocation for %s", headstring)
+					ctxt.Diag("unhandled pcrel relocation for %s", Headtype)
 				}
 
 				break
@@ -586,13 +599,7 @@ func relocsym(ctxt *Link, s *Symbol) {
 				o += Symaddr(ctxt, r.Sym)
 			}
 
-			// NOTE: The (int32) cast on the next line works around a bug in Plan 9's 8c
-			// compiler. The expression s->value + r->off + r->siz is int32 + int32 +
-			// uchar, and Plan 9 8c incorrectly treats the expression as type uint32
-			// instead of int32, causing incorrect values when sign extended for adding
-			// to o. The bug only occurs on Plan 9, because this C program is compiled by
-			// the standard host compiler (gcc on most other systems).
-			o += r.Add - (s.Value + int64(r.Off) + int64(int32(r.Siz)))
+			o += r.Add - (s.Value + int64(r.Off) + int64(r.Siz))
 
 		case obj.R_SIZE:
 			o = r.Sym.Size + r.Add
@@ -663,7 +670,7 @@ func (ctxt *Link) reloc() {
 }
 
 func dynrelocsym(ctxt *Link, s *Symbol) {
-	if HEADTYPE == obj.Hwindows && Linkmode != LinkExternal {
+	if (Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui) && Linkmode != LinkExternal {
 		rel := Linklookup(ctxt, ".rel", 0)
 		if s == rel {
 			return
@@ -707,11 +714,21 @@ func dynrelocsym(ctxt *Link, s *Symbol) {
 
 	for ri := 0; ri < len(s.R); ri++ {
 		r := &s.R[ri]
+		if Buildmode == BuildmodePIE && Linkmode == LinkInternal {
+			// It's expected that some relocations will be done
+			// later by relocsym (R_TLS_LE, R_ADDROFF), so
+			// don't worry if Adddynrel returns false.
+			Thearch.Adddynrel(ctxt, s, r)
+			continue
+		}
 		if r.Sym != nil && r.Sym.Type == obj.SDYNIMPORT || r.Type >= 256 {
 			if r.Sym != nil && !r.Sym.Attr.Reachable() {
 				ctxt.Diag("internal inconsistency: dynamic symbol %s is not reachable.", r.Sym.Name)
 			}
-			Thearch.Adddynrel(ctxt, s, r)
+			if !Thearch.Adddynrel(ctxt, s, r) {
+				ctxt.Cursym = s
+				ctxt.Diag("unsupported relocation for dynamic symbol %s (type=%d stype=%d)", r.Sym.Name, r.Type, r.Sym.Type)
+			}
 		}
 	}
 }
@@ -719,7 +736,7 @@ func dynrelocsym(ctxt *Link, s *Symbol) {
 func dynreloc(ctxt *Link, data *[obj.SXREF][]*Symbol) {
 	// -d suppresses dynamic loader format, so we may as well not
 	// compute these sections or mark their symbols as reachable.
-	if *FlagD && HEADTYPE != obj.Hwindows {
+	if *FlagD && Headtype != obj.Hwindows && Headtype != obj.Hwindowsgui {
 		return
 	}
 	if ctxt.Debugvlog != 0 {
@@ -1174,7 +1191,7 @@ func (d bySizeAndName) Less(i, j int) bool {
 
 const cutoff int64 = 2e9 // 2 GB (or so; looks better in errors than 2^31)
 
-func checkdatsize(ctxt *Link, datsize int64, symn int) {
+func checkdatsize(ctxt *Link, datsize int64, symn obj.SymKind) {
 	if datsize > cutoff {
 		ctxt.Diag("too much data in section %v (over %d bytes)", symn, cutoff)
 	}
@@ -1207,7 +1224,7 @@ func (ctxt *Link) dodata() {
 	// symbol, which is itself data.
 	//
 	// On darwin, we need the symbol table numbers for dynreloc.
-	if HEADTYPE == obj.Hdarwin {
+	if Headtype == obj.Hdarwin {
 		machosymorder(ctxt)
 	}
 	dynreloc(ctxt, &data)
@@ -1216,8 +1233,8 @@ func (ctxt *Link) dodata() {
 		// "read only" data with relocations needs to go in its own section
 		// when building a shared library. We do this by boosting objects of
 		// type SXXX with relocations to type SXXXRELRO.
-		for symnro := int16(obj.STYPE); symnro < obj.STYPERELRO; symnro++ {
-			symnrelro := symnro + obj.STYPERELRO - obj.STYPE
+		for _, symnro := range obj.ReadOnly {
+			symnrelro := obj.RelROMap[symnro]
 
 			ro := []*Symbol{}
 			relro := data[symnrelro]
@@ -1262,7 +1279,7 @@ func (ctxt *Link) dodata() {
 	var dataMaxAlign [obj.SXREF]int32
 	var wg sync.WaitGroup
 	for symn := range data {
-		symn := symn
+		symn := obj.SymKind(symn)
 		wg.Add(1)
 		go func() {
 			data[symn], dataMaxAlign[symn] = dodataSect(ctxt, symn, data[symn])
@@ -1277,14 +1294,14 @@ func (ctxt *Link) dodata() {
 	// to generate garbage collection information.
 	datsize := int64(0)
 
-	// Writable sections.
-	writableSects := []int{
+	// Writable data sections that do not need any specialized handling.
+	writable := []obj.SymKind{
 		obj.SELFSECT,
 		obj.SMACHO,
 		obj.SMACHOGOT,
 		obj.SWINDOWS,
 	}
-	for _, symn := range writableSects {
+	for _, symn := range writable {
 		for _, s := range data[symn] {
 			sect := addsection(&Segdata, s.Name, 06)
 			sect.Align = symalign(s)
@@ -1350,7 +1367,7 @@ func (ctxt *Link) dodata() {
 
 	/* shared library initializer */
 	switch Buildmode {
-	case BuildmodeCArchive, BuildmodeCShared, BuildmodeShared:
+	case BuildmodeCArchive, BuildmodeCShared, BuildmodeShared, BuildmodePlugin:
 		hasinitarr = true
 	}
 	if hasinitarr {
@@ -1429,7 +1446,7 @@ func (ctxt *Link) dodata() {
 
 	if len(data[obj.STLSBSS]) > 0 {
 		var sect *Section
-		if Iself && (Linkmode == LinkExternal || !*FlagD) && HEADTYPE != obj.Hopenbsd {
+		if Iself && (Linkmode == LinkExternal || !*FlagD) && Headtype != obj.Hopenbsd {
 			sect = addsection(&Segdata, ".tbss", 06)
 			sect.Align = int32(SysArch.PtrSize)
 			sect.Vaddr = 0
@@ -1495,24 +1512,14 @@ func (ctxt *Link) dodata() {
 		Linklookup(ctxt, "runtime.types", 0).Sect = sect
 		Linklookup(ctxt, "runtime.etypes", 0).Sect = sect
 	}
-	roSects := []int{
-		obj.STYPE,
-		obj.SSTRING,
-		obj.SGOSTRING,
-		obj.SGOSTRINGHDR,
-		obj.SGOFUNC,
-		obj.SGCBITS,
-		obj.SRODATA,
-		obj.SFUNCTAB,
-	}
-	for _, symn := range roSects {
+	for _, symn := range obj.ReadOnly {
 		align := dataMaxAlign[symn]
 		if sect.Align < align {
 			sect.Align = align
 		}
 	}
 	datsize = Rnd(datsize, int64(sect.Align))
-	for _, symn := range roSects {
+	for _, symn := range obj.ReadOnly {
 		for _, s := range data[symn] {
 			datsize = aligndatsize(datsize, s)
 			s.Sect = sect
@@ -1522,131 +1529,6 @@ func (ctxt *Link) dodata() {
 		}
 		checkdatsize(ctxt, datsize, symn)
 	}
-	sect.Length = uint64(datsize) - sect.Vaddr
-
-	// There is some data that are conceptually read-only but are written to by
-	// relocations. On GNU systems, we can arrange for the dynamic linker to
-	// mprotect sections after relocations are applied by giving them write
-	// permissions in the object file and calling them ".data.rel.ro.FOO". We
-	// divide the .rodata section between actual .rodata and .data.rel.ro.rodata,
-	// but for the other sections that this applies to, we just write a read-only
-	// .FOO section or a read-write .data.rel.ro.FOO section depending on the
-	// situation.
-	// TODO(mwhudson): It would make sense to do this more widely, but it makes
-	// the system linker segfault on darwin.
-	relroPerms := 04
-	relroPrefix := ""
-
-	if UseRelro() {
-		relroPerms = 06
-		relroPrefix = ".data.rel.ro"
-		/* data only written by relocations */
-		sect = addsection(segro, ".data.rel.ro", 06)
-
-		sect.Vaddr = 0
-		Linklookup(ctxt, "runtime.types", 0).Sect = sect
-		Linklookup(ctxt, "runtime.etypes", 0).Sect = sect
-		relroSects := []int{
-			obj.STYPERELRO,
-			obj.SSTRINGRELRO,
-			obj.SGOSTRINGRELRO,
-			obj.SGOSTRINGHDRRELRO,
-			obj.SGOFUNCRELRO,
-			obj.SGCBITSRELRO,
-			obj.SRODATARELRO,
-			obj.SFUNCTABRELRO,
-		}
-		for _, symn := range relroSects {
-			align := dataMaxAlign[symn]
-			if sect.Align < align {
-				sect.Align = align
-			}
-		}
-		datsize = Rnd(datsize, int64(sect.Align))
-		for _, symn := range relroSects {
-			for _, s := range data[symn] {
-				datsize = aligndatsize(datsize, s)
-				if s.Outer != nil && s.Outer.Sect != nil && s.Outer.Sect != sect {
-					ctxt.Diag("s.Outer (%s) in different section from s (%s), %s != %s", s.Outer.Name, s.Name, s.Outer.Sect.Name, sect.Name)
-				}
-				s.Sect = sect
-				s.Type = obj.SRODATA
-				s.Value = int64(uint64(datsize) - sect.Vaddr)
-				datsize += s.Size
-			}
-			checkdatsize(ctxt, datsize, symn)
-		}
-
-		sect.Length = uint64(datsize) - sect.Vaddr
-
-	}
-
-	/* typelink */
-	sect = addsection(segro, relroPrefix+".typelink", relroPerms)
-	sect.Align = dataMaxAlign[obj.STYPELINK]
-	datsize = Rnd(datsize, int64(sect.Align))
-	sect.Vaddr = uint64(datsize)
-	Linklookup(ctxt, "runtime.typelink", 0).Sect = sect
-	Linklookup(ctxt, "runtime.etypelink", 0).Sect = sect
-	for _, s := range data[obj.STYPELINK] {
-		datsize = aligndatsize(datsize, s)
-		s.Sect = sect
-		s.Type = obj.SRODATA
-		s.Value = int64(uint64(datsize) - sect.Vaddr)
-		datsize += s.Size
-	}
-	checkdatsize(ctxt, datsize, obj.STYPELINK)
-	sect.Length = uint64(datsize) - sect.Vaddr
-
-	/* itablink */
-	sect = addsection(segro, relroPrefix+".itablink", relroPerms)
-	sect.Align = dataMaxAlign[obj.SITABLINK]
-	datsize = Rnd(datsize, int64(sect.Align))
-	sect.Vaddr = uint64(datsize)
-	Linklookup(ctxt, "runtime.itablink", 0).Sect = sect
-	Linklookup(ctxt, "runtime.eitablink", 0).Sect = sect
-	for _, s := range data[obj.SITABLINK] {
-		datsize = aligndatsize(datsize, s)
-		s.Sect = sect
-		s.Type = obj.SRODATA
-		s.Value = int64(uint64(datsize) - sect.Vaddr)
-		datsize += s.Size
-	}
-	checkdatsize(ctxt, datsize, obj.SITABLINK)
-	sect.Length = uint64(datsize) - sect.Vaddr
-
-	/* gosymtab */
-	sect = addsection(segro, relroPrefix+".gosymtab", relroPerms)
-	sect.Align = dataMaxAlign[obj.SSYMTAB]
-	datsize = Rnd(datsize, int64(sect.Align))
-	sect.Vaddr = uint64(datsize)
-	Linklookup(ctxt, "runtime.symtab", 0).Sect = sect
-	Linklookup(ctxt, "runtime.esymtab", 0).Sect = sect
-	for _, s := range data[obj.SSYMTAB] {
-		datsize = aligndatsize(datsize, s)
-		s.Sect = sect
-		s.Type = obj.SRODATA
-		s.Value = int64(uint64(datsize) - sect.Vaddr)
-		datsize += s.Size
-	}
-	checkdatsize(ctxt, datsize, obj.SSYMTAB)
-	sect.Length = uint64(datsize) - sect.Vaddr
-
-	/* gopclntab */
-	sect = addsection(segro, relroPrefix+".gopclntab", relroPerms)
-	sect.Align = dataMaxAlign[obj.SPCLNTAB]
-	datsize = Rnd(datsize, int64(sect.Align))
-	sect.Vaddr = uint64(datsize)
-	Linklookup(ctxt, "runtime.pclntab", 0).Sect = sect
-	Linklookup(ctxt, "runtime.epclntab", 0).Sect = sect
-	for _, s := range data[obj.SPCLNTAB] {
-		datsize = aligndatsize(datsize, s)
-		s.Sect = sect
-		s.Type = obj.SRODATA
-		s.Value = int64(uint64(datsize) - sect.Vaddr)
-		datsize += s.Size
-	}
-	checkdatsize(ctxt, datsize, obj.SRODATA)
 	sect.Length = uint64(datsize) - sect.Vaddr
 
 	/* read-only ELF, Mach-O sections */
@@ -1675,6 +1557,134 @@ func (ctxt *Link) dodata() {
 		sect.Length = uint64(datsize) - sect.Vaddr
 	}
 	checkdatsize(ctxt, datsize, obj.SMACHOPLT)
+
+	// There is some data that are conceptually read-only but are written to by
+	// relocations. On GNU systems, we can arrange for the dynamic linker to
+	// mprotect sections after relocations are applied by giving them write
+	// permissions in the object file and calling them ".data.rel.ro.FOO". We
+	// divide the .rodata section between actual .rodata and .data.rel.ro.rodata,
+	// but for the other sections that this applies to, we just write a read-only
+	// .FOO section or a read-write .data.rel.ro.FOO section depending on the
+	// situation.
+	// TODO(mwhudson): It would make sense to do this more widely, but it makes
+	// the system linker segfault on darwin.
+	addrelrosection := func(suffix string) *Section {
+		return addsection(segro, suffix, 04)
+	}
+
+	if UseRelro() {
+		addrelrosection = func(suffix string) *Section {
+			seg := &Segrelrodata
+			if Linkmode == LinkExternal {
+				// Using a separate segment with an external
+				// linker results in some programs moving
+				// their data sections unexpectedly, which
+				// corrupts the moduledata. So we use the
+				// rodata segment and let the external linker
+				// sort out a rel.ro segment.
+				seg = &Segrodata
+			}
+			return addsection(seg, ".data.rel.ro"+suffix, 06)
+		}
+		/* data only written by relocations */
+		sect = addrelrosection("")
+
+		sect.Vaddr = 0
+		Linklookup(ctxt, "runtime.types", 0).Sect = sect
+		Linklookup(ctxt, "runtime.etypes", 0).Sect = sect
+		for _, symnro := range obj.ReadOnly {
+			symn := obj.RelROMap[symnro]
+			align := dataMaxAlign[symn]
+			if sect.Align < align {
+				sect.Align = align
+			}
+		}
+		datsize = Rnd(datsize, int64(sect.Align))
+		for _, symnro := range obj.ReadOnly {
+			symn := obj.RelROMap[symnro]
+			for _, s := range data[symn] {
+				datsize = aligndatsize(datsize, s)
+				if s.Outer != nil && s.Outer.Sect != nil && s.Outer.Sect != sect {
+					ctxt.Diag("s.Outer (%s) in different section from s (%s), %s != %s", s.Outer.Name, s.Name, s.Outer.Sect.Name, sect.Name)
+				}
+				s.Sect = sect
+				s.Type = obj.SRODATA
+				s.Value = int64(uint64(datsize) - sect.Vaddr)
+				datsize += s.Size
+			}
+			checkdatsize(ctxt, datsize, symn)
+		}
+
+		sect.Length = uint64(datsize) - sect.Vaddr
+	}
+
+	/* typelink */
+	sect = addrelrosection(".typelink")
+	sect.Align = dataMaxAlign[obj.STYPELINK]
+	datsize = Rnd(datsize, int64(sect.Align))
+	sect.Vaddr = uint64(datsize)
+	Linklookup(ctxt, "runtime.typelink", 0).Sect = sect
+	Linklookup(ctxt, "runtime.etypelink", 0).Sect = sect
+	for _, s := range data[obj.STYPELINK] {
+		datsize = aligndatsize(datsize, s)
+		s.Sect = sect
+		s.Type = obj.SRODATA
+		s.Value = int64(uint64(datsize) - sect.Vaddr)
+		datsize += s.Size
+	}
+	checkdatsize(ctxt, datsize, obj.STYPELINK)
+	sect.Length = uint64(datsize) - sect.Vaddr
+
+	/* itablink */
+	sect = addrelrosection(".itablink")
+	sect.Align = dataMaxAlign[obj.SITABLINK]
+	datsize = Rnd(datsize, int64(sect.Align))
+	sect.Vaddr = uint64(datsize)
+	Linklookup(ctxt, "runtime.itablink", 0).Sect = sect
+	Linklookup(ctxt, "runtime.eitablink", 0).Sect = sect
+	for _, s := range data[obj.SITABLINK] {
+		datsize = aligndatsize(datsize, s)
+		s.Sect = sect
+		s.Type = obj.SRODATA
+		s.Value = int64(uint64(datsize) - sect.Vaddr)
+		datsize += s.Size
+	}
+	checkdatsize(ctxt, datsize, obj.SITABLINK)
+	sect.Length = uint64(datsize) - sect.Vaddr
+
+	/* gosymtab */
+	sect = addrelrosection(".gosymtab")
+	sect.Align = dataMaxAlign[obj.SSYMTAB]
+	datsize = Rnd(datsize, int64(sect.Align))
+	sect.Vaddr = uint64(datsize)
+	Linklookup(ctxt, "runtime.symtab", 0).Sect = sect
+	Linklookup(ctxt, "runtime.esymtab", 0).Sect = sect
+	for _, s := range data[obj.SSYMTAB] {
+		datsize = aligndatsize(datsize, s)
+		s.Sect = sect
+		s.Type = obj.SRODATA
+		s.Value = int64(uint64(datsize) - sect.Vaddr)
+		datsize += s.Size
+	}
+	checkdatsize(ctxt, datsize, obj.SSYMTAB)
+	sect.Length = uint64(datsize) - sect.Vaddr
+
+	/* gopclntab */
+	sect = addrelrosection(".gopclntab")
+	sect.Align = dataMaxAlign[obj.SPCLNTAB]
+	datsize = Rnd(datsize, int64(sect.Align))
+	sect.Vaddr = uint64(datsize)
+	Linklookup(ctxt, "runtime.pclntab", 0).Sect = sect
+	Linklookup(ctxt, "runtime.epclntab", 0).Sect = sect
+	for _, s := range data[obj.SPCLNTAB] {
+		datsize = aligndatsize(datsize, s)
+		s.Sect = sect
+		s.Type = obj.SRODATA
+		s.Value = int64(uint64(datsize) - sect.Vaddr)
+		datsize += s.Size
+	}
+	checkdatsize(ctxt, datsize, obj.SRODATA)
+	sect.Length = uint64(datsize) - sect.Vaddr
 
 	// 6g uses 4-byte relocation offsets, so the entire segment must fit in 32 bits.
 	if datsize != int64(uint32(datsize)) {
@@ -1735,6 +1745,10 @@ func (ctxt *Link) dodata() {
 		sect.Extnum = int16(n)
 		n++
 	}
+	for sect := Segrelrodata.Sect; sect != nil; sect = sect.Next {
+		sect.Extnum = int16(n)
+		n++
+	}
 	for sect := Segdata.Sect; sect != nil; sect = sect.Next {
 		sect.Extnum = int16(n)
 		n++
@@ -1745,13 +1759,13 @@ func (ctxt *Link) dodata() {
 	}
 }
 
-func dodataSect(ctxt *Link, symn int, syms []*Symbol) (result []*Symbol, maxAlign int32) {
-	if HEADTYPE == obj.Hdarwin {
+func dodataSect(ctxt *Link, symn obj.SymKind, syms []*Symbol) (result []*Symbol, maxAlign int32) {
+	if Headtype == obj.Hdarwin {
 		// Some symbols may no longer belong in syms
 		// due to movement in machosymorder.
 		newSyms := make([]*Symbol, 0, len(syms))
 		for _, s := range syms {
-			if int(s.Type) == symn {
+			if s.Type == symn {
 				newSyms = append(newSyms, s)
 			}
 		}
@@ -1868,7 +1882,7 @@ func (ctxt *Link) textaddress() {
 	sect.Align = int32(Funcalign)
 	Linklookup(ctxt, "runtime.text", 0).Sect = sect
 	Linklookup(ctxt, "runtime.etext", 0).Sect = sect
-	if HEADTYPE == obj.Hwindows {
+	if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
 		Linklookup(ctxt, ".text", 0).Sect = sect
 	}
 	va := uint64(*FlagTextAddr)
@@ -1914,13 +1928,24 @@ func (ctxt *Link) address() {
 
 	Segtext.Length = va - uint64(*FlagTextAddr)
 	Segtext.Filelen = Segtext.Length
-	if HEADTYPE == obj.Hnacl {
+	if Headtype == obj.Hnacl {
 		va += 32 // room for the "halt sled"
 	}
 
 	if Segrodata.Sect != nil {
 		// align to page boundary so as not to mix
 		// rodata and executable text.
+		//
+		// Note: gold or GNU ld will reduce the size of the executable
+		// file by arranging for the relro segment to end at a page
+		// boundary, and overlap the end of the text segment with the
+		// start of the relro segment in the file.  The PT_LOAD segments
+		// will be such that the last page of the text segment will be
+		// mapped twice, once r-x and once starting out rw- and, after
+		// relocation processing, changed to r--.
+		//
+		// Ideally the last page of the text segment would not be
+		// writable even for this short period.
 		va = uint64(Rnd(int64(va), int64(*FlagRound)))
 
 		Segrodata.Rwx = 04
@@ -1936,16 +1961,34 @@ func (ctxt *Link) address() {
 		Segrodata.Length = va - Segrodata.Vaddr
 		Segrodata.Filelen = Segrodata.Length
 	}
+	if Segrelrodata.Sect != nil {
+		// align to page boundary so as not to mix
+		// rodata, rel-ro data, and executable text.
+		va = uint64(Rnd(int64(va), int64(*FlagRound)))
+
+		Segrelrodata.Rwx = 06
+		Segrelrodata.Vaddr = va
+		Segrelrodata.Fileoff = va - Segrodata.Vaddr + Segrodata.Fileoff
+		Segrelrodata.Filelen = 0
+		for s := Segrelrodata.Sect; s != nil; s = s.Next {
+			va = uint64(Rnd(int64(va), int64(s.Align)))
+			s.Vaddr = va
+			va += s.Length
+		}
+
+		Segrelrodata.Length = va - Segrelrodata.Vaddr
+		Segrelrodata.Filelen = Segrelrodata.Length
+	}
 
 	va = uint64(Rnd(int64(va), int64(*FlagRound)))
 	Segdata.Rwx = 06
 	Segdata.Vaddr = va
 	Segdata.Fileoff = va - Segtext.Vaddr + Segtext.Fileoff
 	Segdata.Filelen = 0
-	if HEADTYPE == obj.Hwindows {
+	if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
 		Segdata.Fileoff = Segtext.Fileoff + uint64(Rnd(int64(Segtext.Length), PEFILEALIGN))
 	}
-	if HEADTYPE == obj.Hplan9 {
+	if Headtype == obj.Hplan9 {
 		Segdata.Fileoff = Segtext.Fileoff + Segtext.Filelen
 	}
 	var data *Section
@@ -1985,7 +2028,7 @@ func (ctxt *Link) address() {
 	Segdwarf.Vaddr = va
 	Segdwarf.Fileoff = Segdata.Fileoff + uint64(Rnd(int64(Segdata.Filelen), int64(*FlagRound)))
 	Segdwarf.Filelen = 0
-	if HEADTYPE == obj.Hwindows {
+	if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
 		Segdwarf.Fileoff = Segdata.Fileoff + uint64(Rnd(int64(Segdata.Filelen), int64(PEFILEALIGN)))
 	}
 	for s := Segdwarf.Sect; s != nil; s = s.Next {
@@ -1995,7 +2038,7 @@ func (ctxt *Link) address() {
 		}
 		s.Vaddr = va
 		va += uint64(vlen)
-		if HEADTYPE == obj.Hwindows {
+		if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
 			va = uint64(Rnd(int64(va), PEFILEALIGN))
 		}
 		Segdwarf.Length = va - Segdwarf.Vaddr
@@ -2003,24 +2046,15 @@ func (ctxt *Link) address() {
 
 	Segdwarf.Filelen = va - Segdwarf.Vaddr
 
-	text := Segtext.Sect
-	var rodata *Section
-	if Segrodata.Sect != nil {
-		rodata = Segrodata.Sect
-	} else {
-		rodata = text.Next
-	}
-	var relrodata *Section
-	typelink := rodata.Next
-	if UseRelro() {
-		// There is another section (.data.rel.ro) when building a shared
-		// object on elf systems.
-		relrodata = typelink
-		typelink = typelink.Next
-	}
-	itablink := typelink.Next
-	symtab := itablink.Next
-	pclntab := symtab.Next
+	var (
+		text     = Segtext.Sect
+		rodata   = Linklookup(ctxt, "runtime.rodata", 0).Sect
+		typelink = Linklookup(ctxt, "runtime.typelink", 0).Sect
+		itablink = Linklookup(ctxt, "runtime.itablink", 0).Sect
+		symtab   = Linklookup(ctxt, "runtime.symtab", 0).Sect
+		pclntab  = Linklookup(ctxt, "runtime.pclntab", 0).Sect
+		types    = Linklookup(ctxt, "runtime.types", 0).Sect
+	)
 
 	for _, s := range datap {
 		ctxt.Cursym = s
@@ -2049,14 +2083,9 @@ func (ctxt *Link) address() {
 		s.Value = int64(sectSym.Sect.Vaddr + 16)
 	}
 
-	types := relrodata
-	if types == nil {
-		types = rodata
-	}
-
 	ctxt.xdefine("runtime.text", obj.STEXT, int64(text.Vaddr))
 	ctxt.xdefine("runtime.etext", obj.STEXT, int64(text.Vaddr+text.Length))
-	if HEADTYPE == obj.Hwindows {
+	if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
 		ctxt.xdefine(".text", obj.STEXT, int64(text.Vaddr))
 	}
 	ctxt.xdefine("runtime.rodata", obj.SRODATA, int64(rodata.Vaddr))

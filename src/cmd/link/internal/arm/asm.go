@@ -63,7 +63,7 @@ func gentext(ctxt *ld.Link) {
 		return
 	}
 	addmoduledata := ld.Linklookup(ctxt, "runtime.addmoduledata", 0)
-	if addmoduledata.Type == obj.STEXT {
+	if addmoduledata.Type == obj.STEXT && ld.Buildmode != ld.BuildmodePlugin {
 		// we're linking a module containing the runtime -> no need for
 		// an init function
 		return
@@ -96,6 +96,9 @@ func gentext(ctxt *ld.Link) {
 	rel.Add = 4
 
 	ctxt.Textp = append(ctxt.Textp, initfunc)
+	if ld.Buildmode == ld.BuildmodePlugin {
+		ctxt.Textp = append(ctxt.Textp, addmoduledata)
+	}
 	initarray_entry := ld.Linklookup(ctxt, "go.link.addmoduledatainit", 0)
 	initarray_entry.Attr |= ld.AttrReachable
 	initarray_entry.Attr |= ld.AttrLocal
@@ -109,7 +112,7 @@ func braddoff(a int32, b int32) int32 {
 	return int32((uint32(a))&0xff000000 | 0x00ffffff&uint32(a+b))
 }
 
-func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) {
+func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) bool {
 	targ := r.Sym
 	ctxt.Cursym = s
 
@@ -117,7 +120,7 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) {
 	default:
 		if r.Type >= 256 {
 			ctxt.Diag("unexpected relocation type %d", r.Type)
-			return
+			return false
 		}
 
 		// Handle relocations found in ELF object files.
@@ -130,11 +133,11 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) {
 			r.Add = int64(braddoff(int32(r.Add), targ.Plt/4))
 		}
 
-		return
+		return true
 
 	case 256 + ld.R_ARM_THM_PC22: // R_ARM_THM_CALL
 		ld.Exitf("R_ARM_THM_CALL, are you using -marm?")
-		return
+		return false
 
 	case 256 + ld.R_ARM_GOT32: // R_ARM_GOT_BREL
 		if targ.Type != obj.SDYNIMPORT {
@@ -146,7 +149,7 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) {
 		r.Type = obj.R_CONST // write r->add during relocsym
 		r.Sym = nil
 		r.Add += int64(targ.Got)
-		return
+		return true
 
 	case 256 + ld.R_ARM_GOT_PREL: // GOT(nil) + A - nil
 		if targ.Type != obj.SDYNIMPORT {
@@ -158,19 +161,19 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) {
 		r.Type = obj.R_PCREL
 		r.Sym = ld.Linklookup(ctxt, ".got", 0)
 		r.Add += int64(targ.Got) + 4
-		return
+		return true
 
 	case 256 + ld.R_ARM_GOTOFF: // R_ARM_GOTOFF32
 		r.Type = obj.R_GOTOFF
 
-		return
+		return true
 
 	case 256 + ld.R_ARM_GOTPC: // R_ARM_BASE_PREL
 		r.Type = obj.R_PCREL
 
 		r.Sym = ld.Linklookup(ctxt, ".got", 0)
 		r.Add += 4
-		return
+		return true
 
 	case 256 + ld.R_ARM_CALL:
 		r.Type = obj.R_CALLARM
@@ -180,20 +183,20 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) {
 			r.Add = int64(braddoff(int32(r.Add), targ.Plt/4))
 		}
 
-		return
+		return true
 
 	case 256 + ld.R_ARM_REL32: // R_ARM_REL32
 		r.Type = obj.R_PCREL
 
 		r.Add += 4
-		return
+		return true
 
 	case 256 + ld.R_ARM_ABS32:
 		if targ.Type == obj.SDYNIMPORT {
 			ctxt.Diag("unexpected R_ARM_ABS32 relocation for dynamic symbol %s", targ.Name)
 		}
 		r.Type = obj.R_ADDR
-		return
+		return true
 
 		// we can just ignore this, because we are targeting ARM V5+ anyway
 	case 256 + ld.R_ARM_V4BX:
@@ -203,7 +206,7 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) {
 		}
 
 		r.Sym = nil
-		return
+		return true
 
 	case 256 + ld.R_ARM_PC24,
 		256 + ld.R_ARM_JUMP24:
@@ -214,12 +217,12 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) {
 			r.Add = int64(braddoff(int32(r.Add), targ.Plt/4))
 		}
 
-		return
+		return true
 	}
 
 	// Handle references to ELF symbols from our own object files.
 	if targ.Type != obj.SDYNIMPORT {
-		return
+		return true
 	}
 
 	switch r.Type {
@@ -227,7 +230,7 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) {
 		addpltsym(ctxt, targ)
 		r.Sym = ld.Linklookup(ctxt, ".plt", 0)
 		r.Add = int64(targ.Plt)
-		return
+		return true
 
 	case obj.R_ADDR:
 		if s.Type != obj.SDATA {
@@ -240,12 +243,11 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) {
 			ld.Adduint32(ctxt, rel, ld.ELF32_R_INFO(uint32(targ.Dynid), ld.R_ARM_GLOB_DAT)) // we need a nil + A dynamic reloc
 			r.Type = obj.R_CONST                                                            // write r->add during relocsym
 			r.Sym = nil
-			return
+			return true
 		}
 	}
 
-	ctxt.Cursym = s
-	ctxt.Diag("unsupported relocation for dynamic symbol %s (type=%d stype=%d)", targ.Name, r.Type, targ.Type)
+	return false
 }
 
 func elfreloc1(ctxt *ld.Link, r *ld.Reloc, sectoff int64) int {
@@ -439,7 +441,7 @@ func archreloc(ctxt *ld.Link, r *ld.Reloc, s *ld.Symbol, val *int64) int {
 			// the section load address.
 			// we need to compensate that by removing the instruction's address
 			// from addend.
-			if ld.HEADTYPE == obj.Hdarwin {
+			if ld.Headtype == obj.Hdarwin {
 				r.Xadd -= ld.Symaddr(ctxt, s) + int64(r.Off)
 			}
 
@@ -602,9 +604,15 @@ func asmb(ctxt *ld.Link) {
 		if ctxt.Debugvlog != 0 {
 			ctxt.Logf("%5.2f rodatblk\n", obj.Cputime())
 		}
-
 		ld.Cseek(int64(ld.Segrodata.Fileoff))
 		ld.Datblk(ctxt, int64(ld.Segrodata.Vaddr), int64(ld.Segrodata.Filelen))
+	}
+	if ld.Segrelrodata.Filelen > 0 {
+		if ctxt.Debugvlog != 0 {
+			ctxt.Logf("%5.2f relrodatblk\n", obj.Cputime())
+		}
+		ld.Cseek(int64(ld.Segrelrodata.Fileoff))
+		ld.Datblk(ctxt, int64(ld.Segrelrodata.Vaddr), int64(ld.Segrelrodata.Filelen))
 	}
 
 	if ctxt.Debugvlog != 0 {
@@ -618,7 +626,7 @@ func asmb(ctxt *ld.Link) {
 	ld.Dwarfblk(ctxt, int64(ld.Segdwarf.Vaddr), int64(ld.Segdwarf.Filelen))
 
 	machlink := uint32(0)
-	if ld.HEADTYPE == obj.Hdarwin {
+	if ld.Headtype == obj.Hdarwin {
 		machlink = uint32(ld.Domacholink(ctxt))
 	}
 
@@ -632,7 +640,7 @@ func asmb(ctxt *ld.Link) {
 		if ctxt.Debugvlog != 0 {
 			ctxt.Logf("%5.2f sym\n", obj.Cputime())
 		}
-		switch ld.HEADTYPE {
+		switch ld.Headtype {
 		default:
 			if ld.Iself {
 				symo = uint32(ld.Segdwarf.Fileoff + ld.Segdwarf.Filelen)
@@ -647,7 +655,7 @@ func asmb(ctxt *ld.Link) {
 		}
 
 		ld.Cseek(int64(symo))
-		switch ld.HEADTYPE {
+		switch ld.Headtype {
 		default:
 			if ld.Iself {
 				if ctxt.Debugvlog != 0 {
@@ -688,7 +696,7 @@ func asmb(ctxt *ld.Link) {
 		ctxt.Logf("%5.2f header\n", obj.Cputime())
 	}
 	ld.Cseek(0)
-	switch ld.HEADTYPE {
+	switch ld.Headtype {
 	default:
 	case obj.Hplan9: /* plan 9 */
 		ld.Lputb(0x647)                      /* magic */

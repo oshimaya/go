@@ -29,7 +29,6 @@ var progtable = [x86.ALAST & obj.AMask]obj.ProgInfo{
 	obj.APCDATA:   {Flags: gc.Pseudo},
 	obj.AUNDEF:    {Flags: gc.Break},
 	obj.AUSEFIELD: {Flags: gc.OK},
-	obj.ACHECKNIL: {Flags: gc.LeftRead},
 	obj.AVARDEF:   {Flags: gc.Pseudo | gc.RightWrite},
 	obj.AVARKILL:  {Flags: gc.Pseudo | gc.RightWrite},
 	obj.AVARLIVE:  {Flags: gc.Pseudo | gc.LeftRead},
@@ -272,18 +271,6 @@ var progtable = [x86.ALAST & obj.AMask]obj.ProgInfo{
 	x86.AXORQ & obj.AMask:     {Flags: gc.SizeQ | gc.LeftRead | RightRdwr | gc.SetCarry},
 	x86.AXORW & obj.AMask:     {Flags: gc.SizeW | gc.LeftRead | RightRdwr | gc.SetCarry},
 	x86.AXORPS & obj.AMask:    {Flags: gc.LeftRead | RightRdwr},
-}
-
-func progflags(p *obj.Prog) uint32 {
-	flags := progtable[p.As&obj.AMask].Flags
-	if flags&gc.ImulAXDX != 0 && p.To.Type != obj.TYPE_NONE {
-		flags |= RightRdwr
-	}
-	return flags
-}
-
-func progcarryflags(p *obj.Prog) uint32 {
-	return progtable[p.As&obj.AMask].Flags
 }
 
 func proginfo(p *obj.Prog) {

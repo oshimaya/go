@@ -95,7 +95,7 @@ type Arch struct {
 	Openbsddynld     string
 	Dragonflydynld   string
 	Solarisdynld     string
-	Adddynrel        func(*Link, *Symbol, *Reloc)
+	Adddynrel        func(*Link, *Symbol, *Reloc) bool
 	Archinit         func(*Link)
 	Archreloc        func(*Link, *Reloc, *Symbol, *int64) int
 	Archrelocvariant func(*Link, *Reloc, *Symbol, int64) int64
@@ -111,6 +111,14 @@ type Arch struct {
 	Append16         func(b []byte, v uint16) []byte
 	Append32         func(b []byte, v uint32) []byte
 	Append64         func(b []byte, v uint64) []byte
+
+	// TLSIEtoLE converts a TLS Initial Executable relocation to
+	// a TLS Local Executable relocation.
+	//
+	// This is possible when a TLS IE relocation refers to a local
+	// symbol in an executable, which is typical when internally
+	// linking PIE binaries.
+	TLSIEtoLE func(s *Symbol, off, size int)
 }
 
 var (
@@ -156,14 +164,18 @@ type Section struct {
 // DynlinkingGo returns whether we are producing Go code that can live
 // in separate shared libraries linked together at runtime.
 func (ctxt *Link) DynlinkingGo() bool {
-	return Buildmode == BuildmodeShared || *FlagLinkshared
+	if !ctxt.Loaded {
+		panic("DynlinkingGo called before all symbols loaded")
+	}
+	canUsePlugins := Linkrlookup(ctxt, "plugin.Open", 0) != nil
+	return Buildmode == BuildmodeShared || *FlagLinkshared || Buildmode == BuildmodePlugin || canUsePlugins
 }
 
 // UseRelro returns whether to make use of "read only relocations" aka
 // relro.
 func UseRelro() bool {
 	switch Buildmode {
-	case BuildmodeCArchive, BuildmodeCShared, BuildmodeShared, BuildmodePIE:
+	case BuildmodeCArchive, BuildmodeCShared, BuildmodeShared, BuildmodePIE, BuildmodePlugin:
 		return Iself
 	default:
 		return *FlagLinkshared
@@ -183,31 +195,25 @@ var (
 
 	debug_s  bool // backup old value of debug['s']
 	HEADR    int32
-	HEADTYPE int32
+	Headtype obj.HeadType
 
 	nerrors  int
-	Linkmode int
 	liveness int64
 )
 
 var (
-	Segtext   Segment
-	Segrodata Segment
-	Segdata   Segment
-	Segdwarf  Segment
+	Segtext      Segment
+	Segrodata    Segment
+	Segrelrodata Segment
+	Segdata      Segment
+	Segdwarf     Segment
 )
-
-/* set by call to mywhatsys() */
 
 /* whence for ldpkg */
 const (
 	FileObj = 0 + iota
 	ArchiveObj
 	Pkgdef
-)
-
-var (
-	headstring string
 )
 
 // TODO(dfc) outBuf duplicates bio.Writer
@@ -241,9 +247,6 @@ var (
 	// Set if we see an object compiled by the host compiler that is not
 	// from a package that is known to support internal linking mode.
 	externalobj = false
-	goroot      string
-	goarch      string
-	goos        string
 	theline     string
 )
 
@@ -266,7 +269,6 @@ func mayberemoveoutfile() {
 
 func libinit(ctxt *Link) {
 	Funcalign = Thearch.Funcalign
-	mywhatsys() // get goroot, goarch, goos
 
 	// add goroot to the end of the libdir list.
 	suffix := ""
@@ -283,7 +285,7 @@ func libinit(ctxt *Link) {
 		suffix = "msan"
 	}
 
-	Lflag(ctxt, filepath.Join(goroot, "pkg", fmt.Sprintf("%s_%s%s%s", goos, goarch, suffixsep, suffix)))
+	Lflag(ctxt, filepath.Join(obj.GOROOT, "pkg", fmt.Sprintf("%s_%s%s%s", obj.GOOS, obj.GOARCH, suffixsep, suffix)))
 
 	mayberemoveoutfile()
 	f, err := os.OpenFile(*flagOutfile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0775)
@@ -297,18 +299,14 @@ func libinit(ctxt *Link) {
 	if *flagEntrySymbol == "" {
 		switch Buildmode {
 		case BuildmodeCShared, BuildmodeCArchive:
-			*flagEntrySymbol = fmt.Sprintf("_rt0_%s_%s_lib", goarch, goos)
+			*flagEntrySymbol = fmt.Sprintf("_rt0_%s_%s_lib", obj.GOARCH, obj.GOOS)
 		case BuildmodeExe, BuildmodePIE:
-			*flagEntrySymbol = fmt.Sprintf("_rt0_%s_%s", goarch, goos)
-		case BuildmodeShared:
-			// No *flagEntrySymbol for -buildmode=shared
+			*flagEntrySymbol = fmt.Sprintf("_rt0_%s_%s", obj.GOARCH, obj.GOOS)
+		case BuildmodeShared, BuildmodePlugin:
+			// No *flagEntrySymbol for -buildmode=shared and plugin
 		default:
 			ctxt.Diag("unknown *flagEntrySymbol for buildmode %v", Buildmode)
 		}
-	}
-
-	if !ctxt.DynlinkingGo() {
-		Linklookup(ctxt, *flagEntrySymbol, 0).Type = obj.SXREF
 	}
 }
 
@@ -372,9 +370,36 @@ func loadinternal(ctxt *Link, name string) {
 	}
 }
 
+// findLibPathCmd uses cmd command to find gcc library libname.
+// It returns library full path if found, or "none" if not found.
+func (ctxt *Link) findLibPathCmd(cmd, libname string) string {
+	if *flagExtld == "" {
+		*flagExtld = "gcc"
+	}
+	args := hostlinkArchArgs()
+	args = append(args, cmd)
+	if ctxt.Debugvlog != 0 {
+		ctxt.Logf("%s %v\n", *flagExtld, args)
+	}
+	out, err := exec.Command(*flagExtld, args...).Output()
+	if err != nil {
+		if ctxt.Debugvlog != 0 {
+			ctxt.Logf("not using a %s file because compiler failed\n%v\n%s\n", libname, err, out)
+		}
+		return "none"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// findLibPath searches for library libname.
+// It returns library full path if found, or "none" if not found.
+func (ctxt *Link) findLibPath(libname string) string {
+	return ctxt.findLibPathCmd("--print-file-name="+libname, libname)
+}
+
 func (ctxt *Link) loadlib() {
 	switch Buildmode {
-	case BuildmodeCShared:
+	case BuildmodeCShared, BuildmodePlugin:
 		s := Linklookup(ctxt, "runtime.islibrary", 0)
 		s.Attr |= AttrDuplicateOK
 		Adduint8(ctxt, s, 1)
@@ -415,44 +440,12 @@ func (ctxt *Link) loadlib() {
 		}
 	}
 
-	if Linkmode == LinkAuto {
-		if iscgo && externalobj {
-			Linkmode = LinkExternal
-		} else {
-			Linkmode = LinkInternal
-		}
+	// We now have enough information to determine the link mode.
+	determineLinkMode(ctxt)
 
-		// Force external linking for android.
-		if goos == "android" {
-			Linkmode = LinkExternal
-		}
-
-		// Force external linking for PIE executables, as
-		// internal linking does not support TLS_IE.
-		if Buildmode == BuildmodePIE {
-			Linkmode = LinkExternal
-		}
-
-		// cgo on Darwin must use external linking
-		// we can always use external linking, but then there will be circular
-		// dependency problems when compiling natively (external linking requires
-		// runtime/cgo, runtime/cgo requires cmd/cgo, but cmd/cgo needs to be
-		// compiled using external linking.)
-		if SysArch.InFamily(sys.ARM, sys.ARM64) && HEADTYPE == obj.Hdarwin && iscgo {
-			Linkmode = LinkExternal
-		}
-
-		// Force external linking for msan.
-		if *flagMsan {
-			Linkmode = LinkExternal
-		}
-	}
-
-	// cmd/7l doesn't support cgo internal linking
-	// This is https://golang.org/issue/10373.
-	// mips64x doesn't support cgo internal linking either (golang.org/issue/14449)
-	if iscgo && (goarch == "arm64" || goarch == "mips64" || goarch == "mips64le") {
-		Linkmode = LinkExternal
+	if Linkmode == LinkExternal && SysArch.Family == sys.PPC64 {
+		toc := Linklookup(ctxt, ".TOC.", 0)
+		toc.Type = obj.SDYNIMPORT
 	}
 
 	if Linkmode == LinkExternal && !iscgo {
@@ -466,7 +459,7 @@ func (ctxt *Link) loadlib() {
 			if ctxt.Library[i].Shlib != "" {
 				ldshlibsyms(ctxt, ctxt.Library[i].Shlib)
 			} else {
-				if ctxt.DynlinkingGo() {
+				if Buildmode == BuildmodeShared || *FlagLinkshared {
 					Exitf("cannot implicitly include runtime/cgo in a shared library")
 				}
 				objfile(ctxt, ctxt.Library[i])
@@ -505,7 +498,13 @@ func (ctxt *Link) loadlib() {
 	tlsg.Attr |= AttrReachable
 	ctxt.Tlsg = tlsg
 
-	moduledata := Linklookup(ctxt, "runtime.firstmoduledata", 0)
+	var moduledata *Symbol
+	if Buildmode == BuildmodePlugin {
+		moduledata = Linklookup(ctxt, "local.pluginmoduledata", 0)
+		moduledata.Attr |= AttrLocal
+	} else {
+		moduledata = Linklookup(ctxt, "runtime.firstmoduledata", 0)
+	}
 	if moduledata.Type != 0 && moduledata.Type != obj.SDYNIMPORT {
 		// If the module (toolchain-speak for "executable or shared
 		// library") we are linking contains the runtime package, it
@@ -520,10 +519,10 @@ func (ctxt *Link) loadlib() {
 			s := Linklookup(ctxt, "runtime.goarm", 0)
 			s.Type = obj.SRODATA
 			s.Size = 0
-			Adduint8(ctxt, s, uint8(ctxt.Goarm))
+			Adduint8(ctxt, s, uint8(obj.GOARM))
 		}
 
-		if obj.Framepointer_enabled(obj.Getgoos(), obj.Getgoarch()) {
+		if obj.Framepointer_enabled(obj.GOOS, obj.GOARCH) {
 			s := Linklookup(ctxt, "runtime.framepointer_enabled", 0)
 			s.Type = obj.SRODATA
 			s.Size = 0
@@ -573,27 +572,26 @@ func (ctxt *Link) loadlib() {
 		}
 		if any {
 			if *flagLibGCC == "" {
-				if *flagExtld == "" {
-					*flagExtld = "gcc"
-				}
-				args := hostlinkArchArgs()
-				args = append(args, "--print-libgcc-file-name")
-				if ctxt.Debugvlog != 0 {
-					ctxt.Logf("%s %v\n", *flagExtld, args)
-				}
-				out, err := exec.Command(*flagExtld, args...).Output()
-				if err != nil {
-					if ctxt.Debugvlog != 0 {
-						ctxt.Logf("not using a libgcc file because compiler failed\n%v\n%s\n", err, out)
-					}
-					*flagLibGCC = "none"
-				} else {
-					*flagLibGCC = strings.TrimSpace(string(out))
-				}
+				*flagLibGCC = ctxt.findLibPathCmd("--print-libgcc-file-name", "libgcc")
 			}
-
 			if *flagLibGCC != "none" {
 				hostArchive(ctxt, *flagLibGCC)
+			}
+			if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
+				if p := ctxt.findLibPath("libmingwex.a"); p != "none" {
+					hostArchive(ctxt, p)
+				}
+				if p := ctxt.findLibPath("libmingw32.a"); p != "none" {
+					hostArchive(ctxt, p)
+				}
+				// TODO: maybe do something similar to peimporteddlls to collect all lib names
+				// and try link them all to final exe just like libmingwex.a and libmingw32.a:
+				/*
+					for:
+					#cgo windows LDFLAGS: -lmsvcrt -lm
+					import:
+					libmsvcrt.a libm.a
+				*/
 			}
 		}
 	} else {
@@ -601,6 +599,8 @@ func (ctxt *Link) loadlib() {
 	}
 
 	// We've loaded all the code now.
+	ctxt.Loaded = true
+
 	// If there are no dynamic libraries needed, gcc disables dynamic linking.
 	// Because of this, glibc's dynamic ELF loader occasionally (like in version 2.13)
 	// assumes that a dynamic binary always refers to at least one dynamic library.
@@ -611,10 +611,17 @@ func (ctxt *Link) loadlib() {
 	// binaries, so leave it enabled on OS X (Mach-O) binaries.
 	// Also leave it enabled on Solaris which doesn't support
 	// statically linked binaries.
-	switch Buildmode {
-	case BuildmodeExe, BuildmodePIE:
-		if havedynamic == 0 && HEADTYPE != obj.Hdarwin && HEADTYPE != obj.Hsolaris {
+	if Buildmode == BuildmodeExe {
+		if havedynamic == 0 && Headtype != obj.Hdarwin && Headtype != obj.Hsolaris {
 			*FlagD = true
+		}
+	}
+
+	if SysArch == sys.Arch386 {
+		if (Buildmode == BuildmodeCArchive && Iself) || Buildmode == BuildmodeCShared || Buildmode == BuildmodePIE || ctxt.DynlinkingGo() {
+			got := Linklookup(ctxt, "_GLOBAL_OFFSET_TABLE_", 0)
+			got.Type = obj.SDYNIMPORT
+			got.Attr |= AttrReachable
 		}
 	}
 
@@ -779,7 +786,7 @@ func ldhostobj(ld func(*Link, *bio.Reader, string, int64, string), f *bio.Reader
 	// force external linking for any libraries that link in code that
 	// uses errno. This can be removed if the Go linker ever supports
 	// these relocation types.
-	if HEADTYPE == obj.Hdragonfly {
+	if Headtype == obj.Hdragonfly {
 		if pkg == "net" || pkg == "os/user" {
 			isinternal = false
 		}
@@ -954,23 +961,20 @@ func (l *Link) hostlink() {
 		argv = append(argv, "-s")
 	}
 
-	if HEADTYPE == obj.Hdarwin {
+	switch Headtype {
+	case obj.Hdarwin:
 		argv = append(argv, "-Wl,-no_pie,-headerpad,1144")
-	}
-	if HEADTYPE == obj.Hopenbsd {
+	case obj.Hopenbsd:
 		argv = append(argv, "-Wl,-nopie")
-	}
-	if HEADTYPE == obj.Hwindows {
-		if headstring == "windowsgui" {
-			argv = append(argv, "-mwindows")
-		} else {
-			argv = append(argv, "-mconsole")
-		}
+	case obj.Hwindows:
+		argv = append(argv, "-mconsole")
+	case obj.Hwindowsgui:
+		argv = append(argv, "-mwindows")
 	}
 
 	switch Buildmode {
 	case BuildmodeExe:
-		if HEADTYPE == obj.Hdarwin {
+		if Headtype == obj.Hdarwin {
 			argv = append(argv, "-Wl,-pagezero_size,4000000")
 		}
 	case BuildmodePIE:
@@ -979,7 +983,7 @@ func (l *Link) hostlink() {
 		}
 		argv = append(argv, "-pie")
 	case BuildmodeCShared:
-		if HEADTYPE == obj.Hdarwin {
+		if Headtype == obj.Hdarwin {
 			argv = append(argv, "-dynamiclib", "-Wl,-read_only_relocs,suppress")
 		} else {
 			// ELF.
@@ -991,7 +995,7 @@ func (l *Link) hostlink() {
 			// non-closeable: a dlclose will do nothing.
 			argv = append(argv, "-shared", "-Wl,-z,nodelete")
 		}
-	case BuildmodeShared:
+	case BuildmodeShared, BuildmodePlugin:
 		if UseRelro() {
 			argv = append(argv, "-Wl,-z,relro")
 		}
@@ -1043,7 +1047,7 @@ func (l *Link) hostlink() {
 	// only want to do this when producing a Windows output file
 	// on a Windows host.
 	outopt := *flagOutfile
-	if goos == "windows" && runtime.GOOS == "windows" && filepath.Ext(outopt) == "" {
+	if obj.GOOS == "windows" && runtime.GOOS == "windows" && filepath.Ext(outopt) == "" {
 		outopt += "."
 	}
 	argv = append(argv, "-o")
@@ -1144,7 +1148,10 @@ func (l *Link) hostlink() {
 			}
 		}
 	}
-	if HEADTYPE == obj.Hwindows {
+	if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
+		// libmingw32 and libmingwex have some inter-dependencies,
+		// so must use linker groups.
+		argv = append(argv, "-Wl,--start-group", "-lmingwex", "-lmingw32", "-Wl,--end-group")
 		argv = append(argv, peimporteddlls()...)
 	}
 
@@ -1162,7 +1169,7 @@ func (l *Link) hostlink() {
 		l.Logf("%s", out)
 	}
 
-	if !*FlagS && !debug_s && HEADTYPE == obj.Hdarwin {
+	if !*FlagS && !debug_s && Headtype == obj.Hdarwin {
 		// Skip combining dwarf on arm.
 		if !SysArch.InFamily(sys.ARM, sys.ARM64) {
 			dsym := filepath.Join(*flagTmpdir, "go.dwarf")
@@ -1256,8 +1263,8 @@ func ldobj(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string, file 
 		return nil
 	}
 
-	// First, check that the basic goos, goarch, and version match.
-	t := fmt.Sprintf("%s %s %s ", goos, obj.Getgoarch(), obj.Getgoversion())
+	// First, check that the basic GOOS, GOARCH, and Version match.
+	t := fmt.Sprintf("%s %s %s ", obj.GOOS, obj.GOARCH, obj.Version)
 
 	line = strings.TrimRight(line, "\n")
 	if !strings.HasPrefix(line[10:]+" ", t) && !*flagF {
@@ -1481,12 +1488,6 @@ func ldshlibsyms(ctxt *Link, shlib string) {
 	ctxt.Shlibs = append(ctxt.Shlibs, Shlib{Path: libpath, Hash: hash, Deps: deps, File: f, gcdataAddresses: gcdataAddresses})
 }
 
-func mywhatsys() {
-	goroot = obj.Getgoroot()
-	goos = obj.Getgoos()
-	goarch = obj.Getgoarch()
-}
-
 // Copied from ../gc/subr.c:/^pathtoprefix; must stay in sync.
 /*
  * Convert raw string to the prefix that will be used in the symbol table.
@@ -1640,7 +1641,7 @@ func stkcheck(ctxt *Link, up *chain, depth int) int {
 		// onlyctxt.Diagnose the direct caller.
 		// TODO(mwhudson): actually think about this.
 		if depth == 1 && s.Type != obj.SXREF && !ctxt.DynlinkingGo() &&
-			Buildmode != BuildmodeCArchive && Buildmode != BuildmodePIE && Buildmode != BuildmodeCShared {
+			Buildmode != BuildmodeCArchive && Buildmode != BuildmodePIE && Buildmode != BuildmodeCShared && Buildmode != BuildmodePlugin {
 			ctxt.Diag("call to external function %s", s.Name)
 		}
 		return -1
@@ -1799,18 +1800,8 @@ func usage() {
 	Exit(2)
 }
 
-func setheadtype(s string) {
-	h := headtype(s)
-	if h < 0 {
-		Exitf("unknown header type -H %s", s)
-	}
-
-	headstring = s
-	HEADTYPE = int32(headtype(s))
-}
-
 func doversion() {
-	Exitf("version %s", obj.Getgoversion())
+	Exitf("version %s", obj.Version)
 }
 
 func genasmsym(ctxt *Link, put func(*Link, *Symbol, string, int, int64, int64, int, *Symbol)) {
@@ -1876,7 +1867,7 @@ func genasmsym(ctxt *Link, put func(*Link, *Symbol, string, int, int64, int64, i
 			put(ctxt, nil, s.Name, 'f', s.Value, 0, int(s.Version), nil)
 
 		case obj.SHOSTOBJ:
-			if HEADTYPE == obj.Hwindows || Iself {
+			if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui || Iself {
 				put(ctxt, s, s.Name, 'U', s.Value, 0, int(s.Version), nil)
 			}
 
@@ -1887,7 +1878,7 @@ func genasmsym(ctxt *Link, put func(*Link, *Symbol, string, int, int64, int64, i
 			put(ctxt, s, s.Extname, 'U', 0, 0, int(s.Version), nil)
 
 		case obj.STLSBSS:
-			if Linkmode == LinkExternal && HEADTYPE != obj.Hopenbsd {
+			if Linkmode == LinkExternal && Headtype != obj.Hopenbsd {
 				put(ctxt, s, s.Name, 't', Symaddr(ctxt, s), s.Size, int(s.Version), s.Gotype)
 			}
 		}
@@ -1949,9 +1940,9 @@ func Symaddr(ctxt *Link, s *Symbol) int64 {
 	return s.Value
 }
 
-func (ctxt *Link) xdefine(p string, t int, v int64) {
+func (ctxt *Link) xdefine(p string, t obj.SymKind, v int64) {
 	s := Linklookup(ctxt, p, 0)
-	s.Type = int16(t)
+	s.Type = t
 	s.Value = v
 	s.Attr |= AttrReachable
 	s.Attr |= AttrSpecial

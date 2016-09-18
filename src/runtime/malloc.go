@@ -172,6 +172,14 @@ const (
 
 const _MaxArena32 = 1<<32 - 1
 
+// physPageSize is the size in bytes of the OS's physical pages.
+// Mapping and unmapping operations must be done at multiples of
+// physPageSize.
+//
+// This must be set by the OS init code (typically in osinit) before
+// mallocinit.
+var physPageSize uintptr
+
 // OS-defined helpers:
 //
 // sysAlloc obtains a large chunk of zeroed memory from the
@@ -215,6 +223,20 @@ func mallocinit() {
 
 	if class_to_size[_TinySizeClass] != _TinySize {
 		throw("bad TinySizeClass")
+	}
+
+	// Check physPageSize.
+	if physPageSize == 0 {
+		// The OS init code failed to fetch the physical page size.
+		throw("failed to get system page size")
+	}
+	if physPageSize < minPhysPageSize {
+		print("system page size (", physPageSize, ") is smaller than minimum page size (", minPhysPageSize, ")\n")
+		throw("bad system page size")
+	}
+	if physPageSize&(physPageSize-1) != 0 {
+		print("system page size (", physPageSize, ") must be a power of 2\n")
+		throw("bad system page size")
 	}
 
 	var p, bitmapSize, spansSize, pSize, limit uintptr
@@ -781,6 +803,8 @@ func largeAlloc(size uintptr, needzero bool) *mspan {
 }
 
 // implementation of new builtin
+// compiler (both frontend and SSA backend) knows the signature
+// of this function
 func newobject(typ *_type) unsafe.Pointer {
 	return mallocgc(typ.size, typ, true)
 }
@@ -841,7 +865,7 @@ func nextSample() int32 {
 	// x = -log_e(q) * period
 	// x = log_2(q) * (-log_e(2)) * period    ; Using log_2 for efficiency
 	const randomBitCount = 26
-	q := fastrand1()%(1<<randomBitCount) + 1
+	q := fastrand()%(1<<randomBitCount) + 1
 	qlog := fastlog2(float64(q)) - randomBitCount
 	if qlog > 0 {
 		qlog = 0
@@ -859,7 +883,7 @@ func nextSampleNoFP() int32 {
 		rate = 0x3fffffff
 	}
 	if rate != 0 {
-		return int32(int(fastrand1()) % (2 * rate))
+		return int32(int(fastrand()) % (2 * rate))
 	}
 	return 0
 }

@@ -845,7 +845,7 @@ func TestEvalSymlinks(t *testing.T) {
 		if p, err := filepath.EvalSymlinks(path); err != nil {
 			t.Errorf("EvalSymlinks(%q) error: %v", d.path, err)
 		} else if filepath.Clean(p) != filepath.Clean(dest) {
-			t.Errorf("Clean(%q)=%q, want %q", path, p, dest)
+			t.Errorf("EvalSymlinks(%q)=%q, want %q", path, p, dest)
 		}
 
 		// test EvalSymlinks(".")
@@ -877,6 +877,68 @@ func TestEvalSymlinks(t *testing.T) {
 			t.Errorf(`EvalSymlinks(".") in %q directory returns %q, want "." or %q`, d.path, p, want)
 		}()
 
+		// test EvalSymlinks("C:.") on Windows
+		if runtime.GOOS == "windows" {
+			func() {
+				defer func() {
+					err := os.Chdir(wd)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}()
+
+				err := os.Chdir(path)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+
+				volDot := filepath.VolumeName(tmpDir) + "."
+
+				p, err := filepath.EvalSymlinks(volDot)
+				if err != nil {
+					t.Errorf(`EvalSymlinks("%s") in %q directory error: %v`, volDot, d.path, err)
+					return
+				}
+				if p == volDot {
+					return
+				}
+				want := filepath.Clean(findEvalSymlinksTestDirsDest(t, testdirs, d.path))
+				if p == want {
+					return
+				}
+				t.Errorf(`EvalSymlinks("%s") in %q directory returns %q, want %q or %q`, volDot, d.path, p, volDot, want)
+			}()
+		}
+
+		// test EvalSymlinks(".."+path)
+		func() {
+			defer func() {
+				err := os.Chdir(wd)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}()
+
+			err := os.Chdir(simpleJoin(tmpDir, "test"))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+
+			path := simpleJoin("..", d.path)
+			dest := simpleJoin("..", d.dest)
+			if filepath.IsAbs(d.dest) || os.IsPathSeparator(d.dest[0]) {
+				dest = d.dest
+			}
+
+			if p, err := filepath.EvalSymlinks(path); err != nil {
+				t.Errorf("EvalSymlinks(%q) error: %v", d.path, err)
+			} else if filepath.Clean(p) != filepath.Clean(dest) {
+				t.Errorf("EvalSymlinks(%q)=%q, want %q", path, p, dest)
+			}
+		}()
+
 		// test EvalSymlinks where parameter is relative path
 		func() {
 			defer func() {
@@ -894,7 +956,7 @@ func TestEvalSymlinks(t *testing.T) {
 			if p, err := filepath.EvalSymlinks(d.path); err != nil {
 				t.Errorf("EvalSymlinks(%q) error: %v", d.path, err)
 			} else if filepath.Clean(p) != filepath.Clean(d.dest) {
-				t.Errorf("Clean(%q)=%q, want %q", d.path, p, d.dest)
+				t.Errorf("EvalSymlinks(%q)=%q, want %q", d.path, p, d.dest)
 			}
 		}()
 	}

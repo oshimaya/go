@@ -236,6 +236,7 @@ const (
 	PT_LOPROC            = 0x70000000
 	PT_HIPROC            = 0x7fffffff
 	PT_GNU_STACK         = 0x6474e551
+	PT_GNU_RELRO         = 0x6474e552
 	PT_PAX_FLAGS         = 0x65041580
 	PF_X                 = 0x1
 	PF_W                 = 0x2
@@ -1635,6 +1636,17 @@ func elfphload(ctxt *Link, seg *Segment) *ElfPhdr {
 	return ph
 }
 
+func elfphrelro(ctxt *Link, seg *Segment) {
+	ph := newElfPhdr(ctxt)
+	ph.type_ = PT_GNU_RELRO
+	ph.vaddr = seg.Vaddr
+	ph.paddr = seg.Vaddr
+	ph.memsz = seg.Length
+	ph.off = seg.Fileoff
+	ph.filesz = seg.Filelen
+	ph.align = uint64(*FlagRound)
+}
+
 func elfshname(ctxt *Link, name string) *ElfShdr {
 	var off int
 	var sh *ElfShdr
@@ -1819,6 +1831,9 @@ func Elfemitreloc(ctxt *Link) {
 	for sect := Segrodata.Sect; sect != nil; sect = sect.Next {
 		elfrelocsect(ctxt, sect, datap)
 	}
+	for sect := Segrelrodata.Sect; sect != nil; sect = sect.Next {
+		elfrelocsect(ctxt, sect, datap)
+	}
 	for sect := Segdata.Sect; sect != nil; sect = sect.Next {
 		elfrelocsect(ctxt, sect, datap)
 	}
@@ -1872,7 +1887,7 @@ func (ctxt *Link) doelf() {
 	// for dynamic internal linker or external linking, so that various
 	// binutils could correctly calculate PT_TLS size.
 	// see https://golang.org/issue/5200.
-	if HEADTYPE != obj.Hopenbsd {
+	if Headtype != obj.Hopenbsd {
 		if !*FlagD || Linkmode == LinkExternal {
 			Addstring(ctxt, shstrtab, ".tbss")
 		}
@@ -1883,7 +1898,7 @@ func (ctxt *Link) doelf() {
 			Addstring(shstrtab, ".note.netbsd.march")
 		}
 	}
-	if HEADTYPE == obj.Hopenbsd {
+	if Headtype == obj.Hopenbsd {
 		Addstring(ctxt, shstrtab, ".note.openbsd.ident")
 	}
 	if len(buildinfo) > 0 {
@@ -1934,7 +1949,7 @@ func (ctxt *Link) doelf() {
 
 	/* shared library initializer */
 	switch Buildmode {
-	case BuildmodeCArchive, BuildmodeCShared, BuildmodeShared:
+	case BuildmodeCArchive, BuildmodeCShared, BuildmodeShared, BuildmodePlugin:
 		hasinitarr = true
 	}
 
@@ -2153,6 +2168,9 @@ func Asmbelfsetup(ctxt *Link) {
 	for sect := Segrodata.Sect; sect != nil; sect = sect.Next {
 		elfshalloc(ctxt, sect)
 	}
+	for sect := Segrelrodata.Sect; sect != nil; sect = sect.Next {
+		elfshalloc(ctxt, sect)
+	}
 	for sect := Segdata.Sect; sect != nil; sect = sect.Next {
 		elfshalloc(ctxt, sect)
 	}
@@ -2228,7 +2246,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 	 * segment boundaries downwards to include it.
 	 * Except on NaCl where it must not be loaded.
 	 */
-	if HEADTYPE != obj.Hnacl {
+	if Headtype != obj.Hnacl {
 		o := int64(Segtext.Vaddr - pph.vaddr)
 		Segtext.Vaddr -= uint64(o)
 		Segtext.Length += uint64(o)
@@ -2245,7 +2263,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 		sh.flags = SHF_ALLOC
 		sh.addralign = 1
 		if interpreter == "" {
-			switch HEADTYPE {
+			switch Headtype {
 			case obj.Hlinux:
 				interpreter = Thearch.Linuxdynld
 
@@ -2275,9 +2293,9 @@ func Asmbelf(ctxt *Link, symo int64) {
 	}
 
 	pnote = nil
-	if HEADTYPE == obj.Hnetbsd || HEADTYPE == obj.Hopenbsd {
+	if Headtype == obj.Hnetbsd || Headtype == obj.Hopenbsd {
 		var sh *ElfShdr
-		switch HEADTYPE {
+		switch Headtype {
 		case obj.Hnetbsd:
 			sh = elfshname(ctxt, ".note.netbsd.ident")
 			resoff -= int64(elfnetbsdsig(sh, uint64(startva), uint64(resoff)))
@@ -2325,6 +2343,10 @@ func Asmbelf(ctxt *Link, symo int64) {
 	elfphload(ctxt, &Segtext)
 	if Segrodata.Sect != nil {
 		elfphload(ctxt, &Segrodata)
+	}
+	if Segrelrodata.Sect != nil {
+		elfphload(ctxt, &Segrelrodata)
+		elfphrelro(ctxt, &Segrelrodata)
 	}
 	elfphload(ctxt, &Segdata)
 
@@ -2477,7 +2499,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 		// Do not emit PT_TLS for OpenBSD since ld.so(1) does
 		// not currently support it. This is handled
 		// appropriately in runtime/cgo.
-		if HEADTYPE != obj.Hopenbsd {
+		if Headtype != obj.Hopenbsd {
 			tlssize := uint64(0)
 			for sect := Segdata.Sect; sect != nil; sect = sect.Next {
 				if sect.Name == ".tbss" {
@@ -2494,7 +2516,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 		}
 	}
 
-	if HEADTYPE == obj.Hlinux {
+	if Headtype == obj.Hlinux {
 		ph := newElfPhdr(ctxt)
 		ph.type_ = PT_GNU_STACK
 		ph.flags = PF_W + PF_R
@@ -2525,6 +2547,9 @@ elfobj:
 	for sect := Segrodata.Sect; sect != nil; sect = sect.Next {
 		elfshbits(ctxt, sect)
 	}
+	for sect := Segrelrodata.Sect; sect != nil; sect = sect.Next {
+		elfshbits(ctxt, sect)
+	}
 	for sect := Segdata.Sect; sect != nil; sect = sect.Next {
 		elfshbits(ctxt, sect)
 	}
@@ -2537,6 +2562,9 @@ elfobj:
 			elfshreloc(ctxt, sect)
 		}
 		for sect := Segrodata.Sect; sect != nil; sect = sect.Next {
+			elfshreloc(ctxt, sect)
+		}
+		for sect := Segrelrodata.Sect; sect != nil; sect = sect.Next {
 			elfshreloc(ctxt, sect)
 		}
 		for sect := Segdata.Sect; sect != nil; sect = sect.Next {
@@ -2581,13 +2609,13 @@ elfobj:
 	eh.ident[EI_MAG1] = 'E'
 	eh.ident[EI_MAG2] = 'L'
 	eh.ident[EI_MAG3] = 'F'
-	if HEADTYPE == obj.Hfreebsd {
+	if Headtype == obj.Hfreebsd {
 		eh.ident[EI_OSABI] = ELFOSABI_FREEBSD
-	} else if HEADTYPE == obj.Hnetbsd {
+	} else if Headtype == obj.Hnetbsd {
 		eh.ident[EI_OSABI] = ELFOSABI_NETBSD
-	} else if HEADTYPE == obj.Hopenbsd {
+	} else if Headtype == obj.Hopenbsd {
 		eh.ident[EI_OSABI] = ELFOSABI_OPENBSD
-	} else if HEADTYPE == obj.Hdragonfly {
+	} else if Headtype == obj.Hdragonfly {
 		eh.ident[EI_OSABI] = ELFOSABI_NONE
 	}
 	if elf64 {
@@ -2604,6 +2632,8 @@ elfobj:
 
 	if Linkmode == LinkExternal {
 		eh.type_ = ET_REL
+	} else if Buildmode == BuildmodePIE {
+		eh.type_ = ET_DYN
 	} else {
 		eh.type_ = ET_EXEC
 	}
@@ -2628,10 +2658,10 @@ elfobj:
 		a += int64(elfwriteinterp(ctxt))
 	}
 	if Linkmode != LinkExternal {
-		if HEADTYPE == obj.Hnetbsd {
+		if Headtype == obj.Hnetbsd {
 			a += int64(elfwritenetbsdsig(ctxt))
 		}
-		if HEADTYPE == obj.Hopenbsd {
+		if Headtype == obj.Hopenbsd {
 			a += int64(elfwriteopenbsdsig(ctxt))
 		}
 		if len(buildinfo) > 0 {

@@ -17,7 +17,7 @@ type Config struct {
 	arch            string                     // "amd64", etc.
 	IntSize         int64                      // 4 or 8
 	PtrSize         int64                      // 4 or 8
-	lowerBlock      func(*Block) bool          // lowering function
+	lowerBlock      func(*Block, *Config) bool // lowering function
 	lowerValue      func(*Value, *Config) bool // lowering function
 	registers       []Register                 // machine registers
 	gpRegMask       regMask                    // general purpose integer register mask
@@ -33,6 +33,7 @@ type Config struct {
 	nacl            bool                       // GOOS=nacl
 	use387          bool                       // GO386=387
 	NeedsFpScratch  bool                       // No direct move between GP and FP register sets
+	DebugTest       bool                       // as a debugging aid for binary search using GOSSAHASH, make buggy new code conditional on this
 	sparsePhiCutoff uint64                     // Sparse phi location algorithm used above this #blocks*#variables score
 	curFunc         *Func
 
@@ -84,10 +85,6 @@ type Logger interface {
 
 	// Fatal reports a compiler error and exits.
 	Fatalf(line int32, msg string, args ...interface{})
-
-	// Unimplemented reports that the function cannot be compiled.
-	// It will be removed once SSA work is complete.
-	Unimplementedf(line int32, msg string, args ...interface{})
 
 	// Warnl writes compiler messages in the form expected by "errorcheck" tests
 	Warnl(line int32, fmt_ string, args ...interface{})
@@ -182,8 +179,8 @@ func NewConfig(arch string, fe Frontend, ctxt *obj.Link, optimize bool) *Config 
 		c.fpRegMask = fpRegMaskARM64
 		c.FPReg = framepointerRegARM64
 		c.hasGReg = true
-		c.noDuffDevice = obj.Getgoos() == "darwin" // darwin linker cannot handle BR26 reloc with non-zero addend
-	case "ppc64le":
+		c.noDuffDevice = obj.GOOS == "darwin" // darwin linker cannot handle BR26 reloc with non-zero addend
+	case "ppc64le", "ppc64":
 		c.IntSize = 8
 		c.PtrSize = 8
 		c.lowerBlock = rewriteBlockPPC64
@@ -206,16 +203,27 @@ func NewConfig(arch string, fe Frontend, ctxt *obj.Link, optimize bool) *Config 
 		c.specialRegMask = specialRegMaskMIPS64
 		c.FPReg = framepointerRegMIPS64
 		c.hasGReg = true
+	case "s390x":
+		c.IntSize = 8
+		c.PtrSize = 8
+		c.lowerBlock = rewriteBlockS390X
+		c.lowerValue = rewriteValueS390X
+		c.registers = registersS390X[:]
+		c.gpRegMask = gpRegMaskS390X
+		c.fpRegMask = fpRegMaskS390X
+		c.FPReg = framepointerRegS390X
+		c.hasGReg = true
+		c.noDuffDevice = true
 	default:
-		fe.Unimplementedf(0, "arch %s not implemented", arch)
+		fe.Fatalf(0, "arch %s not implemented", arch)
 	}
 	c.ctxt = ctxt
 	c.optimize = optimize
-	c.nacl = obj.Getgoos() == "nacl"
+	c.nacl = obj.GOOS == "nacl"
 
 	// Don't use Duff's device on Plan 9 AMD64, because floating
 	// point operations are not allowed in note handler.
-	if obj.Getgoos() == "plan9" && arch == "amd64" {
+	if obj.GOOS == "plan9" && arch == "amd64" {
 		c.noDuffDevice = true
 	}
 
@@ -283,11 +291,8 @@ func (c *Config) NewFunc() *Func {
 func (c *Config) Logf(msg string, args ...interface{})               { c.fe.Logf(msg, args...) }
 func (c *Config) Log() bool                                          { return c.fe.Log() }
 func (c *Config) Fatalf(line int32, msg string, args ...interface{}) { c.fe.Fatalf(line, msg, args...) }
-func (c *Config) Unimplementedf(line int32, msg string, args ...interface{}) {
-	c.fe.Unimplementedf(line, msg, args...)
-}
-func (c *Config) Warnl(line int32, msg string, args ...interface{}) { c.fe.Warnl(line, msg, args...) }
-func (c *Config) Debug_checknil() bool                              { return c.fe.Debug_checknil() }
+func (c *Config) Warnl(line int32, msg string, args ...interface{})  { c.fe.Warnl(line, msg, args...) }
+func (c *Config) Debug_checknil() bool                               { return c.fe.Debug_checknil() }
 
 func (c *Config) logDebugHashMatch(evname, name string) {
 	file := c.logfiles[evname]

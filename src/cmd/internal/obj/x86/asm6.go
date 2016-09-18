@@ -857,6 +857,8 @@ var yvex_ri3 = []ytab{
 var yvex_xyi3 = []ytab{
 	{Yu8, Yxm, Yxr, Zvex_i_rm_r, 2},
 	{Yu8, Yym, Yyr, Zvex_i_rm_r, 2},
+	{Yi8, Yxm, Yxr, Zvex_i_rm_r, 2},
+	{Yi8, Yym, Yyr, Zvex_i_rm_r, 2},
 }
 
 var yvex_yyi4 = []ytab{ //TODO don't hide 4 op, some version have xmm version
@@ -1146,7 +1148,6 @@ var optab =
 	{AFXSAVE, ysvrs, Pm, [23]uint8{0xae, 00, 0xae, 00}},
 	{AFXRSTOR64, ysvrs, Pw, [23]uint8{0x0f, 0xae, 01, 0x0f, 0xae, 01}},
 	{AFXSAVE64, ysvrs, Pw, [23]uint8{0x0f, 0xae, 00, 0x0f, 0xae, 00}},
-	{obj.AGLOBL, nil, 0, [23]uint8{}},
 	{AHLT, ynone, Px, [23]uint8{0xf4}},
 	{AIDIVB, ydivb, Pb, [23]uint8{0xf6, 07}},
 	{AIDIVL, ydivl, Px, [23]uint8{0xf7, 07}},
@@ -1712,7 +1713,7 @@ var optab =
 	{AVPBROADCASTB, yvex_vpbroadcast, Pvex, [23]uint8{VEX_128_66_0F38_W0, 0x78, VEX_256_66_0F38_W0, 0x78}},
 	{AVPTEST, yvex_xy2, Pvex, [23]uint8{VEX_128_66_0F38_WIG, 0x17, VEX_256_66_0F38_WIG, 0x17}},
 	{AVPSHUFB, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F38_WIG, 0x00, VEX_256_66_0F38_WIG, 0x00}},
-	{AVPSHUFD, yvex_xyi3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x70, VEX_256_66_0F_WIG, 0x70}},
+	{AVPSHUFD, yvex_xyi3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x70, VEX_256_66_0F_WIG, 0x70, VEX_128_66_0F_WIG, 0x70, VEX_256_66_0F_WIG, 0x70}},
 	{AVPOR, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xeb, VEX_256_66_0F_WIG, 0xeb}},
 	{AVPADDQ, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xd4, VEX_256_66_0F_WIG, 0xd4}},
 	{AVPADDD, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xfe, VEX_256_66_0F_WIG, 0xfe}},
@@ -1741,7 +1742,6 @@ var optab =
 	{obj.ATYPE, nil, 0, [23]uint8{}},
 	{obj.AFUNCDATA, yfuncdata, Px, [23]uint8{0, 0}},
 	{obj.APCDATA, ypcdata, Px, [23]uint8{0, 0}},
-	{obj.ACHECKNIL, nil, 0, [23]uint8{}},
 	{obj.AVARDEF, nil, 0, [23]uint8{}},
 	{obj.AVARKILL, nil, 0, [23]uint8{}},
 	{obj.ADUFFCOPY, yduff, Px, [23]uint8{0xe8}},
@@ -2150,7 +2150,7 @@ func instinit() {
 	}
 }
 
-var isAndroid = (obj.Getgoos() == "android")
+var isAndroid = (obj.GOOS == "android")
 
 func prefixof(ctxt *obj.Link, p *obj.Prog, a *obj.Addr) int {
 	if a.Reg < REG_CS && a.Index < REG_CS { // fast path
@@ -2186,7 +2186,7 @@ func prefixof(ctxt *obj.Link, p *obj.Prog, a *obj.Addr) int {
 					if isAndroid {
 						return 0x65 // GS
 					}
-					log.Fatalf("unknown TLS base register for %s", obj.Headstr(ctxt.Headtype))
+					log.Fatalf("unknown TLS base register for %v", ctxt.Headtype)
 
 				case obj.Hdarwin,
 					obj.Hdragonfly,
@@ -2199,7 +2199,7 @@ func prefixof(ctxt *obj.Link, p *obj.Prog, a *obj.Addr) int {
 
 			switch ctxt.Headtype {
 			default:
-				log.Fatalf("unknown TLS base register for %s", obj.Headstr(ctxt.Headtype))
+				log.Fatalf("unknown TLS base register for %v", ctxt.Headtype)
 
 			case obj.Hlinux:
 				if isAndroid {
@@ -4014,7 +4014,7 @@ func doasm(ctxt *obj.Link, p *obj.Prog) {
 						// are handled in prefixof above and should not be listed here.
 						switch ctxt.Headtype {
 						default:
-							log.Fatalf("unknown TLS base location for %s", obj.Headstr(ctxt.Headtype))
+							log.Fatalf("unknown TLS base location for %v", ctxt.Headtype)
 
 						case obj.Hlinux,
 							obj.Hnacl:
@@ -4072,7 +4072,7 @@ func doasm(ctxt *obj.Link, p *obj.Prog) {
 							ctxt.AsmBuf.Put1(0x8B)
 							asmand(ctxt, p, &pp.From, &p.To)
 
-						case obj.Hwindows:
+						case obj.Hwindows, obj.Hwindowsgui:
 							// Windows TLS base is always 0x14(FS).
 							pp.From = p.From
 
@@ -4090,7 +4090,7 @@ func doasm(ctxt *obj.Link, p *obj.Prog) {
 
 					switch ctxt.Headtype {
 					default:
-						log.Fatalf("unknown TLS base location for %s", obj.Headstr(ctxt.Headtype))
+						log.Fatalf("unknown TLS base location for %v", ctxt.Headtype)
 
 					case obj.Hlinux:
 						if !ctxt.Flag_shared {
@@ -4144,7 +4144,7 @@ func doasm(ctxt *obj.Link, p *obj.Prog) {
 							0x8B)
 						asmand(ctxt, p, &pp.From, &p.To)
 
-					case obj.Hwindows:
+					case obj.Hwindows, obj.Hwindowsgui:
 						// Windows TLS base is always 0x28(GS).
 						pp.From = p.From
 

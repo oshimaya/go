@@ -22,7 +22,7 @@ func TestScanner(t *testing.T) {
 	defer src.Close()
 
 	var s scanner
-	s.init(src, nil)
+	s.init(src, nil, nil)
 	for {
 		s.next()
 		if s.tok == _EOF {
@@ -51,7 +51,7 @@ func TestTokens(t *testing.T) {
 
 	// scan source
 	var got scanner
-	got.init(&bytesReader{buf}, nil)
+	got.init(&bytesReader{buf}, nil, nil)
 	got.next()
 	for i, want := range sampleTokens {
 		nlsemi := false
@@ -210,7 +210,8 @@ var sampleTokens = [...]struct {
 	{_IncOp, "--", Sub, precAdd},
 	{_Assign, "=", 0, 0},
 	{_Define, ":=", 0, 0},
-	{_Arrow, "<-", 0, 0},
+	{_Larrow, "<-", 0, 0},
+	{_Rarrow, "=>", 0, 0},
 
 	// delimiters
 	{_Lparen, "(", 0, 0},
@@ -338,7 +339,7 @@ func TestScanErrors(t *testing.T) {
 			} else if nerrors > 1 {
 				t.Errorf("%q: got unexpected %q at pos = %d, line = %d", test.src, msg, pos, line)
 			}
-		})
+		}, nil)
 
 		for {
 			s.next()

@@ -615,7 +615,7 @@ func progeffects(prog *obj.Prog, vars []*Node, uevar bvec, varkill bvec, avarini
 						bvset(uevar, pos)
 					}
 					if prog.Info.Flags&LeftWrite != 0 {
-						if !Isfat(n.Type) {
+						if !isfat(n.Type) {
 							bvset(varkill, pos)
 						}
 					}
@@ -649,7 +649,7 @@ func progeffects(prog *obj.Prog, vars []*Node, uevar bvec, varkill bvec, avarini
 						bvset(uevar, pos)
 					}
 					if prog.Info.Flags&RightWrite != 0 {
-						if !Isfat(n.Type) || prog.As == obj.AVARDEF {
+						if !isfat(n.Type) || prog.As == obj.AVARDEF {
 							bvset(varkill, pos)
 						}
 					}
@@ -806,7 +806,7 @@ func checkauto(fn *Node, p *obj.Prog, n *Node) {
 	for _, ln := range fn.Func.Dcl {
 		fmt.Printf("\t%v (%p; class=%d)\n", ln, ln, ln.Class)
 	}
-	Yyerror("checkauto: invariant lost")
+	yyerror("checkauto: invariant lost")
 }
 
 func checkparam(fn *Node, p *obj.Prog, n *Node) {
@@ -823,7 +823,7 @@ func checkparam(fn *Node, p *obj.Prog, n *Node) {
 	for _, ln := range fn.Func.Dcl {
 		fmt.Printf("\t%v (%p; class=%d)\n", ln, ln, ln.Class)
 	}
-	Yyerror("checkparam: invariant lost")
+	yyerror("checkparam: invariant lost")
 }
 
 func checkprog(fn *Node, p *obj.Prog) {
@@ -855,7 +855,7 @@ func checkptxt(fn *Node, firstp *obj.Prog) {
 		if false {
 			fmt.Printf("analyzing '%v'\n", p)
 		}
-		if p.As != obj.AGLOBL && p.As != obj.ATYPE {
+		if p.As != obj.ATYPE {
 			checkprog(fn, p)
 		}
 	}
@@ -1233,7 +1233,7 @@ func livenessepilogue(lv *Liveness) {
 						if !n.Name.Needzero {
 							n.Name.Needzero = true
 							if debuglive >= 1 {
-								Warnl(p.Lineno, "%v: %v is ambiguously live", Curfn.Func.Nname, Nconv(n, FmtLong))
+								Warnl(p.Lineno, "%v: %L is ambiguously live", Curfn.Func.Nname, n)
 							}
 
 							// Record in 'ambiguous' bitmap.
@@ -1329,7 +1329,7 @@ func livenessepilogue(lv *Liveness) {
 						}
 						n := lv.vars[j]
 						if n.Class != PPARAM {
-							yyerrorl(p.Lineno, "internal error: %v %v recorded as live on entry, p.Pc=%v", Curfn.Func.Nname, Nconv(n, FmtLong), p.Pc)
+							yyerrorl(p.Lineno, "internal error: %v %L recorded as live on entry, p.Pc=%v", Curfn.Func.Nname, n, p.Pc)
 						}
 					}
 				}
@@ -1423,7 +1423,7 @@ func livenessepilogue(lv *Liveness) {
 		}
 	}
 
-	Flusherrors()
+	flusherrors()
 }
 
 // FNV-1 hash function constants.

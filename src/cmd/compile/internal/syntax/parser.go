@@ -28,7 +28,7 @@ type parser struct {
 	nerrors int // error count
 }
 
-func (p *parser) init(src io.Reader, errh ErrorHandler) {
+func (p *parser) init(src io.Reader, errh ErrorHandler, pragh PragmaHandler) {
 	p.scanner.init(src, func(pos, line int, msg string) {
 		p.nerrors++
 		if !debug && errh != nil {
@@ -36,7 +36,7 @@ func (p *parser) init(src io.Reader, errh ErrorHandler) {
 			return
 		}
 		panic(fmt.Sprintf("%d: %s\n", line, msg))
-	})
+	}, pragh)
 
 	p.fnest = 0
 	p.xnest = 0
@@ -245,6 +245,10 @@ func (p *parser) file() *File {
 			continue
 		}
 
+		// Reset p.pragma BEFORE advancing to the next token (consuming ';')
+		// since comments before may set pragmas for the next function decl.
+		p.pragma = 0
+
 		if p.tok != _EOF && !p.got(_Semi) {
 			p.syntax_error("after top level declaration")
 			p.advance(_Const, _Type, _Var, _Func)
@@ -253,7 +257,6 @@ func (p *parser) file() *File {
 	// p.tok == _EOF
 
 	f.Lines = p.source.line
-	f.Pragmas = p.pragmas
 
 	return f
 }
@@ -312,16 +315,37 @@ func (p *parser) importDecl(group *Group) Decl {
 	return d
 }
 
-// ConstSpec = IdentifierList [ [ Type ] "=" ExpressionList ] .
+// AliasSpec = identifier "=>" [ PackageName "." ] identifier .
+func (p *parser) aliasDecl(tok token, name *Name, group *Group) Decl {
+	// no tracing since this is already called from a const/type/var/funcDecl
+
+	d := new(AliasDecl)
+	d.initFrom(&name.node)
+
+	p.want(_Rarrow)
+	d.Tok = tok
+	d.Name = name
+	d.Orig = p.dotname(p.name())
+	d.Group = group
+
+	return d
+}
+
+// ConstSpec = IdentifierList [ [ Type ] "=" ExpressionList ] | AliasSpec .
 func (p *parser) constDecl(group *Group) Decl {
 	if trace {
 		defer p.trace("constDecl")()
 	}
 
-	d := new(ConstDecl)
-	d.init(p)
+	name := p.name()
+	if p.tok == _Rarrow {
+		return p.aliasDecl(Const, name, group)
+	}
 
-	d.NameList = p.nameList(p.name())
+	d := new(ConstDecl)
+	d.initFrom(&name.node)
+
+	d.NameList = p.nameList(name)
 	if p.tok != _EOF && p.tok != _Semi && p.tok != _Rparen {
 		d.Type = p.tryType()
 		if p.got(_Assign) {
@@ -333,16 +357,24 @@ func (p *parser) constDecl(group *Group) Decl {
 	return d
 }
 
-// TypeSpec = identifier Type .
+// TypeSpec = identifier Type | AliasSpec .
 func (p *parser) typeDecl(group *Group) Decl {
 	if trace {
 		defer p.trace("typeDecl")()
 	}
 
-	d := new(TypeDecl)
-	d.init(p)
+	name := p.name()
+	if p.tok == _Rarrow {
+		return p.aliasDecl(Type, name, group)
+	}
 
-	d.Name = p.name()
+	d := new(TypeDecl)
+	d.initFrom(&name.node)
+
+	d.Name = name
+	// accept "type T = p.T" for now so we can experiment
+	// with a type-alias only approach as well
+	d.Alias = p.got(_Assign)
 	d.Type = p.tryType()
 	if d.Type == nil {
 		p.syntax_error("in type declaration")
@@ -353,16 +385,21 @@ func (p *parser) typeDecl(group *Group) Decl {
 	return d
 }
 
-// VarSpec = IdentifierList ( Type [ "=" ExpressionList ] | "=" ExpressionList ) .
+// VarSpec = IdentifierList ( Type [ "=" ExpressionList ] | "=" ExpressionList ) | AliasSpec .
 func (p *parser) varDecl(group *Group) Decl {
 	if trace {
 		defer p.trace("varDecl")()
 	}
 
-	d := new(VarDecl)
-	d.init(p)
+	name := p.name()
+	if p.tok == _Rarrow {
+		return p.aliasDecl(Var, name, group)
+	}
 
-	d.NameList = p.nameList(p.name())
+	d := new(VarDecl)
+	d.initFrom(&name.node)
+
+	d.NameList = p.nameList(name)
 	if p.got(_Assign) {
 		d.Values = p.exprList()
 	} else {
@@ -372,35 +409,35 @@ func (p *parser) varDecl(group *Group) Decl {
 		}
 	}
 	d.Group = group
+	if gcCompat {
+		d.init(p)
+	}
 
 	return d
 }
 
-// FunctionDecl = "func" FunctionName ( Function | Signature ) .
+var badRecv = new(Field) // to signal invalid receiver in funcDecl
+
+// FunctionDecl = "func" FunctionName ( Function | Signature ) | "func" AliasSpec .
 // FunctionName = identifier .
 // Function     = Signature FunctionBody .
 // MethodDecl   = "func" Receiver MethodName ( Function | Signature ) .
 // Receiver     = Parameters .
-func (p *parser) funcDecl() *FuncDecl {
+func (p *parser) funcDecl() Decl {
 	if trace {
 		defer p.trace("funcDecl")()
 	}
 
-	f := new(FuncDecl)
-	f.init(p)
-
-	badRecv := false
+	var recv *Field
 	if p.tok == _Lparen {
-		rcvr := p.paramList()
-		switch len(rcvr) {
+		recv = badRecv
+		switch list := p.paramList(); len(list) {
 		case 0:
 			p.error("method has no receiver")
-			badRecv = true
 		case 1:
-			f.Recv = rcvr[0]
+			recv = list[0]
 		default:
 			p.error("method has multiple receivers")
-			badRecv = true
 		}
 	}
 
@@ -408,6 +445,11 @@ func (p *parser) funcDecl() *FuncDecl {
 		p.syntax_error("expecting name or (")
 		p.advance(_Lbrace, _Semi)
 		return nil
+	}
+
+	name := p.name()
+	if recv == nil && p.tok == _Rarrow {
+		return p.aliasDecl(Func, name, nil)
 	}
 
 	// TODO(gri) check for regular functions only
@@ -424,10 +466,18 @@ func (p *parser) funcDecl() *FuncDecl {
 	// 	}
 	// }
 
-	f.Name = p.name()
+	f := new(FuncDecl)
+	f.initFrom(&name.node) // TODO(gri) is this the correct position for methods?
+
+	f.Recv = recv
+	f.Name = name
 	f.Type = p.funcType()
+	if gcCompat {
+		f.node = f.Type.node
+	}
 	f.Body = p.funcBody()
 
+	f.Pragma = p.pragma
 	f.EndLine = uint32(p.line)
 
 	// TODO(gri) deal with function properties
@@ -435,7 +485,7 @@ func (p *parser) funcDecl() *FuncDecl {
 	// 	p.error("can only use //go:noescape with external func implementations")
 	// }
 
-	if badRecv {
+	if recv == badRecv {
 		return nil // TODO(gri) better solution
 	}
 	return f
@@ -465,6 +515,9 @@ func (p *parser) binaryExpr(prec int) Expr {
 		tprec := p.prec
 		p.next()
 		t.Y = p.binaryExpr(tprec)
+		if gcCompat {
+			t.init(p)
+		}
 		x = t
 	}
 	return x
@@ -485,6 +538,9 @@ func (p *parser) unaryExpr() Expr {
 			x.Op = p.op
 			p.next()
 			x.X = p.unaryExpr()
+			if gcCompat {
+				x.init(p)
+			}
 			return x
 
 		case And:
@@ -498,7 +554,7 @@ func (p *parser) unaryExpr() Expr {
 			return x
 		}
 
-	case _Arrow:
+	case _Larrow:
 		// receive op (<-x) or receive-only channel (<-chan E)
 		p.next()
 
@@ -730,6 +786,9 @@ loop:
 				p.syntax_error("expecting name or (")
 				p.advance(_Semi, _Rparen)
 			}
+			if gcCompat {
+				x.init(p)
+			}
 
 		case _Lbrack:
 			p.next()
@@ -851,6 +910,9 @@ func (p *parser) complitexpr() *CompositeLit {
 			l.init(p)
 			l.Key = e
 			l.Value = p.bare_complitexpr()
+			if gcCompat {
+				l.init(p)
+			}
 			e = l
 			x.NKeys++
 		}
@@ -860,6 +922,7 @@ func (p *parser) complitexpr() *CompositeLit {
 		}
 	}
 
+	x.EndLine = uint32(p.line)
 	p.xnest--
 	p.want(_Rbrace)
 
@@ -905,7 +968,7 @@ func (p *parser) tryType() Expr {
 		p.next()
 		return indirect(p.type_())
 
-	case _Arrow:
+	case _Larrow:
 		// recvchantype
 		p.next()
 		p.want(_Chan)
@@ -951,7 +1014,7 @@ func (p *parser) tryType() Expr {
 		p.next()
 		t := new(ChanType)
 		t.init(p)
-		if p.got(_Arrow) {
+		if p.got(_Larrow) {
 			t.Dir = SendOnly
 		}
 		t.Elem = p.chanElem()
@@ -996,6 +1059,9 @@ func (p *parser) funcType() *FuncType {
 	typ.init(p)
 	typ.ParamList = p.paramList()
 	typ.ResultList = p.funcResult()
+	if gcCompat {
+		typ.init(p)
+	}
 	return typ
 }
 
@@ -1133,6 +1199,10 @@ func (p *parser) addField(styp *StructType, name *Name, typ Expr, tag *BasicLit)
 	f.Name = name
 	f.Type = typ
 	styp.FieldList = append(styp.FieldList, f)
+
+	if gcCompat && name != nil {
+		f.node = name.node
+	}
 
 	if debug && tag != nil && len(styp.FieldList) != len(styp.TagList) {
 		panic("inconsistent struct field list")
@@ -1287,7 +1357,7 @@ func (p *parser) paramDecl() *Field {
 	case _Name:
 		f.Name = p.name()
 		switch p.tok {
-		case _Name, _Star, _Arrow, _Func, _Lbrack, _Chan, _Map, _Struct, _Interface, _Lparen:
+		case _Name, _Star, _Larrow, _Func, _Lbrack, _Chan, _Map, _Struct, _Interface, _Lparen:
 			// sym name_or_type
 			f.Type = p.type_()
 
@@ -1302,7 +1372,7 @@ func (p *parser) paramDecl() *Field {
 			f.Name = nil
 		}
 
-	case _Arrow, _Star, _Func, _Lbrack, _Chan, _Map, _Struct, _Interface, _Lparen:
+	case _Larrow, _Star, _Func, _Lbrack, _Chan, _Map, _Struct, _Interface, _Lparen:
 		// name_or_type
 		f.Type = p.type_()
 
@@ -1436,13 +1506,16 @@ func (p *parser) simpleStmt(lhs Expr, rangeOk bool) SimpleStmt {
 			p.next()
 			return p.newAssignStmt(op, lhs, ImplicitOne)
 
-		case _Arrow:
+		case _Larrow:
 			// lhs <- rhs
 			p.next()
 			s := new(SendStmt)
 			s.init(p)
 			s.Chan = lhs
 			s.Value = p.expr()
+			if gcCompat {
+				s.init(p)
+			}
 			return s
 
 		default:
@@ -1509,6 +1582,9 @@ func (p *parser) rangeClause(lhs Expr, def bool) *RangeClause {
 	r.Lhs = lhs
 	r.Def = def
 	r.X = p.expr()
+	if gcCompat {
+		r.init(p)
+	}
 	return r
 }
 
@@ -1583,6 +1659,9 @@ func (p *parser) forStmt() Stmt {
 
 	p.want(_For)
 	s.Init, s.Cond, s.Post = p.header(true)
+	if gcCompat {
+		s.init(p)
+	}
 	s.Body = p.stmtBody("for clause")
 
 	return s
@@ -1670,6 +1749,10 @@ func (p *parser) ifStmt() *IfStmt {
 	s.Init, s.Cond, _ = p.header(false)
 	if s.Cond == nil {
 		p.error("missing condition in if statement")
+	}
+
+	if gcCompat {
+		s.init(p)
 	}
 
 	s.Then = p.stmtBody("if clause")
@@ -1776,7 +1859,7 @@ func (p *parser) commClause() *CommClause {
 		p.next()
 		lhs := p.exprList()
 
-		if _, ok := lhs.(*ListExpr); !ok && p.tok == _Arrow {
+		if _, ok := lhs.(*ListExpr); !ok && p.tok == _Larrow {
 			// lhs <- x
 		} else {
 			// lhs
@@ -1811,7 +1894,7 @@ func (p *parser) commClause() *CommClause {
 }
 
 // TODO(gri) find a better solution
-var missing_stmt Stmt = new(EmptyStmt) // = Nod(OXXX, nil, nil)
+var missing_stmt Stmt = new(EmptyStmt) // = nod(OXXX, nil, nil)
 
 // Statement =
 // 	Declaration | LabeledStmt | SimpleStmt |
@@ -1856,7 +1939,7 @@ func (p *parser) stmt() Stmt {
 
 	case _Literal, _Func, _Lparen, // operands
 		_Lbrack, _Struct, _Map, _Chan, _Interface, // composite types
-		_Arrow: // receive operator
+		_Larrow: // receive operator
 		return p.simpleStmt(nil, false)
 
 	case _For:
@@ -1878,7 +1961,7 @@ func (p *parser) stmt() Stmt {
 		s.Tok = _Fallthrough
 		return s
 		// // will be converted to OFALL
-		// stmt := Nod(OXFALL, nil, nil)
+		// stmt := nod(OXFALL, nil, nil)
 		// stmt.Xoffset = int64(block)
 		// return stmt
 
@@ -1903,7 +1986,7 @@ func (p *parser) stmt() Stmt {
 		s.Tok = _Goto
 		s.Label = p.name()
 		return s
-		// stmt := Nod(OGOTO, p.new_name(p.name()), nil)
+		// stmt := nod(OGOTO, p.new_name(p.name()), nil)
 		// stmt.Sym = dclstack // context, for goto restrictions
 		// return stmt
 
@@ -1913,6 +1996,9 @@ func (p *parser) stmt() Stmt {
 		s.init(p)
 		if p.tok != _Semi && p.tok != _Rbrace {
 			s.Results = p.exprList()
+		}
+		if gcCompat {
+			s.init(p)
 		}
 		return s
 

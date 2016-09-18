@@ -26,8 +26,13 @@ type opInfo struct {
 	generic           bool // this is a generic (arch-independent) opcode
 	rematerializeable bool // this op is rematerializeable
 	commutative       bool // this operation is commutative (e.g. addition)
-	resultInArg0      bool // last output of v and v.Args[0] must be allocated to the same register
+	resultInArg0      bool // (first, if a tuple) output of v and v.Args[0] must be allocated to the same register
+	resultNotInArgs   bool // outputs must not be allocated to the same registers as inputs
 	clobberFlags      bool // this op clobbers flags register
+	call              bool // is a function call
+	nilCheck          bool // this op is a nil check on arg0
+	faultOnNilArg0    bool // this op will fault if arg0 is nil (and aux encodes a small offset)
+	faultOnNilArg1    bool // this op will fault if arg1 is nil (and aux encodes a small offset)
 }
 
 type inputInfo struct {
@@ -58,6 +63,7 @@ const (
 	auxInt128               // auxInt represents a 128-bit integer.  Always 0.
 	auxFloat32              // auxInt is a float32 (encoded with math.Float64bits)
 	auxFloat64              // auxInt is a float64 (encoded with math.Float64bits)
+	auxSizeAndAlign         // auxInt is a SizeAndAlign
 	auxString               // aux is a string
 	auxSym                  // aux is a symbol
 	auxSymOff               // aux is a symbol, auxInt is an offset

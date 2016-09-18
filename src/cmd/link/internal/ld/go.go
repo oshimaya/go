@@ -174,7 +174,7 @@ func loadcgo(ctxt *Link, file string, pkg string, p string) {
 				// to force a link of foo.so.
 				havedynamic = 1
 
-				if HEADTYPE == obj.Hdarwin {
+				if Headtype == obj.Hdarwin {
 					Machoadddynlib(lib)
 				} else {
 					dynlib = append(dynlib, lib)
@@ -228,7 +228,7 @@ func loadcgo(ctxt *Link, file string, pkg string, p string) {
 			s = Linklookup(ctxt, local, 0)
 
 			switch Buildmode {
-			case BuildmodeCShared, BuildmodeCArchive:
+			case BuildmodeCShared, BuildmodeCArchive, BuildmodePlugin:
 				if s == Linklookup(ctxt, "main", 0) {
 					continue
 				}
@@ -322,9 +322,9 @@ func Adddynsym(ctxt *Link, s *Symbol) {
 
 	if Iself {
 		Elfadddynsym(ctxt, s)
-	} else if HEADTYPE == obj.Hdarwin {
+	} else if Headtype == obj.Hdarwin {
 		ctxt.Diag("adddynsym: missed symbol %s (%s)", s.Name, s.Extname)
-	} else if HEADTYPE == obj.Hwindows {
+	} else if Headtype == obj.Hwindows {
 		// already taken care of
 	} else {
 		ctxt.Diag("adddynsym: unsupported binary format")
@@ -363,7 +363,7 @@ func fieldtrack(ctxt *Link) {
 }
 
 func (ctxt *Link) addexport() {
-	if HEADTYPE == obj.Hdarwin {
+	if Headtype == obj.Hdarwin {
 		return
 	}
 
@@ -417,17 +417,5 @@ func (p *Pkg) cycle() *Pkg {
 func importcycles() {
 	for _, p := range pkgall {
 		p.cycle()
-	}
-}
-
-func setlinkmode(arg string) {
-	if arg == "internal" {
-		Linkmode = LinkInternal
-	} else if arg == "external" {
-		Linkmode = LinkExternal
-	} else if arg == "auto" {
-		Linkmode = LinkAuto
-	} else {
-		Exitf("unknown link mode -linkmode %s", arg)
 	}
 }

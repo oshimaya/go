@@ -406,6 +406,21 @@ func buildModeInit() {
 			fatalf("-buildmode=shared and -o not supported together")
 		}
 		ldBuildmode = "shared"
+	case "plugin":
+		pkgsFilter = pkgsMain
+		if gccgo {
+			codegenArg = "-fPIC"
+		} else {
+			switch platform {
+			case "linux/amd64", "linux/arm", "linux/arm64", "linux/386",
+				"android/amd64", "android/arm", "android/arm64", "android/386":
+			default:
+				fatalf("-buildmode=plugin not supported on %s\n", platform)
+			}
+			codegenArg = "-dynlink"
+		}
+		exeSuffix = ".so"
+		ldBuildmode = "plugin"
 	default:
 		fatalf("buildmode=%s not supported", buildBuildmode)
 	}
@@ -605,7 +620,7 @@ func installPackages(args []string, forGet bool) {
 				errorf("go install: no install location for %s: hidden by %s", p.Dir, p.ConflictDir)
 			default:
 				errorf("go install: no install location for directory %s outside GOPATH\n"+
-					"\tFor more details see: go help gopath", p.Dir)
+					"\tFor more details see: 'go help gopath'", p.Dir)
 			}
 		}
 	}
@@ -1665,7 +1680,7 @@ func (b *builder) install(a *action) (err error) {
 	perm := os.FileMode(0666)
 	if a1.link {
 		switch buildBuildmode {
-		case "c-archive", "c-shared":
+		case "c-archive", "c-shared", "plugin":
 		default:
 			perm = 0777
 		}
@@ -2959,7 +2974,7 @@ func (tools gccgoToolchain) cc(b *builder, p *Package, objdir, ofile, cfile stri
 // maybePIC adds -fPIC to the list of arguments if needed.
 func (tools gccgoToolchain) maybePIC(args []string) []string {
 	switch buildBuildmode {
-	case "c-shared", "shared":
+	case "c-shared", "shared", "plugin":
 		args = append(args, "-fPIC")
 	}
 	return args
@@ -3000,9 +3015,19 @@ func (b *builder) gfortran(p *Package, out string, flags []string, ffile string)
 }
 
 // ccompile runs the given C or C++ compiler and creates an object from a single source file.
-func (b *builder) ccompile(p *Package, out string, flags []string, file string, compiler []string) error {
+func (b *builder) ccompile(p *Package, outfile string, flags []string, file string, compiler []string) error {
 	file = mkAbs(p.Dir, file)
-	return b.run(p.Dir, p.ImportPath, nil, compiler, flags, "-o", out, "-c", file)
+	desc := p.ImportPath
+	output, err := b.runOut(p.Dir, desc, nil, compiler, flags, "-o", outfile, "-c", file)
+	if len(output) > 0 {
+		b.showOutput(p.Dir, desc, b.processOutput(output))
+		if err != nil {
+			err = errPrintedOutput
+		} else if os.Getenv("GO_BUILDER_NAME") != "" {
+			return errors.New("C compiler warning promoted to error on Go builders")
+		}
+	}
+	return err
 }
 
 // gccld runs the gcc linker to create an executable from a set of object files.
@@ -3258,7 +3283,6 @@ func (b *builder) cgo(p *Package, cgoExe, obj string, pcCFLAGS, pcLDFLAGS, cgofi
 	outGo = append(outGo, gofiles...)
 
 	// gcc
-
 	cflags := stringList(cgoCPPFLAGS, cgoCFLAGS)
 	for _, cfile := range cfiles {
 		ofile := obj + cfile[:len(cfile)-1] + "o"
@@ -3410,12 +3434,6 @@ func (b *builder) collect(p *Package, obj, ofile string, cgoLDFLAGS, outObj []st
 	}
 
 	ldflags = append(ldflags, "-Wl,-r", "-nostdlib")
-
-	if goos == "windows" {
-		// libmingw32 and libmingwex have some inter-dependencies,
-		// so must use linker groups.
-		ldflags = append(ldflags, "-Wl,--start-group", "-lmingwex", "-lmingw32", "-Wl,--end-group")
-	}
 
 	if b.gccSupportsNoPie() {
 		ldflags = append(ldflags, "-no-pie")

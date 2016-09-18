@@ -362,7 +362,8 @@ const (
 	OCOMPLIT         // Right{List} (composite literal, not yet lowered to specific form)
 	OMAPLIT          // Type{List} (composite literal, Type is map)
 	OSTRUCTLIT       // Type{List} (composite literal, Type is struct)
-	OARRAYLIT        // Type{List} (composite literal, Type is array or slice)
+	OARRAYLIT        // Type{List} (composite literal, Type is array)
+	OSLICELIT        // Type{List} (composite literal, Type is slice)
 	OPTRLIT          // &Left (left is composite literal)
 	OCONV            // Type(Left) (type conversion)
 	OCONVIFACE       // Type(Left) (type conversion, to interface)
@@ -436,7 +437,7 @@ const (
 	// statements
 	OBLOCK    // { List } (block of code)
 	OBREAK    // break
-	OCASE     // case Left: Nbody (select case after processing; Left==nil means default)
+	OCASE     // case Left or List[0]..List[1]: Nbody (select case after processing; Left==nil and List==nil means default)
 	OXCASE    // case List: Nbody (select case before processing; List==nil means default)
 	OCONTINUE // continue
 	ODEFER    // defer Left (Left must be call)
@@ -582,12 +583,26 @@ func (n Nodes) Addr(i int) **Node {
 // Append appends entries to Nodes.
 // If a slice is passed in, this will take ownership of it.
 func (n *Nodes) Append(a ...*Node) {
+	if len(a) == 0 {
+		return
+	}
 	if n.slice == nil {
-		if len(a) > 0 {
-			n.slice = &a
-		}
+		n.slice = &a
 	} else {
 		*n.slice = append(*n.slice, a...)
+	}
+}
+
+// Prepend prepends entries to Nodes.
+// If a slice is passed in, this will take ownership of it.
+func (n *Nodes) Prepend(a ...*Node) {
+	if len(a) == 0 {
+		return
+	}
+	if n.slice == nil {
+		n.slice = &a
+	} else {
+		*n.slice = append(a, *n.slice...)
 	}
 }
 

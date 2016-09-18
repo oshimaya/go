@@ -223,7 +223,7 @@ func (d *deadcodepass) init() {
 
 	if SysArch.Family == sys.ARM {
 		// mark some functions that are only referenced after linker code editing
-		if d.ctxt.Goarm == 5 {
+		if obj.GOARM == 5 {
 			names = append(names, "_sfloat")
 		}
 		names = append(names, "runtime.read_tls_fallback")
@@ -241,8 +241,18 @@ func (d *deadcodepass) init() {
 		// In a normal binary, start at main.main and the init
 		// functions and mark what is reachable from there.
 		names = append(names, *flagEntrySymbol)
-		if *FlagLinkshared && Buildmode == BuildmodeExe {
+		if *FlagLinkshared && (Buildmode == BuildmodeExe || Buildmode == BuildmodePIE) {
 			names = append(names, "main.main", "main.init")
+		} else if Buildmode == BuildmodePlugin {
+			pluginInit := d.ctxt.Library[0].Pkg + ".init"
+			names = append(names, pluginInit, "go.plugin.tabs")
+
+			// We don't keep the go.plugin.exports symbol,
+			// but we do keep the symbols it refers to.
+			exports := Linkrlookup(d.ctxt, "go.plugin.exports", 0)
+			for _, r := range exports.R {
+				d.mark(r.Sym, nil)
+			}
 		}
 		for _, name := range markextra {
 			names = append(names, name)

@@ -35,26 +35,7 @@ import (
 	"cmd/internal/obj"
 	"cmd/internal/sys"
 	"log"
-	"strconv"
 )
-
-var headers = []struct {
-	name string
-	val  int
-}{
-	{"darwin", obj.Hdarwin},
-	{"dragonfly", obj.Hdragonfly},
-	{"freebsd", obj.Hfreebsd},
-	{"linux", obj.Hlinux},
-	{"android", obj.Hlinux}, // must be after "linux" entry or else headstr(Hlinux) == "android"
-	{"nacl", obj.Hnacl},
-	{"netbsd", obj.Hnetbsd},
-	{"openbsd", obj.Hopenbsd},
-	{"plan9", obj.Hplan9},
-	{"solaris", obj.Hsolaris},
-	{"windows", obj.Hwindows},
-	{"windowsgui", obj.Hwindows},
-}
 
 func linknew(arch *sys.Arch) *Link {
 	ctxt := &Link{
@@ -65,26 +46,22 @@ func linknew(arch *sys.Arch) *Link {
 		},
 		Allsym: make([]*Symbol, 0, 100000),
 		Arch:   arch,
-		Goroot: obj.Getgoroot(),
 	}
 
-	p := obj.Getgoarch()
-	if p != arch.Name {
-		log.Fatalf("invalid goarch %s (want %s)", p, arch.Name)
+	if obj.GOARCH != arch.Name {
+		log.Fatalf("invalid obj.GOARCH %s (want %s)", obj.GOARCH, arch.Name)
 	}
 
-	ctxt.Headtype = headtype(obj.Getgoos())
-	if ctxt.Headtype < 0 {
-		log.Fatalf("unknown goos %s", obj.Getgoos())
-	}
+	return ctxt
+}
 
-	// Record thread-local storage offset.
-	// TODO(rsc): Move tlsoffset back into the linker.
-	switch ctxt.Headtype {
+// computeTLSOffset records the thread-local storage offset.
+func (ctxt *Link) computeTLSOffset() {
+	switch Headtype {
 	default:
-		log.Fatalf("unknown thread-local storage offset for %s", Headstr(ctxt.Headtype))
+		log.Fatalf("unknown thread-local storage offset for %v", Headtype)
 
-	case obj.Hplan9, obj.Hwindows:
+	case obj.Hplan9, obj.Hwindows, obj.Hwindowsgui:
 		break
 
 		/*
@@ -98,7 +75,7 @@ func linknew(arch *sys.Arch) *Link {
 		obj.Hopenbsd,
 		obj.Hdragonfly,
 		obj.Hsolaris:
-		if obj.Getgoos() == "android" {
+		if obj.GOOS == "android" {
 			switch ctxt.Arch.Family {
 			case sys.AMD64:
 				// Android/amd64 constant - offset from 0(FS) to our TLS slot.
@@ -152,12 +129,6 @@ func linknew(arch *sys.Arch) *Link {
 		}
 	}
 
-	// On arm, record goarm.
-	if ctxt.Arch.Family == sys.ARM {
-		ctxt.Goarm = obj.Getgoarm()
-	}
-
-	return ctxt
 }
 
 func linknewsym(ctxt *Link, name string, v int) *Symbol {
@@ -193,22 +164,4 @@ func Linklookup(ctxt *Link, name string, v int) *Symbol {
 // read-only lookup
 func Linkrlookup(ctxt *Link, name string, v int) *Symbol {
 	return ctxt.Hash[v][name]
-}
-
-func Headstr(v int) string {
-	for i := 0; i < len(headers); i++ {
-		if v == headers[i].val {
-			return headers[i].name
-		}
-	}
-	return strconv.Itoa(v)
-}
-
-func headtype(name string) int {
-	for i := 0; i < len(headers); i++ {
-		if name == headers[i].name {
-			return headers[i].val
-		}
-	}
-	return -1
 }

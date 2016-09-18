@@ -15,6 +15,7 @@ import (
 type scanner struct {
 	source
 	nlsemi bool // if set '\n' and EOF translate to ';'
+	pragma Pragma
 
 	// current token, valid after calling next()
 	pos, line int
@@ -24,12 +25,13 @@ type scanner struct {
 	op        Operator // valid if tok is _Operator, _AssignOp, or _IncOp
 	prec      int      // valid if tok is _Operator, _AssignOp, or _IncOp
 
-	pragmas []Pragma
+	pragh PragmaHandler
 }
 
-func (s *scanner) init(src io.Reader, errh ErrorHandler) {
+func (s *scanner) init(src io.Reader, errh ErrorHandler, pragh PragmaHandler) {
 	s.source.init(src, errh)
 	s.nlsemi = false
+	s.pragh = pragh
 }
 
 func (s *scanner) next() {
@@ -227,7 +229,7 @@ redo:
 			goto assignop
 		}
 		if c == '-' {
-			s.tok = _Arrow
+			s.tok = _Larrow
 			break
 		}
 		s.ungetr()
@@ -251,9 +253,14 @@ redo:
 		s.tok = _Operator
 
 	case '=':
-		if s.getr() == '=' {
+		c = s.getr()
+		if c == '=' {
 			s.op, s.prec = Eql, precCmp
 			s.tok = _Operator
+			break
+		}
+		if c == '>' {
+			s.tok = _Rarrow
 			break
 		}
 		s.ungetr()
@@ -315,7 +322,7 @@ func (s *scanner) ident() {
 
 	// possibly a keyword
 	if len(lit) >= 2 {
-		if tok := keywordMap[hash(lit)]; tok != 0 && strbyteseql(tokstrings[tok], lit) {
+		if tok := keywordMap[hash(lit)]; tok != 0 && tokstrings[tok] == string(lit) {
 			s.nlsemi = contains(1<<_Break|1<<_Continue|1<<_Fallthrough|1<<_Return, tok)
 			s.tok = tok
 			return
@@ -343,18 +350,6 @@ func (s *scanner) isCompatRune(c rune, start bool) bool {
 // It assumes that s has at least length 2.
 func hash(s []byte) uint {
 	return (uint(s[0])<<4 ^ uint(s[1]) + uint(len(s))) & uint(len(keywordMap)-1)
-}
-
-func strbyteseql(s string, b []byte) bool {
-	if len(s) == len(b) {
-		for i, b := range b {
-			if s[i] != b {
-				return false
-			}
-		}
-		return true
-	}
-	return false
 }
 
 var keywordMap [1 << 6]token // size must be power of two
@@ -540,6 +535,10 @@ func (s *scanner) lineComment() {
 	// recognize pragmas
 	var prefix string
 	r := s.getr()
+	if s.pragh == nil {
+		goto skip
+	}
+
 	switch r {
 	case 'g':
 		prefix = "go:"
@@ -565,10 +564,7 @@ func (s *scanner) lineComment() {
 		}
 		r = s.getr()
 	}
-	s.pragmas = append(s.pragmas, Pragma{
-		Line: s.line,
-		Text: strings.TrimSuffix(string(s.stopLit()), "\r"),
-	})
+	s.pragma |= s.pragh(0, s.line, strings.TrimSuffix(string(s.stopLit()), "\r"))
 	return
 
 skip:

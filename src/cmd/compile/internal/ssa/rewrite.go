@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 )
 
-func applyRewrite(f *Func, rb func(*Block) bool, rv func(*Value, *Config) bool) {
+func applyRewrite(f *Func, rb func(*Block, *Config) bool, rv func(*Value, *Config) bool) {
 	// repeat rewrites until we find no more rewrites
 	var curb *Block
 	var curv *Value
@@ -34,7 +34,7 @@ func applyRewrite(f *Func, rb func(*Block) bool, rv func(*Value, *Config) bool) 
 				}
 			}
 			curb = b
-			if rb(b) {
+			if rb(b, config) {
 				change = true
 			}
 			curb = nil
@@ -161,6 +161,12 @@ func isAuto(s interface{}) bool {
 	return ok
 }
 
+// isSameSym returns whether sym is the same as the given named symbol
+func isSameSym(sym interface{}, name string) bool {
+	s, ok := sym.(fmt.Stringer)
+	return ok && s.String() == name
+}
+
 // nlz returns the number of leading zeros.
 func nlz(x int64) int64 {
 	// log2(0) == 1, so nlz(0) == 64
@@ -220,6 +226,11 @@ func is32Bit(n int64) bool {
 // is16Bit reports whether n can be represented as a signed 16 bit integer.
 func is16Bit(n int64) bool {
 	return n == int64(int16(n))
+}
+
+// is20Bit reports whether n can be represented as a signed 20 bit integer.
+func is20Bit(n int64) bool {
+	return -(1<<19) <= n && n < (1<<19)
 }
 
 // b2i translates a boolean value to 0 or 1 for assigning to auxInt.

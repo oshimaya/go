@@ -430,8 +430,9 @@ func ticketKeyFromBytes(b [32]byte) (key ticketKey) {
 	return key
 }
 
-// clone returns a copy of c. Only the exported fields are copied.
-func (c *Config) clone() *Config {
+// Clone returns a shallow clone of c.
+// Only the exported fields are copied.
+func (c *Config) Clone() *Config {
 	return &Config{
 		Rand:                        c.Rand,
 		Time:                        c.Time,
@@ -642,9 +643,15 @@ func (c *Config) writeKeyLog(clientRandom, masterSecret []byte) error {
 	if c.KeyLogWriter == nil {
 		return nil
 	}
+	writerMutex.Lock()
 	_, err := fmt.Fprintf(c.KeyLogWriter, "CLIENT_RANDOM %x %x\n", clientRandom, masterSecret)
+	writerMutex.Unlock()
 	return err
 }
+
+// writerMutex protects all KeyLogWriters globally. It is rarely enabled,
+// and is only for debugging, so a global mutex saves space.
+var writerMutex sync.Mutex
 
 // A Certificate is a chain of one or more certificates, leaf first.
 type Certificate struct {

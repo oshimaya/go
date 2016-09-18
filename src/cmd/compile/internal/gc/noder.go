@@ -6,33 +6,27 @@ package gc
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"cmd/compile/internal/syntax"
-	"cmd/internal/obj"
 )
 
 func parseFile(filename string) {
-	errh := func(_, line int, msg string) {
-		yyerrorl(lexlineno+int32(line)-1, "%s", msg)
-	}
-
-	file, err := syntax.ReadFile(filename, errh, 0)
+	p := noder{baseline: lexlineno}
+	file, err := syntax.ReadFile(filename, p.error, p.pragma, 0)
 	if err != nil {
 		Fatalf("syntax.ReadFile %s: %v", filename, err)
 	}
 
-	p := noder{pragmas: file.Pragmas}
+	p.file(file)
 
-	p.lineno(file.PkgName)
-	mkpackage(file.PkgName.Value)
-
-	xtop = append(xtop, p.decls(file.DeclList, true)...)
-	p.globalPragmas()
-	lexlineno += p.maxline
+	if !imported_unsafe {
+		for _, x := range p.linknames {
+			p.error(0, x, "//go:linkname only allowed in Go files that import \"unsafe\"")
+		}
+	}
 
 	if nsyntaxerrors == 0 {
 		testdclstack()
@@ -41,13 +35,21 @@ func parseFile(filename string) {
 
 // noder transforms package syntax's AST into a Nod tree.
 type noder struct {
-	indent  []byte
-	pragmas []syntax.Pragma
-	pline   int32
-	maxline int32
+	baseline  int32
+	linknames []int // tracks //go:linkname lines
 }
 
-func (p *noder) decls(decls []syntax.Decl, top bool) (l []*Node) {
+func (p *noder) file(file *syntax.File) {
+	p.lineno(file.PkgName)
+	mkpackage(file.PkgName.Value)
+
+	xtop = append(xtop, p.decls(file.DeclList)...)
+
+	lexlineno = p.baseline + int32(file.Lines) - 1
+	lineno = lexlineno
+}
+
+func (p *noder) decls(decls []syntax.Decl) (l []*Node) {
 	var lastConstGroup *syntax.Group
 	var lastConstRHS []*Node
 	var iotaVal int32
@@ -58,8 +60,12 @@ func (p *noder) decls(decls []syntax.Decl, top bool) (l []*Node) {
 		case *syntax.ImportDecl:
 			p.importDecl(decl)
 
+		case *syntax.AliasDecl:
+			yyerror("alias declarations not yet implemented")
+
 		case *syntax.VarDecl:
 			l = append(l, p.varDecl(decl)...)
+
 		case *syntax.ConstDecl:
 			// Tricky to handle golang.org/issue/15550 correctly.
 
@@ -84,6 +90,10 @@ func (p *noder) decls(decls []syntax.Decl, top bool) (l []*Node) {
 			lastConstGroup = decl.Group
 
 		case *syntax.TypeDecl:
+			if decl.Alias {
+				yyerror("alias declarations not yet implemented")
+				break
+			}
 			l = append(l, p.typeDecl(decl))
 
 		case *syntax.FuncDecl:
@@ -92,10 +102,6 @@ func (p *noder) decls(decls []syntax.Decl, top bool) (l []*Node) {
 		default:
 			panic("unhandled Decl")
 		}
-
-		if top {
-			p.pline = p.maxline
-		}
 	}
 
 	return
@@ -103,7 +109,7 @@ func (p *noder) decls(decls []syntax.Decl, top bool) (l []*Node) {
 
 func (p *noder) importDecl(imp *syntax.ImportDecl) {
 	val := p.basicLit(imp.Path)
-	importfile(&val, p.indent)
+	importfile(&val, nil)
 	ipkg := importpkg
 	importpkg = nil
 
@@ -120,7 +126,7 @@ func (p *noder) importDecl(imp *syntax.ImportDecl) {
 	if imp.LocalPkgName != nil {
 		my = p.name(imp.LocalPkgName)
 	} else {
-		my = Lookup(ipkg.Name)
+		my = lookup(ipkg.Name)
 	}
 
 	pack := p.nod(imp, OPACK, nil, nil)
@@ -160,6 +166,7 @@ func (p *noder) varDecl(decl *syntax.VarDecl) []*Node {
 		exprs = p.exprList(decl.Values)
 	}
 
+	p.lineno(decl)
 	return variter(names, typ, exprs)
 }
 
@@ -217,15 +224,15 @@ func (p *noder) funcDecl(fun *syntax.FuncDecl) *Node {
 		}
 	}
 
-	pragma := p.pragma()
+	pragma := Pragma(fun.Pragma)
 
 	f.Nbody.Set(body)
 	f.Noescape = pragma&Noescape != 0
 	if f.Noescape && len(body) != 0 {
-		Yyerror("can only use //go:noescape with external func implementations")
+		yyerror("can only use //go:noescape with external func implementations")
 	}
 	f.Func.Pragma = pragma
-	lineno = lexlineno + int32(fun.EndLine) - 1
+	lineno = p.baseline + int32(fun.EndLine) - 1
 	f.Func.Endlineno = lineno
 
 	funcbody(f)
@@ -243,13 +250,13 @@ func (p *noder) funcHeader(fun *syntax.FuncDecl) *Node {
 		if name.Name == "init" {
 			name = renameinit()
 			if t.List.Len() > 0 || t.Rlist.Len() > 0 {
-				Yyerror("func init must have no arguments and no return values")
+				yyerror("func init must have no arguments and no return values")
 			}
 		}
 
 		if localpkg.Name == "main" && name.Name == "main" {
 			if t.List.Len() > 0 || t.Rlist.Len() > 0 {
-				Yyerror("func main must have no arguments and no return values")
+				yyerror("func main must have no arguments and no return values")
 			}
 		}
 
@@ -300,9 +307,9 @@ func (p *noder) param(param *syntax.Field, dddOk, final bool) *Node {
 	// rewrite ...T parameter
 	if typ.Op == ODDD {
 		if !dddOk {
-			Yyerror("cannot use ... in receiver or result parameter list")
+			yyerror("cannot use ... in receiver or result parameter list")
 		} else if !final {
-			Yyerror("can only use ... with final parameter in list")
+			yyerror("can only use ... with final parameter in list")
 		}
 		typ.Op = OTARRAY
 		typ.Right = typ.Left
@@ -346,15 +353,19 @@ func (p *noder) expr(expr syntax.Expr) *Node {
 		if expr.Type != nil {
 			n.Right = p.expr(expr.Type)
 		}
-		// TODO(mdempsky): Should apply wrapname to n.List nodes.
-		n.List.Set(p.exprs(expr.ElemList))
+		l := p.exprs(expr.ElemList)
+		for i, e := range l {
+			l[i] = p.wrapname(expr.ElemList[i], e)
+		}
+		n.List.Set(l)
+		lineno = p.baseline + int32(expr.EndLine) - 1
 		return n
 	case *syntax.KeyValueExpr:
 		return p.nod(expr, OKEY, p.expr(expr.Key), p.wrapname(expr.Value, p.expr(expr.Value)))
 	case *syntax.FuncLit:
 		closurehdr(p.typeExpr(expr.Type))
 		body := p.stmts(expr.Body)
-		lineno = lexlineno + int32(expr.EndLine) - 1
+		lineno = p.baseline + int32(expr.EndLine) - 1
 		return p.setlineno(expr, closurebody(body))
 	case *syntax.ParenExpr:
 		return p.nod(expr, OPAREN, p.expr(expr.X), nil)
@@ -367,7 +378,7 @@ func (p *noder) expr(expr syntax.Expr) *Node {
 			obj.Used = true
 			return oldname(s)
 		}
-		return p.setlineno(expr, NodSym(OXDOT, obj, sel))
+		return p.setlineno(expr, nodSym(OXDOT, obj, sel))
 	case *syntax.IndexExpr:
 		return p.nod(expr, OINDEX, p.expr(expr.X), p.expr(expr.Index))
 	case *syntax.SliceExpr:
@@ -399,7 +410,9 @@ func (p *noder) expr(expr syntax.Expr) *Node {
 				x = unparen(x) // TODO(mdempsky): Needed?
 				if x.Op == OCOMPLIT {
 					// Special case for &T{...}: turn into (*T){...}.
-					x.Right = p.nod(expr, OIND, x.Right, nil)
+					// TODO(mdempsky): Switch back to p.nod after we
+					// get rid of gcCompat.
+					x.Right = nod(OIND, x.Right, nil)
 					x.Right.Implicit = true
 					return x
 				}
@@ -443,7 +456,7 @@ func (p *noder) expr(expr syntax.Expr) *Node {
 		if expr.Lhs != nil {
 			n.Left = p.declName(expr.Lhs)
 			if isblank(n.Left) {
-				Yyerror("invalid variable name %s in type switch", n.Left)
+				yyerror("invalid variable name %v in type switch", n.Left)
 			}
 		}
 		return n
@@ -524,7 +537,7 @@ func (p *noder) packname(expr syntax.Expr) *Sym {
 		s := p.name(expr.Sel)
 		var pkg *Pkg
 		if name.Def == nil || name.Def.Op != OPACK {
-			Yyerror("%v is not a package", name)
+			yyerror("%v is not a package", name)
 			pkg = localpkg
 		} else {
 			name.Def.Used = true
@@ -578,7 +591,7 @@ func (p *noder) stmt(stmt syntax.Stmt) *Node {
 	case *syntax.SendStmt:
 		return p.nod(stmt, OSEND, p.expr(stmt.Chan), p.expr(stmt.Value))
 	case *syntax.DeclStmt:
-		return liststmt(p.decls(stmt.DeclList, false))
+		return liststmt(p.decls(stmt.DeclList))
 	case *syntax.AssignStmt:
 		if stmt.Op != 0 && stmt.Op != syntax.Def {
 			n := p.nod(stmt, OASOP, p.expr(stmt.Lhs), p.expr(stmt.Rhs))
@@ -660,7 +673,7 @@ func (p *noder) stmt(stmt syntax.Stmt) *Node {
 					break
 				}
 				if ln.Sym.Def != ln {
-					Yyerror("%s is shadowed during return", ln.Sym.Name)
+					yyerror("%s is shadowed during return", ln.Sym.Name)
 				}
 			}
 		}
@@ -681,7 +694,7 @@ func (p *noder) body(body []syntax.Stmt) *Node {
 	l := p.bodyList(body)
 	if len(l) == 0 {
 		// TODO(mdempsky): Line number?
-		return Nod(OEMPTY, nil, nil)
+		return nod(OEMPTY, nil, nil)
 	}
 	return liststmt(l)
 }
@@ -942,7 +955,7 @@ func (p *noder) basicLit(lit *syntax.BasicLit) Val {
 }
 
 func (p *noder) name(name *syntax.Name) *Sym {
-	return Lookup(name.Value)
+	return lookup(name.Value)
 }
 
 func (p *noder) mkname(name *syntax.Name) *Node {
@@ -967,7 +980,7 @@ func (p *noder) wrapname(n syntax.Node, x *Node) *Node {
 }
 
 func (p *noder) nod(orig syntax.Node, op Op, left, right *Node) *Node {
-	return p.setlineno(orig, Nod(op, left, right))
+	return p.setlineno(orig, nod(op, left, right))
 }
 
 func (p *noder) setlineno(src syntax.Node, dst *Node) *Node {
@@ -976,10 +989,7 @@ func (p *noder) setlineno(src syntax.Node, dst *Node) *Node {
 		// TODO(mdempsky): Shouldn't happen. Fix package syntax.
 		return dst
 	}
-	if l > p.maxline {
-		p.maxline = l
-	}
-	dst.Lineno = lexlineno + l - 1
+	dst.Lineno = p.baseline + l - 1
 	return dst
 }
 
@@ -992,121 +1002,57 @@ func (p *noder) lineno(n syntax.Node) {
 		// TODO(mdempsky): Shouldn't happen. Fix package syntax.
 		return
 	}
-	if l > p.maxline {
-		p.maxline = l
-	}
-	lineno = lexlineno + l - 1
+	lineno = p.baseline + l - 1
 }
 
-func (p *noder) pragma() Pragma {
-	lo := sort.Search(len(p.pragmas), func(i int) bool { return int32(p.pragmas[i].Line) >= p.pline })
-	hi := sort.Search(len(p.pragmas), func(i int) bool { return int32(p.pragmas[i].Line) > p.maxline })
+func (p *noder) error(_, line int, msg string) {
+	yyerrorl(p.baseline+int32(line)-1, "%s", msg)
+}
 
-	var res Pragma
-	for _, prag := range p.pragmas[lo:hi] {
-		text := prag.Text
-		if !strings.HasPrefix(text, "go:") {
-			continue
+func (p *noder) pragma(pos, line int, text string) syntax.Pragma {
+	switch {
+	case strings.HasPrefix(text, "line "):
+		i := strings.IndexByte(text, ':')
+		if i < 0 {
+			break
 		}
+		n, err := strconv.Atoi(text[i+1:])
+		if err != nil {
+			// todo: make this an error instead? it is almost certainly a bug.
+			break
+		}
+		if n > 1e8 {
+			p.error(pos, line, "line number out of range")
+			errorexit()
+		}
+		if n <= 0 {
+			break
+		}
+		lexlineno = p.baseline + int32(line)
+		linehistupdate(text[5:i], n)
 
+	case strings.HasPrefix(text, "go:linkname "):
+		// Record line number so we can emit an error later if
+		// the file doesn't import package unsafe.
+		p.linknames = append(p.linknames, line)
+
+		f := strings.Fields(text)
+		if len(f) != 3 {
+			p.error(pos, line, "usage: //go:linkname localname linkname")
+			break
+		}
+		lookup(f[1]).Linkname = f[2]
+
+	case strings.HasPrefix(text, "go:cgo_"):
+		pragcgobuf += pragcgo(text)
+		fallthrough // because of //go:cgo_unsafe_args
+	default:
 		verb := text
 		if i := strings.Index(text, " "); i >= 0 {
 			verb = verb[:i]
 		}
-
-		switch verb {
-		case "go:nointerface":
-			if obj.Fieldtrack_enabled != 0 {
-				res |= Nointerface
-			}
-		case "go:noescape":
-			res |= Noescape
-		case "go:norace":
-			res |= Norace
-		case "go:nosplit":
-			res |= Nosplit
-		case "go:noinline":
-			res |= Noinline
-		case "go:systemstack":
-			if !compiling_runtime {
-				Yyerror("//go:systemstack only allowed in runtime")
-			}
-			res |= Systemstack
-		case "go:nowritebarrier":
-			if !compiling_runtime {
-				Yyerror("//go:nowritebarrier only allowed in runtime")
-			}
-			res |= Nowritebarrier
-		case "go:nowritebarrierrec":
-			if !compiling_runtime {
-				Yyerror("//go:nowritebarrierrec only allowed in runtime")
-			}
-			res |= Nowritebarrierrec | Nowritebarrier // implies Nowritebarrier
-		case "go:cgo_unsafe_args":
-			res |= CgoUnsafeArgs
-		case "go:uintptrescapes":
-			// For the next function declared in the file
-			// any uintptr arguments may be pointer values
-			// converted to uintptr. This directive
-			// ensures that the referenced allocated
-			// object, if any, is retained and not moved
-			// until the call completes, even though from
-			// the types alone it would appear that the
-			// object is no longer needed during the
-			// call. The conversion to uintptr must appear
-			// in the argument list.
-			// Used in syscall/dll_windows.go.
-			res |= UintptrEscapes
-		}
+		return syntax.Pragma(pragmaValue(verb))
 	}
-	return res
-}
 
-func (p *noder) globalPragmas() {
-	origlexlineno := lexlineno
-	defer func() {
-		lexlineno = origlexlineno
-	}()
-
-	for _, prag := range p.pragmas {
-		text := prag.Text
-
-		if strings.HasPrefix(text, "go:cgo_") {
-			pragcgobuf += pragcgo(text)
-		}
-
-		if strings.HasPrefix(text, "go:linkname ") {
-			if !imported_unsafe {
-				Yyerror("//go:linkname only allowed in Go files that import \"unsafe\"")
-			}
-			f := strings.Fields(text)
-			if len(f) != 3 {
-				Yyerror("usage: //go:linkname localname linkname")
-				break
-			}
-			Lookup(f[1]).Linkname = f[2]
-		}
-
-		// TODO(mdempsky): Move into package syntax.
-		if strings.HasPrefix(text, "line ") {
-			i := strings.IndexByte(text, ':')
-			if i < 0 {
-				continue
-			}
-			n, err := strconv.Atoi(text[i+1:])
-			if err != nil {
-				// todo: make this an error instead? it is almost certainly a bug.
-				continue
-			}
-			if n > 1e8 {
-				Yyerror("line number out of range")
-				errorexit()
-			}
-			if n <= 0 {
-				continue
-			}
-			lexlineno = origlexlineno + int32(prag.Line)
-			linehistupdate(text[5:i], n)
-		}
-	}
+	return 0
 }

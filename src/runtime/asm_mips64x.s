@@ -14,9 +14,6 @@
 TEXT runtime·rt0_go(SB),NOSPLIT,$0
 	// R29 = stack; R4 = argc; R5 = argv
 
-	// initialize essential registers
-	JAL	runtime·reginit(SB)
-
 	ADDV	$-24, R29
 	MOVW	R4, 8(R29) // argc
 	MOVV	R5, 16(R29) // argv
@@ -86,19 +83,6 @@ TEXT runtime·breakpoint(SB),NOSPLIT,$-8-0
 	RET
 
 TEXT runtime·asminit(SB),NOSPLIT,$-8-0
-	RET
-
-TEXT _cgo_reginit(SB),NOSPLIT,$-8-0
-	// crosscall1 needs to reginit, but can't
-	// get at the 'runtime.reginit' symbol.
-	JMP	runtime·reginit(SB)
-
-TEXT runtime·reginit(SB),NOSPLIT,$-8-0
-	// initialize essential FP registers
-	MOVD	$0.5, F26
-	SUBD	F26, F26, F24
-	ADDD	F26, F26, F28
-	ADDD	F28, F28, F30
 	RET
 
 /*
@@ -838,7 +822,7 @@ notfound:
 	MOVV	R1, ret+24(FP)
 	RET
 
-TEXT runtime·fastrand1(SB), NOSPLIT, $0-4
+TEXT runtime·fastrand(SB), NOSPLIT, $0-4
 	MOVV	g_m(g), R2
 	MOVWU	m_fastrand(R2), R1
 	ADDU	R1, R1
