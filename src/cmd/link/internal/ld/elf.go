@@ -948,8 +948,8 @@ func Elfinit(ctxt *Link) {
 	// 32-bit architectures
 	case sys.ARM:
 		// we use EABI on both linux/arm and freebsd/arm.
-		if HEADTYPE == obj.Hlinux || HEADTYPE == obj.Hfreebsd || 
-		   HEADTYPE == obj.Hnetbsd {
+		if Headtype == obj.Hlinux || Headtype == obj.Hfreebsd || 
+		   Headtype == obj.Hnetbsd {
 			// We set a value here that makes no indication of which
 			// float ABI the object uses, because this is information
 			// used by the dynamic linker to compare executables and
@@ -1271,7 +1271,7 @@ func elfnetbsdsig(sh *ElfShdr, startva uint64, resoff uint64) int {
 }
 func elfnetbsdarmsig(sh *ElfShdr, startva uint64, resoff uint64) int {
 	mArch := []byte("earm\x00")
-	switch obj.Getgoarm() {
+	switch obj.GOARM {
 	case 6:
 		mArch = []byte("earmv6hf\x00")
 	case 7:
@@ -1300,14 +1300,14 @@ func elfwritenetbsdsig(ctxt *Link) int {
 
 	if SysArch.Family == sys.ARM {
 		mArch := []byte("earm\x00")
-		switch obj.Getgoarm() {
+		switch obj.GOARM {
 		case 6:
 			mArch = []byte("earmv6hf\x00")
 		case 7:
 			mArch = []byte("earmv7hf\x00")
 		}
 		descsz := len(mArch)
-		sh2 := elfwritenotehdr(".note.netbsd.march", ELF_NOTE_NETBSD_MARCH_NAMESZ,
+		sh2 := elfwritenotehdr(ctxt, ".note.netbsd.march", ELF_NOTE_NETBSD_MARCH_NAMESZ,
 			uint32(descsz), ELF_NOTE_NETBSD_MARCH_TAG)
 		if sh2 == nil {
 			return 0
@@ -1892,10 +1892,10 @@ func (ctxt *Link) doelf() {
 			Addstring(ctxt, shstrtab, ".tbss")
 		}
 	}
-	if HEADTYPE == obj.Hnetbsd {
-		Addstring(shstrtab, ".note.netbsd.ident")
+	if Headtype == obj.Hnetbsd {
+		Addstring(ctxt, shstrtab, ".note.netbsd.ident")
 		if SysArch.Family == sys.ARM {
-			Addstring(shstrtab, ".note.netbsd.march")
+			Addstring(ctxt, shstrtab, ".note.netbsd.march")
 		}
 	}
 	if Headtype == obj.Hopenbsd {
@@ -2300,7 +2300,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 			sh = elfshname(ctxt, ".note.netbsd.ident")
 			resoff -= int64(elfnetbsdsig(sh, uint64(startva), uint64(resoff)))
 			if SysArch.Family == sys.ARM {
-				sh = elfshname(".note.netbsd.march")
+				sh = elfshname(ctxt, ".note.netbsd.march")
 				resoff -= int64(elfnetbsdarmsig(sh, uint64(startva), uint64(resoff)))
 			}
 

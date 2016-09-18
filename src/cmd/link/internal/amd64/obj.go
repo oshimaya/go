@@ -126,17 +126,17 @@ func archinit(ctxt *ld.Link) {
 		}
 
 	case obj.Hnetbsd: /* netbsd */
-		ld.Elfinit()
+		ld.Elfinit(ctxt)
 
 		ld.HEADR = ld.ELFRESERVE
-		if ld.INITTEXT == -1 {
-			ld.INITTEXT = (1 << 22) + int64(ld.HEADR)
+		if *ld.FlagTextAddr == -1 {
+			*ld.FlagTextAddr = (1 << 22) + int64(ld.HEADR)
 		}
-		if ld.INITDAT == -1 {
-			ld.INITDAT = 0
+		if *ld.FlagDataAddr == -1 {
+			*ld.FlagDataAddr = 0
 		}
-		if ld.INITRND == -1 {
-			ld.INITRND = 0x200000
+		if *ld.FlagRound == -1 {
+			*ld.FlagRound = 0x200000
 		}
 
 	case obj.Hnacl:
