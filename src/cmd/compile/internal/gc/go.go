@@ -336,6 +336,9 @@ const (
 
 	// Instruction updates whichever of from/to is type D_OREG. (ppc64)
 	PostInc = 1 << 29
+
+	// Optional 3rd input operand, only ever read.
+	From3Read = 1 << 30
 )
 
 type Arch struct {
@@ -345,8 +348,8 @@ type Arch struct {
 	MAXWIDTH int64
 
 	Defframe func(*obj.Prog)
-	Proginfo func(*obj.Prog) // fills in Prog.Info
-	Use387   bool            // should 8g use 387 FP instructions instead of sse2.
+	Proginfo func(*obj.Prog) ProgInfo
+	Use387   bool // should 8g use 387 FP instructions instead of sse2.
 
 	// SSAMarkMoves marks any MOVXconst ops that need to avoid clobbering flags.
 	SSAMarkMoves func(*SSAGenState, *ssa.Block)

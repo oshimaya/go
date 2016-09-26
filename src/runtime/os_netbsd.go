@@ -35,10 +35,10 @@ func setitimer(mode int32, new, old *itimerval)
 func sigaction(sig int32, new, old *sigactiont)
 
 //go:noescape
-func sigaltstack(new, old *sigaltstackt)
+func sigaltstack(new, old *stackt)
 
 //go:noescape
-func sigprocmask(mode int32, new, old *sigset)
+func sigprocmask(how int32, new, old *sigset)
 
 //go:noescape
 func sysctl(mib *uint32, miblen uint32, out *byte, size *uintptr, dst *byte, ndst uintptr) int32
@@ -222,21 +222,6 @@ func mpreinit(mp *m) {
 	mp.gsignal.m = mp
 }
 
-//go:nosplit
-func msigsave(mp *m) {
-	sigprocmask(_SIG_SETMASK, nil, &mp.sigmask)
-}
-
-//go:nosplit
-func msigrestore(sigmask sigset) {
-	sigprocmask(_SIG_SETMASK, &sigmask, nil)
-}
-
-//go:nosplit
-func sigblock() {
-	sigprocmask(_SIG_SETMASK, &sigset_all, nil)
-}
-
 // Called to initialize a new m (including the bootstrap m).
 // Called on the new thread, cannot allocate memory.
 func minit() {
@@ -318,29 +303,16 @@ func getsig(i int32) uintptr {
 	return sa.sa_sigaction
 }
 
+// setSignaltstackSP sets the ss_sp field of a stackt.
 //go:nosplit
-func signalstack(s *stack) {
-	var st sigaltstackt
-	if s == nil {
-		st.ss_flags = _SS_DISABLE
-	} else {
-		st.ss_sp = s.lo
-		st.ss_size = s.hi - s.lo
-		st.ss_flags = 0
-	}
-	sigaltstack(&st, nil)
+func setSignalstackSP(s *stackt, sp uintptr) {
+	s.ss_sp = sp
 }
 
 //go:nosplit
 //go:nowritebarrierrec
-func updatesigmask(m sigmask) {
-	var mask sigset
-	copy(mask.__bits[:], m[:])
-	sigprocmask(_SIG_SETMASK, &mask, nil)
-}
-
-func unblocksig(sig int32) {
-	var mask sigset
-	mask.__bits[(sig-1)/32] |= 1 << ((uint32(sig) - 1) & 31)
-	sigprocmask(_SIG_UNBLOCK, &mask, nil)
+func sigmaskToSigset(m sigmask) sigset {
+	var set sigset
+	copy(set.__bits[:], m[:])
+	return set
 }

@@ -32,8 +32,9 @@ type Config struct {
 	noDuffDevice    bool                       // Don't use Duff's device
 	nacl            bool                       // GOOS=nacl
 	use387          bool                       // GO386=387
+	OldArch         bool                       // True for older versions of architecture, e.g. true for PPC64BE, false for PPC64LE
 	NeedsFpScratch  bool                       // No direct move between GP and FP register sets
-	DebugTest       bool                       // as a debugging aid for binary search using GOSSAHASH, make buggy new code conditional on this
+	DebugTest       bool                       // default true unless $GOSSAHASH != ""; as a debugging aid, make new code conditional on this and use GOSSAHASH to binary search for failing cases
 	sparsePhiCutoff uint64                     // Sparse phi location algorithm used above this #blocks*#variables score
 	curFunc         *Func
 
@@ -180,7 +181,10 @@ func NewConfig(arch string, fe Frontend, ctxt *obj.Link, optimize bool) *Config 
 		c.FPReg = framepointerRegARM64
 		c.hasGReg = true
 		c.noDuffDevice = obj.GOOS == "darwin" // darwin linker cannot handle BR26 reloc with non-zero addend
-	case "ppc64le", "ppc64":
+	case "ppc64":
+		c.OldArch = true
+		fallthrough
+	case "ppc64le":
 		c.IntSize = 8
 		c.PtrSize = 8
 		c.lowerBlock = rewriteBlockPPC64
@@ -230,12 +234,8 @@ func NewConfig(arch string, fe Frontend, ctxt *obj.Link, optimize bool) *Config 
 	if c.nacl {
 		c.noDuffDevice = true // Don't use Duff's device on NaCl
 
-		// ARM assembler rewrites DIV/MOD to runtime calls, which
-		// clobber R12 on nacl
-		opcodeTable[OpARMDIV].reg.clobbers |= 1 << 12  // R12
-		opcodeTable[OpARMDIVU].reg.clobbers |= 1 << 12 // R12
-		opcodeTable[OpARMMOD].reg.clobbers |= 1 << 12  // R12
-		opcodeTable[OpARMMODU].reg.clobbers |= 1 << 12 // R12
+		// runtime call clobber R12 on nacl
+		opcodeTable[OpARMUDIVrtcall].reg.clobbers |= 1 << 12 // R12
 	}
 
 	// Assign IDs to preallocated values/blocks.

@@ -1,5 +1,5 @@
-// Derived from Inferno utils/6c/reg.c
-// https://bitbucket.org/inferno-os/inferno-os/src/default/utils/6c/reg.c
+// Derived from Inferno utils/6l/l.h and related files.
+// https://bitbucket.org/inferno-os/inferno-os/src/default/utils/6l/l.h
 //
 //	Copyright © 1994-1999 Lucent Technologies Inc.  All rights reserved.
 //	Portions Copyright © 1995-1997 C H Forsyth (forsyth@terzarima.net)
@@ -28,28 +28,57 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-package arm64
+package ld
 
-import "cmd/internal/obj/arm64"
+type Symbols struct {
+	symbolBatch []Symbol
 
-/*
- * track register variables including external registers:
- *	bit	reg
- *	0	R0
- *	1	R1
- *	...	...
- *	31	R31
- *	32+0	F0
- *	32+1	F1
- *	...	...
- *	32+31	F31
- */
-func RtoB(r int) uint64 {
-	if r >= arm64.REG_R0 && r <= arm64.REG_R31 {
-		return 1 << uint(r-arm64.REG_R0)
+	// Symbol lookup based on name and indexed by version.
+	hash []map[string]*Symbol
+
+	Allsym []*Symbol
+}
+
+func (syms *Symbols) newsym(name string, v int) *Symbol {
+	batch := syms.symbolBatch
+	if len(batch) == 0 {
+		batch = make([]Symbol, 1000)
 	}
-	if r >= arm64.REG_F0 && r <= arm64.REG_F31 {
-		return 1 << uint(32+r-arm64.REG_F0)
+	s := &batch[0]
+	syms.symbolBatch = batch[1:]
+
+	s.Dynid = -1
+	s.Plt = -1
+	s.Got = -1
+	s.Name = name
+	s.Version = int16(v)
+	syms.Allsym = append(syms.Allsym, s)
+
+	return s
+}
+
+// Look up the symbol with the given name and version, creating the
+// symbol if it is not found.
+func (syms *Symbols) Lookup(name string, v int) *Symbol {
+	m := syms.hash[v]
+	s := m[name]
+	if s != nil {
+		return s
 	}
-	return 0
+	s = syms.newsym(name, v)
+	s.Extname = s.Name
+	m[name] = s
+	return s
+}
+
+// Look up the symbol with the given name and version, returning nil
+// if it is not found.
+func (syms *Symbols) ROLookup(name string, v int) *Symbol {
+	return syms.hash[v][name]
+}
+
+// Allocate a new version (i.e. symbol namespace).
+func (syms *Symbols) IncVersion() int {
+	syms.hash = append(syms.hash, make(map[string]*Symbol))
+	return len(syms.hash) - 1
 }
