@@ -196,6 +196,54 @@ func sigpipe() {
 	dieFromSignal(_SIGPIPE)
 }
 
+// sigtrampgo is called from the signal handler function, sigtramp,
+// written in assembly code.
+// This is called by the signal handler, and the world may be stopped.
+//go:nosplit
+//go:nowritebarrierrec
+func sigtrampgo(sig uint32, info *siginfo, ctx unsafe.Pointer) {
+	if sigfwdgo(sig, info, ctx) {
+		return
+	}
+	g := getg()
+	if g == nil {
+		if sig == _SIGPROF {
+			// Ignore profiling signals that arrive on
+			// non-Go threads. On some systems they will
+			// be handled directly by the signal handler,
+			// by calling sigprofNonGo, in which case we won't
+			// get here anyhow.
+			return
+		}
+		badsignal(uintptr(sig), &sigctxt{info, ctx})
+		return
+	}
+
+	// If some non-Go code called sigaltstack, adjust.
+	sp := uintptr(unsafe.Pointer(&sig))
+	if sp < g.m.gsignal.stack.lo || sp >= g.m.gsignal.stack.hi {
+		var st stackt
+		sigaltstack(nil, &st)
+		if st.ss_flags&_SS_DISABLE != 0 {
+			setg(nil)
+			cgocallback(unsafe.Pointer(funcPC(noSignalStack)), noescape(unsafe.Pointer(&sig)), unsafe.Sizeof(sig), 0)
+		}
+		stsp := uintptr(unsafe.Pointer(st.ss_sp))
+		if sp < stsp || sp >= stsp+st.ss_size {
+			setg(nil)
+			cgocallback(unsafe.Pointer(funcPC(sigNotOnStack)), noescape(unsafe.Pointer(&sig)), unsafe.Sizeof(sig), 0)
+		}
+		setGsignalStack(&st)
+		g.m.gsignal.stktopsp = getcallersp(unsafe.Pointer(&sig))
+	}
+
+	setg(g.m.gsignal)
+	c := &sigctxt{info, ctx}
+	c.fixsigcode(sig)
+	sighandler(sig, info, ctx, g)
+	setg(g)
+}
+
 // sigpanic turns a synchronous signal into a run-time panic.
 // If the signal handler sees a synchronous panic, it arranges the
 // stack to look like the function where the signal occurred called
@@ -525,6 +573,13 @@ func unblocksig(sig int32) {
 	sigprocmask(_SIG_UNBLOCK, &set, nil)
 }
 
+// minitSignals is called when initializing a new m to set the
+// thread's alternate signal stack and signal mask.
+func minitSignals() {
+	minitSignalStack()
+	minitSignalMask()
+}
+
 // minitSignalStack is called when initializing a new m to set the
 // alternate signal stack. If the alternate signal stack is not set
 // for the thread (the normal case) then set the alternate signal
@@ -543,6 +598,33 @@ func minitSignalStack() {
 	} else {
 		setGsignalStack(&st)
 		_g_.m.newSigstack = false
+	}
+}
+
+// minitSignalMask is called when initializing a new m to set the
+// thread's signal mask. When this is called all signals have been
+// blocked for the thread.  This starts with m.sigmask, which was set
+// either from initSigmask for a newly created thread or by calling
+// msigsave if this is a non-Go thread calling a Go function. It
+// removes all essential signals from the mask, thus causing those
+// signals to not be blocked. Then it sets the thread's signal mask.
+// After this is called the thread can receive signals.
+func minitSignalMask() {
+	nmask := getg().m.sigmask
+	for i := range sigtable {
+		if sigtable[i].flags&_SigUnblock != 0 {
+			sigdelset(&nmask, i)
+		}
+	}
+	sigprocmask(_SIG_SETMASK, &nmask, nil)
+}
+
+// unminitSignals is called from dropm, via unminit, to undo the
+// effect of calling minit on a non-Go thread.
+//go:nosplit
+func unminitSignals() {
+	if getg().m.newSigstack {
+		signalstack(nil)
 	}
 }
 
