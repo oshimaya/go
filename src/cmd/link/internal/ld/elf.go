@@ -1307,7 +1307,7 @@ func elfwritenetbsdsig() int {
 			mArch = []byte("earmv7hf\x00")
 		}
 		descsz := len(mArch)
-		sh2 := elfwritenotehdr(ctxt, ".note.netbsd.march", ELF_NOTE_NETBSD_MARCH_NAMESZ,
+		sh2 := elfwritenotehdr(".note.netbsd.march", ELF_NOTE_NETBSD_MARCH_NAMESZ,
 			uint32(descsz), ELF_NOTE_NETBSD_MARCH_TAG)
 		if sh2 == nil {
 			return 0
@@ -1937,7 +1937,7 @@ func (ctxt *Link) doelf() {
 	if Headtype == obj.Hnetbsd {
 		Addstring(shstrtab, ".note.netbsd.ident")
 		if SysArch.Family == sys.ARM {
-			Addstring(ctxt, shstrtab, ".note.netbsd.march")
+			Addstring(shstrtab, ".note.netbsd.march")
 		}
 	}
 	if Headtype == obj.Hopenbsd {
@@ -2367,7 +2367,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 			sh = elfshname(".note.netbsd.ident")
 			resoff -= int64(elfnetbsdsig(sh, uint64(startva), uint64(resoff)))
 			if SysArch.Family == sys.ARM {
-				sh = elfshname(ctxt, ".note.netbsd.march")
+				sh = elfshname(".note.netbsd.march")
 				resoff -= int64(elfnetbsdarmsig(sh, uint64(startva), uint64(resoff)))
 			}
 
