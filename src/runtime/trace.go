@@ -28,8 +28,8 @@ const (
 	traceEvProcStop       = 6  // stop of P [timestamp]
 	traceEvGCStart        = 7  // GC start [timestamp, seq, stack id]
 	traceEvGCDone         = 8  // GC done [timestamp]
-	traceEvGCScanStart    = 9  // GC scan start [timestamp]
-	traceEvGCScanDone     = 10 // GC scan done [timestamp]
+	traceEvGCScanStart    = 9  // GC mark termination start [timestamp]
+	traceEvGCScanDone     = 10 // GC mark termination done [timestamp]
 	traceEvGCSweepStart   = 11 // GC sweep start [timestamp, stack id]
 	traceEvGCSweepDone    = 12 // GC sweep done [timestamp]
 	traceEvGoCreate       = 13 // goroutine creation [timestamp, new goroutine id, new stack id, stack id]
@@ -112,7 +112,7 @@ var trace struct {
 	empty         traceBufPtr // stack of empty buffers
 	fullHead      traceBufPtr // queue of full buffers
 	fullTail      traceBufPtr
-	reader        *g              // goroutine that called ReadTrace, or nil
+	reader        guintptr        // goroutine that called ReadTrace, or nil
 	stackTab      traceStackTable // maps stack traces to unique ids
 
 	// Dictionary for traceEvString.
@@ -134,6 +134,8 @@ type traceBufHeader struct {
 }
 
 // traceBuf is per-P tracing buffer.
+//
+//go:notinheap
 type traceBuf struct {
 	traceBufHeader
 	arr [64<<10 - unsafe.Sizeof(traceBufHeader{})]byte // underlying buffer for traceBufHeader.buf
@@ -144,6 +146,8 @@ type traceBuf struct {
 // allocated from the GC'd heap, so this is safe, and are often
 // manipulated in contexts where write barriers are not allowed, so
 // this is necessary.
+//
+// TODO: Since traceBuf is now go:notinheap, this isn't necessary.
 type traceBufPtr uintptr
 
 func (tp traceBufPtr) ptr() *traceBuf   { return (*traceBuf)(unsafe.Pointer(tp)) }
@@ -309,7 +313,7 @@ func StopTrace() {
 	if trace.fullHead != 0 || trace.fullTail != 0 {
 		throw("trace: non-empty full trace buffer")
 	}
-	if trace.reading != 0 || trace.reader != nil {
+	if trace.reading != 0 || trace.reader != 0 {
 		throw("trace: reading after shutdown")
 	}
 	for trace.empty != 0 {
@@ -337,7 +341,7 @@ func ReadTrace() []byte {
 	lock(&trace.lock)
 	trace.lockOwner = getg()
 
-	if trace.reader != nil {
+	if trace.reader != 0 {
 		// More than one goroutine reads trace. This is bad.
 		// But we rather do not crash the program because of tracing,
 		// because tracing can be enabled at runtime on prod servers.
@@ -361,7 +365,7 @@ func ReadTrace() []byte {
 	}
 	// Wait for new data.
 	if trace.fullHead == 0 && !trace.shutdown {
-		trace.reader = getg()
+		trace.reader.set(getg())
 		goparkunlock(&trace.lock, "trace reader (blocked)", traceEvGoBlock, 2)
 		lock(&trace.lock)
 	}
@@ -415,16 +419,16 @@ func ReadTrace() []byte {
 
 // traceReader returns the trace reader that should be woken up, if any.
 func traceReader() *g {
-	if trace.reader == nil || (trace.fullHead == 0 && !trace.shutdown) {
+	if trace.reader == 0 || (trace.fullHead == 0 && !trace.shutdown) {
 		return nil
 	}
 	lock(&trace.lock)
-	if trace.reader == nil || (trace.fullHead == 0 && !trace.shutdown) {
+	if trace.reader == 0 || (trace.fullHead == 0 && !trace.shutdown) {
 		unlock(&trace.lock)
 		return nil
 	}
-	gp := trace.reader
-	trace.reader = nil
+	gp := trace.reader.ptr()
+	trace.reader.set(nil)
 	unlock(&trace.lock)
 	return gp
 }
@@ -828,11 +832,14 @@ type traceAlloc struct {
 // traceAllocBlock is allocated from non-GC'd memory, so it must not
 // contain heap pointers. Writes to pointers to traceAllocBlocks do
 // not need write barriers.
+//
+//go:notinheap
 type traceAllocBlock struct {
 	next traceAllocBlockPtr
 	data [64<<10 - sys.PtrSize]byte
 }
 
+// TODO: Since traceAllocBlock is now go:notinheap, this isn't necessary.
 type traceAllocBlockPtr uintptr
 
 func (p traceAllocBlockPtr) ptr() *traceAllocBlock   { return (*traceAllocBlock)(unsafe.Pointer(p)) }
@@ -1006,5 +1013,10 @@ func traceHeapAlloc() {
 }
 
 func traceNextGC() {
-	traceEvent(traceEvNextGC, -1, memstats.next_gc)
+	if memstats.next_gc == ^uint64(0) {
+		// Heap-based triggering is disabled.
+		traceEvent(traceEvNextGC, -1, 0)
+	} else {
+		traceEvent(traceEvNextGC, -1, memstats.next_gc)
+	}
 }

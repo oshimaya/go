@@ -372,6 +372,14 @@ func typenod(t *Type) *Node {
 	return t.nod
 }
 
+func anonfield(typ *Type) *Node {
+	return nod(ODCLFIELD, nil, typenod(typ))
+}
+
+func namedfield(s string, typ *Type) *Node {
+	return nod(ODCLFIELD, newname(lookup(s)), typenod(typ))
+}
+
 // oldname returns the Node that declares symbol s in the current scope.
 // If no such Node currently exists, an ONONAME Node is returned instead.
 func oldname(s *Sym) *Node {
@@ -506,21 +514,6 @@ func ifacedcl(n *Node) {
 	if isblank(n.Left) {
 		yyerror("methods must have a unique non-blank name")
 	}
-
-	n.Func = new(Func)
-	n.Func.FCurfn = Curfn
-	dclcontext = PPARAM
-
-	funcstart(n)
-	funcargs(n.Right)
-
-	// funcbody is normally called after the parser has
-	// seen the body of a function but since an interface
-	// field declaration does not have a body, we must
-	// call it now to pop the current declaration context.
-	dclcontext = PAUTO
-
-	funcbody(n)
 }
 
 // declare the function proper
@@ -860,6 +853,22 @@ func tofunargs(l []*Node, funarg Funarg) *Type {
 	return t
 }
 
+func tofunargsfield(fields []*Field, funarg Funarg) *Type {
+	t := typ(TSTRUCT)
+	t.StructType().Funarg = funarg
+
+	for _, f := range fields {
+		f.Funarg = funarg
+
+		// esc.go needs to find f given a PPARAM to add the tag.
+		if f.Nname != nil && f.Nname.Class == PPARAM {
+			f.Nname.Name.Param.Field = f
+		}
+	}
+	t.SetFields(fields)
+	return t
+}
+
 func interfacefield(n *Node) *Field {
 	lno := lineno
 	lineno = n.Lineno
@@ -1001,6 +1010,12 @@ func fakethis() *Node {
 	return n
 }
 
+func fakethisfield() *Field {
+	f := newField()
+	f.Type = ptrto(typ(TSTRUCT))
+	return f
+}
+
 // Is this field a method on an interface?
 // Those methods have an anonymous *struct{} as the receiver.
 // (See fakethis above.)
@@ -1049,6 +1064,30 @@ func functype0(t *Type, this *Node, in, out []*Node) {
 	t.FuncType().Outnamed = false
 	if len(out) > 0 && out[0].Left != nil && out[0].Left.Orig != nil {
 		s := out[0].Left.Orig.Sym
+		if s != nil && (s.Name[0] != '~' || s.Name[1] != 'r') { // ~r%d is the name invented for an unnamed result
+			t.FuncType().Outnamed = true
+		}
+	}
+}
+
+func functypefield(this *Field, in, out []*Field) *Type {
+	t := typ(TFUNC)
+	functypefield0(t, this, in, out)
+	return t
+}
+
+func functypefield0(t *Type, this *Field, in, out []*Field) {
+	var rcvr []*Field
+	if this != nil {
+		rcvr = []*Field{this}
+	}
+	t.FuncType().Receiver = tofunargsfield(rcvr, FunargRcvr)
+	t.FuncType().Results = tofunargsfield(out, FunargRcvr)
+	t.FuncType().Params = tofunargsfield(in, FunargRcvr)
+
+	t.FuncType().Outnamed = false
+	if len(out) > 0 && out[0].Nname != nil && out[0].Nname.Orig != nil {
+		s := out[0].Nname.Orig.Sym
 		if s != nil && (s.Name[0] != '~' || s.Name[1] != 'r') { // ~r%d is the name invented for an unnamed result
 			t.FuncType().Outnamed = true
 		}
@@ -1126,30 +1165,34 @@ bad:
 }
 
 func methodname(n *Node, t *Node) *Node {
-	star := ""
+	star := false
 	if t.Op == OIND {
-		star = "*"
+		star = true
 		t = t.Left
 	}
 
-	if t.Sym == nil || isblank(n) {
-		return newfuncname(n.Sym)
+	return methodname0(n.Sym, star, t.Sym)
+}
+
+func methodname0(s *Sym, star bool, tsym *Sym) *Node {
+	if tsym == nil || isblanksym(s) {
+		return newfuncname(s)
 	}
 
 	var p string
-	if star != "" {
-		p = fmt.Sprintf("(%s%v).%v", star, t.Sym, n.Sym)
+	if star {
+		p = fmt.Sprintf("(*%v).%v", tsym, s)
 	} else {
-		p = fmt.Sprintf("%v.%v", t.Sym, n.Sym)
+		p = fmt.Sprintf("%v.%v", tsym, s)
 	}
 
-	if exportname(t.Sym.Name) {
-		n = newfuncname(lookup(p))
+	if exportname(tsym.Name) {
+		s = lookup(p)
 	} else {
-		n = newfuncname(Pkglookup(p, t.Sym.Pkg))
+		s = Pkglookup(p, tsym.Pkg)
 	}
 
-	return n
+	return newfuncname(s)
 }
 
 // Add a method, declared as a function.
@@ -1215,9 +1258,6 @@ func addmethod(msym *Sym, t *Type, local, nointerface bool) {
 		}
 	}
 
-	n := nod(ODCLFIELD, newname(msym), nil)
-	n.Type = t
-
 	for _, f := range mt.Methods().Slice() {
 		if msym.Name != f.Sym.Name {
 			continue
@@ -1230,7 +1270,10 @@ func addmethod(msym *Sym, t *Type, local, nointerface bool) {
 		return
 	}
 
-	f := structfield(n)
+	f := newField()
+	f.Sym = msym
+	f.Nname = newname(msym)
+	f.Type = t
 	f.Nointerface = nointerface
 
 	mt.Methods().Append(f)
@@ -1259,7 +1302,7 @@ func funccompile(n *Node) {
 	funcdepth = n.Func.Depth + 1
 	compile(n)
 	Curfn = nil
-	Pc = nil
+	pc = nil
 	funcdepth = 0
 	dclcontext = PEXTERN
 	if nerrors != 0 {
@@ -1317,7 +1360,7 @@ func checknowritebarrierrec() {
 	visitBottomUp(xtop, func(list []*Node, recursive bool) {
 		// Functions with write barriers have depth 0.
 		for _, n := range list {
-			if n.Func.WBLineno != 0 {
+			if n.Func.WBLineno != 0 && n.Func.Pragma&Yeswritebarrierrec == 0 {
 				c.best[n] = nowritebarrierrecCall{target: nil, depth: 0, lineno: n.Func.WBLineno}
 			}
 		}
@@ -1329,6 +1372,12 @@ func checknowritebarrierrec() {
 		for _ = range list {
 			c.stable = false
 			for _, n := range list {
+				if n.Func.Pragma&Yeswritebarrierrec != 0 {
+					// Don't propagate write
+					// barrier up to a
+					// yeswritebarrierrec function.
+					continue
+				}
 				if n.Func.WBLineno == 0 {
 					c.curfn = n
 					c.visitcodelist(n.Nbody)
@@ -1391,9 +1440,6 @@ func (c *nowritebarrierrecChecker) visitcall(n *Node) {
 		fn = n.Left.Sym.Def
 	}
 	if fn == nil || fn.Op != ONAME || fn.Class != PFUNC || fn.Name.Defn == nil {
-		return
-	}
-	if (compiling_runtime || fn.Sym.Pkg == Runtimepkg) && fn.Sym.Name == "allocm" {
 		return
 	}
 	defn := fn.Name.Defn

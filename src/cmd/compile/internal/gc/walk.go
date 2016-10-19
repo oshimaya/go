@@ -486,13 +486,6 @@ func walkexpr(n *Node, init *Nodes) *Node {
 		init.AppendNodes(&n.Ninit)
 	}
 
-	// annoying case - not typechecked
-	if n.Op == OKEY {
-		n.Left = walkexpr(n.Left, init)
-		n.Right = walkexpr(n.Right, init)
-		return n
-	}
-
 	lno := setlineno(n)
 
 	if Debug['w'] > 1 {
@@ -693,7 +686,8 @@ opswitch:
 		n.Left = walkexpr(n.Left, init)
 		walkexprlist(n.List.Slice(), init)
 
-		if n.Left.Op == ONAME && n.Left.Sym.Name == "Sqrt" && n.Left.Sym.Pkg.Path == "math" {
+		if n.Left.Op == ONAME && n.Left.Sym.Name == "Sqrt" &&
+			(n.Left.Sym.Pkg.Path == "math" || n.Left.Sym.Pkg == localpkg && myimportpath == "math") {
 			if Thearch.LinkArch.InFamily(sys.AMD64, sys.ARM, sys.ARM64, sys.PPC64, sys.S390X) {
 				n.Op = OSQRT
 				n.Left = n.List.First()
@@ -779,6 +773,9 @@ opswitch:
 		case OAPPEND:
 			// x = append(...)
 			r := n.Right
+			if r.Type.Elem().NotInHeap {
+				yyerror("%v is go:notinheap; heap allocation disallowed", r.Type.Elem())
+			}
 			if r.Isddd {
 				r = appendslice(r, init) // also works for append(slice, string).
 			} else {
@@ -812,13 +809,18 @@ opswitch:
 		}
 		n = liststmt(ll)
 
-		// a,b,... = fn()
+	// a,b,... = fn()
 	case OAS2FUNC:
 		init.AppendNodes(&n.Ninit)
 
 		r := n.Rlist.First()
 		walkexprlistsafe(n.List.Slice(), init)
 		r = walkexpr(r, init)
+
+		if isIntrinsicCall(r) {
+			n.Rlist.Set1(r)
+			break
+		}
 
 		ll := ascompatet(n.Op, n.List, r.Type, 0, init)
 		for i, n := range ll {
@@ -1264,18 +1266,8 @@ opswitch:
 			if Debug['m'] != 0 && n.Bounded && !Isconst(n.Right, CTINT) {
 				Warn("index bounds check elided")
 			}
-			if smallintconst(n.Right) {
-				if !n.Bounded {
-					yyerror("index out of bounds")
-				} else {
-					// replace "abc"[1] with 'b'.
-					// delayed until now because "abc"[1] is not
-					// an ideal constant.
-					v := n.Right.Int64()
-
-					Nodconst(n, n.Type, int64(n.Left.Val().U.(string)[v]))
-					n.Typecheck = 1
-				}
+			if smallintconst(n.Right) && !n.Bounded {
+				yyerror("index out of bounds")
 			}
 		}
 
@@ -1286,44 +1278,48 @@ opswitch:
 		}
 
 	case OINDEXMAP:
-		if n.Etype == 1 {
-			break
-		}
+		// Replace m[k] with *map{access1,assign}(maptype, m, &k)
 		n.Left = walkexpr(n.Left, init)
 		n.Right = walkexpr(n.Right, init)
+		map_ := n.Left
+		key := n.Right
+		t := map_.Type
+		if n.Etype == 1 {
+			// This m[k] expression is on the left-hand side of an assignment.
+			// orderexpr made sure key is addressable.
+			key = nod(OADDR, key, nil)
+			n = mkcall1(mapfn("mapassign", t), nil, init, typename(t), map_, key)
+		} else {
+			// m[k] is not the target of an assignment.
+			p := ""
+			if t.Val().Width <= 128 { // Check ../../runtime/hashmap.go:maxValueSize before changing.
+				switch algtype(t.Key()) {
+				case AMEM32:
+					p = "mapaccess1_fast32"
+				case AMEM64:
+					p = "mapaccess1_fast64"
+				case ASTRING:
+					p = "mapaccess1_faststr"
+				}
+			}
 
-		t := n.Left.Type
-		p := ""
-		if t.Val().Width <= 128 { // Check ../../runtime/hashmap.go:maxValueSize before changing.
-			switch algtype(t.Key()) {
-			case AMEM32:
-				p = "mapaccess1_fast32"
-			case AMEM64:
-				p = "mapaccess1_fast64"
-			case ASTRING:
-				p = "mapaccess1_faststr"
+			if p == "" {
+				// standard version takes key by reference.
+				// orderexpr made sure key is addressable.
+				key = nod(OADDR, key, nil)
+				p = "mapaccess1"
+			}
+
+			if w := t.Val().Width; w <= 1024 { // 1024 must match ../../../../runtime/hashmap.go:maxZero
+				n = mkcall1(mapfn(p, t), ptrto(t.Val()), init, typename(t), map_, key)
+			} else {
+				p = "mapaccess1_fat"
+				z := zeroaddr(w)
+				n = mkcall1(mapfn(p, t), ptrto(t.Val()), init, typename(t), map_, key, z)
 			}
 		}
-
-		var key *Node
-		if p != "" {
-			// fast versions take key by value
-			key = n.Right
-		} else {
-			// standard version takes key by reference.
-			// orderexpr made sure key is addressable.
-			key = nod(OADDR, n.Right, nil)
-			p = "mapaccess1"
-		}
-
-		if w := t.Val().Width; w <= 1024 { // 1024 must match ../../../../runtime/hashmap.go:maxZero
-			n = mkcall1(mapfn(p, t), ptrto(t.Val()), init, typename(t), n.Left, key)
-		} else {
-			p = "mapaccess1_fat"
-			z := zeroaddr(w)
-			n = mkcall1(mapfn(p, t), ptrto(t.Val()), init, typename(t), n.Left, key, z)
-		}
-		n.NonNil = true // mapaccess always returns a non-nil pointer
+		n.Type = ptrto(t.Val())
+		n.NonNil = true // mapaccess1* and mapassign always return non-nil pointers.
 		n = nod(OIND, n, nil)
 		n.Type = t.Val()
 		n.Typecheck = 1
@@ -1537,7 +1533,7 @@ opswitch:
 			}
 			// var arr [r]T
 			// n = arr[:l]
-			t = aindex(r, t.Elem()) // [r]T
+			t = typArray(t.Elem(), nonnegintconst(r)) // [r]T
 			var_ := temp(t)
 			a := nod(OAS, var_, nil) // zero temp
 			a = typecheck(a, Etop)
@@ -1552,6 +1548,10 @@ opswitch:
 			// n escapes; set up a call to makeslice.
 			// When len and cap can fit into int, use makeslice instead of
 			// makeslice64, which is faster and shorter on 32 bit platforms.
+
+			if t.Elem().NotInHeap {
+				yyerror("%v is go:notinheap; heap allocation disallowed", t.Elem())
+			}
 
 			len, cap := l, r
 
@@ -1575,7 +1575,7 @@ opswitch:
 	case ORUNESTR:
 		a := nodnil()
 		if n.Esc == EscNone {
-			t := aindex(nodintconst(4), Types[TUINT8])
+			t := typArray(Types[TUINT8], 4)
 			var_ := temp(t)
 			a = nod(OADDR, var_, nil)
 		}
@@ -1587,7 +1587,7 @@ opswitch:
 		a := nodnil()
 		if n.Esc == EscNone {
 			// Create temporary buffer for string on stack.
-			t := aindex(nodintconst(tmpstringbufsize), Types[TUINT8])
+			t := typArray(Types[TUINT8], tmpstringbufsize)
 
 			a = nod(OADDR, temp(t), nil)
 		}
@@ -1613,7 +1613,7 @@ opswitch:
 
 		if n.Esc == EscNone {
 			// Create temporary buffer for string on stack.
-			t := aindex(nodintconst(tmpstringbufsize), Types[TUINT8])
+			t := typArray(Types[TUINT8], tmpstringbufsize)
 
 			a = nod(OADDR, temp(t), nil)
 		}
@@ -1626,7 +1626,7 @@ opswitch:
 
 		if n.Esc == EscNone {
 			// Create temporary buffer for slice on stack.
-			t := aindex(nodintconst(tmpstringbufsize), Types[TUINT8])
+			t := typArray(Types[TUINT8], tmpstringbufsize)
 
 			a = nod(OADDR, temp(t), nil)
 		}
@@ -1643,7 +1643,7 @@ opswitch:
 
 		if n.Esc == EscNone {
 			// Create temporary buffer for slice on stack.
-			t := aindex(nodintconst(tmpstringbufsize), Types[TINT32])
+			t := typArray(Types[TINT32], tmpstringbufsize)
 
 			a = nod(OADDR, temp(t), nil)
 		}
@@ -2153,6 +2153,9 @@ func walkprint(nn *Node, init *Nodes) *Node {
 }
 
 func callnew(t *Type) *Node {
+	if t.NotInHeap {
+		yyerror("%v is go:notinheap; heap allocation disallowed", t)
+	}
 	dowidth(t)
 	fn := syslook("newobject")
 	fn = substArgTypes(fn, t)
@@ -2221,6 +2224,12 @@ func needwritebarrier(l *Node, r *Node) bool {
 
 	// No write barrier for implicit zeroing.
 	if r == nil {
+		return false
+	}
+
+	// No write barrier if this is a pointer to a go:notinheap
+	// type, since the write barrier's inheap(ptr) check will fail.
+	if l.Type.IsPtr() && l.Type.Elem().NotInHeap {
 		return false
 	}
 
@@ -2297,22 +2306,6 @@ func convas(n *Node, init *Nodes) *Node {
 
 	if isblank(n.Left) {
 		n.Right = defaultlit(n.Right, nil)
-		goto out
-	}
-
-	if n.Left.Op == OINDEXMAP {
-		map_ := n.Left.Left
-		key := n.Left.Right
-		val := n.Right
-		map_ = walkexpr(map_, init)
-		key = walkexpr(key, init)
-		val = walkexpr(val, init)
-
-		// orderexpr made sure key and val are addressable.
-		key = nod(OADDR, key, nil)
-
-		val = nod(OADDR, val, nil)
-		n = mkcall1(mapfn("mapassign1", map_.Type), nil, init, typename(map_.Type), map_, key, val)
 		goto out
 	}
 
@@ -2846,7 +2839,7 @@ func addstr(n *Node, init *Nodes) *Node {
 		// Don't allocate the buffer if the result won't fit.
 		if sz < tmpstringbufsize {
 			// Create temporary buffer for result string on stack.
-			t := aindex(nodintconst(tmpstringbufsize), Types[TUINT8])
+			t := typArray(Types[TUINT8], tmpstringbufsize)
 
 			buf = nod(OADDR, temp(t), nil)
 		}
@@ -4106,6 +4099,7 @@ func candiscard(n *Node) bool {
 		OGT,
 		OGE,
 		OKEY,
+		OSTRUCTKEY,
 		OLEN,
 		OMUL,
 		OLSH,

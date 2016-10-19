@@ -106,13 +106,12 @@ func cgocall(fn, arg unsafe.Pointer) int32 {
 
 	/*
 	 * Lock g to m to ensure we stay on the same stack if we do a
-	 * cgo callback. Add entry to defer stack in case of panic.
+	 * cgo callback. In case of panic, unwindm calls endcgo.
 	 */
 	lockOSThread()
 	mp := getg().m
 	mp.ncgocall++
 	mp.ncgo++
-	defer endcgo(mp)
 
 	// Reset traceback.
 	mp.cgoCallers[0] = 0
@@ -132,6 +131,7 @@ func cgocall(fn, arg unsafe.Pointer) int32 {
 	errno := asmcgocall(fn, arg)
 	exitsyscall(0)
 
+	endcgo(mp)
 	return errno
 }
 
@@ -314,6 +314,16 @@ func unwindm(restore *bool) {
 	case "arm64":
 		sched.sp = *(*uintptr)(unsafe.Pointer(sched.sp + 16))
 	}
+
+	// Call endcgo to do the accounting that cgocall will not have a
+	// chance to do during an unwind.
+	//
+	// In the case where a a Go call originates from C, ncgo is 0
+	// and there is no matching cgocall to end.
+	if mp.ncgo > 0 {
+		endcgo(mp)
+	}
+
 	releasem(mp)
 }
 
@@ -360,10 +370,10 @@ var racecgosync uint64 // represents possible synchronization in C code
 // pointers.)
 
 // cgoCheckPointer checks if the argument contains a Go pointer that
-// points to a Go pointer, and panics if it does. It returns the pointer.
-func cgoCheckPointer(ptr interface{}, args ...interface{}) interface{} {
+// points to a Go pointer, and panics if it does.
+func cgoCheckPointer(ptr interface{}, args ...interface{}) {
 	if debug.cgocheck == 0 {
-		return ptr
+		return
 	}
 
 	ep := (*eface)(unsafe.Pointer(&ptr))
@@ -376,7 +386,7 @@ func cgoCheckPointer(ptr interface{}, args ...interface{}) interface{} {
 			p = *(*unsafe.Pointer)(p)
 		}
 		if !cgoIsGoPointer(p) {
-			return ptr
+			return
 		}
 		aep := (*eface)(unsafe.Pointer(&args[0]))
 		switch aep._type.kind & kindMask {
@@ -387,7 +397,7 @@ func cgoCheckPointer(ptr interface{}, args ...interface{}) interface{} {
 			}
 			pt := (*ptrtype)(unsafe.Pointer(t))
 			cgoCheckArg(pt.elem, p, true, false, cgoCheckPointerFail)
-			return ptr
+			return
 		case kindSlice:
 			// Check the slice rather than the pointer.
 			ep = aep
@@ -405,7 +415,6 @@ func cgoCheckPointer(ptr interface{}, args ...interface{}) interface{} {
 	}
 
 	cgoCheckArg(t, ep.data, t.kind&kindDirectIface == 0, top, cgoCheckPointerFail)
-	return ptr
 }
 
 const cgoCheckPointerFail = "cgo argument has Go pointer to Go pointer"

@@ -233,3 +233,24 @@ func c1() {
 	var x Struct
 	func() { x.m() }() // ERROR "removed nil check"
 }
+
+type SS struct {
+	x byte
+}
+
+type TT struct {
+	SS
+}
+
+func f(t *TT) *byte {
+	// See issue 17242.
+	s := &t.SS  // ERROR "removed nil check"
+	return &s.x // ERROR "generated nil check"
+}
+
+// make sure not to do nil check for newobject
+func f7() (*Struct, float64) {
+	t := new(Struct)
+	p := &t.Y    // ERROR "removed nil check"
+	return t, *p // ERROR "removed nil check"
+}

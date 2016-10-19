@@ -5,6 +5,7 @@
 package x509
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -33,6 +34,9 @@ const (
 	// IncompatibleUsage results when the certificate's key usage indicates
 	// that it may only be used for a different purpose.
 	IncompatibleUsage
+	// NameMismatch results when the subject name of a parent certificate
+	// does not match the issuer name in the child.
+	NameMismatch
 )
 
 // CertificateInvalidError results when an odd error occurs. Users of this
@@ -54,6 +58,8 @@ func (e CertificateInvalidError) Error() string {
 		return "x509: too many intermediates for path length constraint"
 	case IncompatibleUsage:
 		return "x509: certificate specifies an incompatible key usage"
+	case NameMismatch:
+		return "x509: issuer name does not match subject from issuing certificate"
 	}
 	return "x509: unknown error"
 }
@@ -86,6 +92,10 @@ func (h HostnameError) Error() string {
 		} else {
 			valid = c.Subject.CommonName
 		}
+	}
+
+	if len(valid) == 0 {
+		return "x509: certificate is not valid for any names, but wanted to match " + h.Host
 	}
 	return "x509: certificate is valid for " + valid + ", not " + h.Host
 }
@@ -154,8 +164,40 @@ const (
 	rootCertificate
 )
 
+func matchNameConstraint(domain, constraint string) bool {
+	// The meaning of zero length constraints is not specified, but this
+	// code follows NSS and accepts them as valid for everything.
+	if len(constraint) == 0 {
+		return true
+	}
+
+	if len(domain) < len(constraint) {
+		return false
+	}
+
+	prefixLen := len(domain) - len(constraint)
+	if !strings.EqualFold(domain[prefixLen:], constraint) {
+		return false
+	}
+
+	if prefixLen == 0 {
+		return true
+	}
+
+	isSubdomain := domain[prefixLen-1] == '.'
+	constraintHasLeadingDot := constraint[0] == '.'
+	return isSubdomain != constraintHasLeadingDot
+}
+
 // isValid performs validity checks on the c.
 func (c *Certificate) isValid(certType int, currentChain []*Certificate, opts *VerifyOptions) error {
+	if len(currentChain) > 0 {
+		child := currentChain[len(currentChain)-1]
+		if !bytes.Equal(child.RawIssuer, c.RawSubject) {
+			return CertificateInvalidError{c, NameMismatch}
+		}
+	}
+
 	now := opts.CurrentTime
 	if now.IsZero() {
 		now = time.Now()
@@ -166,12 +208,9 @@ func (c *Certificate) isValid(certType int, currentChain []*Certificate, opts *V
 
 	if len(c.PermittedDNSDomains) > 0 {
 		ok := false
-		for _, domain := range c.PermittedDNSDomains {
-			if opts.DNSName == domain ||
-				(strings.HasSuffix(opts.DNSName, domain) &&
-					len(opts.DNSName) >= 1+len(domain) &&
-					opts.DNSName[len(opts.DNSName)-len(domain)-1] == '.') {
-				ok = true
+		for _, constraint := range c.PermittedDNSDomains {
+			ok = matchNameConstraint(opts.DNSName, constraint)
+			if ok {
 				break
 			}
 		}

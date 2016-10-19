@@ -38,10 +38,10 @@ import (
 func Prog(as obj.As) *obj.Prog {
 	var p *obj.Prog
 
-	p = Pc
-	Pc = Ctxt.NewProg()
-	Clearp(Pc)
-	p.Link = Pc
+	p = pc
+	pc = Ctxt.NewProg()
+	Clearp(pc)
+	p.Link = pc
 
 	if lineno == 0 && Debug['K'] != 0 {
 		Warn("prog: line 0")
@@ -50,13 +50,6 @@ func Prog(as obj.As) *obj.Prog {
 	p.As = as
 	p.Lineno = lineno
 	return p
-}
-
-func Afunclit(a *obj.Addr, n *Node) {
-	if a.Type == obj.TYPE_ADDR && a.Name == obj.NAME_EXTERN {
-		a.Type = obj.TYPE_MEM
-		a.Sym = Linksym(n.Sym)
-	}
 }
 
 func Clearp(p *obj.Prog) {
@@ -80,40 +73,6 @@ func Appendpp(p *obj.Prog, as obj.As, ftype obj.AddrType, freg int16, foffset in
 	q.Link = p.Link
 	p.Link = q
 	return q
-}
-
-// Fixup instructions after allocauto (formerly compactframe) has moved all autos around.
-func fixautoused(p *obj.Prog) {
-	for lp := &p; ; {
-		p = *lp
-		if p == nil {
-			break
-		}
-		if p.As == obj.ATYPE && p.From.Node != nil && p.From.Name == obj.NAME_AUTO && !((p.From.Node).(*Node)).Used {
-			*lp = p.Link
-			continue
-		}
-
-		if (p.As == obj.AVARDEF || p.As == obj.AVARKILL || p.As == obj.AVARLIVE) && p.To.Node != nil && !((p.To.Node).(*Node)).Used {
-			// Cannot remove VARDEF instruction, because - unlike TYPE handled above -
-			// VARDEFs are interspersed with other code, and a jump might be using the
-			// VARDEF as a target. Replace with a no-op instead. A later pass will remove
-			// the no-ops.
-			obj.Nopout(p)
-
-			continue
-		}
-
-		if p.From.Name == obj.NAME_AUTO && p.From.Node != nil {
-			p.From.Offset += stkdelta[p.From.Node.(*Node)]
-		}
-
-		if p.To.Name == obj.NAME_AUTO && p.To.Node != nil {
-			p.To.Offset += stkdelta[p.To.Node.(*Node)]
-		}
-
-		lp = &p.Link
-	}
 }
 
 func ggloblnod(nam *Node) {
@@ -160,23 +119,6 @@ func isfat(t *Type) bool {
 	return false
 }
 
-// Sweep the prog list to mark any used nodes.
-func markautoused(p *obj.Prog) {
-	for ; p != nil; p = p.Link {
-		if p.As == obj.ATYPE || p.As == obj.AVARDEF || p.As == obj.AVARKILL {
-			continue
-		}
-
-		if p.From.Node != nil {
-			((p.From.Node).(*Node)).Used = true
-		}
-
-		if p.To.Node != nil {
-			((p.To.Node).(*Node)).Used = true
-		}
-	}
-}
-
 // Naddr rewrites a to refer to n.
 // It assumes that a is zeroed on entry.
 func Naddr(a *obj.Addr, n *Node) {
@@ -184,85 +126,53 @@ func Naddr(a *obj.Addr, n *Node) {
 		return
 	}
 
-	switch n.Op {
-	default:
-		a := a // copy to let escape into Ctxt.Dconv
+	if n.Op != ONAME {
 		Debug['h'] = 1
 		Dump("naddr", n)
 		Fatalf("naddr: bad %v %v", n.Op, Ctxt.Dconv(a))
-
-	case ONAME:
-		a.Offset = n.Xoffset
-		s := n.Sym
-		a.Node = n.Orig
-
-		//if(a->node >= (Node*)&n)
-		//	fatal("stack node");
-		if s == nil {
-			s = lookup(".noname")
-		}
-		if n.Name.Method && n.Type != nil && n.Type.Sym != nil && n.Type.Sym.Pkg != nil {
-			s = Pkglookup(s.Name, n.Type.Sym.Pkg)
-		}
-
-		a.Type = obj.TYPE_MEM
-		switch n.Class {
-		default:
-			Fatalf("naddr: ONAME class %v %d\n", n.Sym, n.Class)
-
-		case PEXTERN:
-			a.Name = obj.NAME_EXTERN
-
-		case PAUTO:
-			a.Name = obj.NAME_AUTO
-
-		case PPARAM, PPARAMOUT:
-			a.Name = obj.NAME_PARAM
-
-		case PFUNC:
-			a.Name = obj.NAME_EXTERN
-			a.Type = obj.TYPE_ADDR
-			s = funcsym(s)
-		}
-
-		a.Sym = Linksym(s)
-
-	case OLITERAL:
-		switch u := n.Val().U.(type) {
-		default:
-			Fatalf("naddr: const %L", n.Type)
-
-		case *Mpflt:
-			a.Type = obj.TYPE_FCONST
-			a.Val = u.Float64()
-
-		case *Mpint:
-			a.Sym = nil
-			a.Type = obj.TYPE_CONST
-			a.Offset = u.Int64()
-
-		case string:
-			datagostring(u, a)
-
-		case bool:
-			a.Sym = nil
-			a.Type = obj.TYPE_CONST
-			a.Offset = int64(obj.Bool2int(u))
-
-		case *NilVal:
-			a.Sym = nil
-			a.Type = obj.TYPE_CONST
-			a.Offset = 0
-		}
 	}
+
+	a.Offset = n.Xoffset
+	s := n.Sym
+	a.Node = n.Orig
+
+	if s == nil {
+		Fatalf("naddr: nil sym %v", n)
+	}
+	if n.Name.Method && n.Type != nil && n.Type.Sym != nil && n.Type.Sym.Pkg != nil {
+		Fatalf("naddr: weird method %v", n)
+	}
+
+	a.Type = obj.TYPE_MEM
+	switch n.Class {
+	default:
+		Fatalf("naddr: ONAME class %v %d\n", n.Sym, n.Class)
+
+	case PEXTERN, PFUNC:
+		a.Name = obj.NAME_EXTERN
+
+	case PAUTO:
+		a.Name = obj.NAME_AUTO
+
+	case PPARAM, PPARAMOUT:
+		a.Name = obj.NAME_PARAM
+	}
+
+	a.Sym = Linksym(s)
+}
+
+func Addrconst(a *obj.Addr, v int64) {
+	a.Sym = nil
+	a.Type = obj.TYPE_CONST
+	a.Offset = v
 }
 
 func newplist() *obj.Plist {
 	pl := obj.Linknewplist(Ctxt)
 
-	Pc = Ctxt.NewProg()
-	Clearp(Pc)
-	pl.Firstpc = Pc
+	pc = Ctxt.NewProg()
+	Clearp(pc)
+	pl.Firstpc = pc
 
 	return pl
 }

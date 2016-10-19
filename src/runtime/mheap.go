@@ -22,6 +22,11 @@ const minPhysPageSize = 4096
 // Main malloc heap.
 // The heap itself is the "free[]" and "large" arrays,
 // but all the other global data is here too.
+//
+// mheap must not be heap-allocated because it contains mSpanLists,
+// which must not be heap-allocated.
+//
+//go:notinheap
 type mheap struct {
 	lock      mutex
 	free      [_MaxMHeapList]mSpanList // free lists of given length
@@ -102,24 +107,36 @@ var mheap_ mheap
 // * During GC (gcphase != _GCoff), a span *must not* transition from
 //   stack or in-use to free. Because concurrent GC may read a pointer
 //   and then look up its span, the span state must be monotonic.
+type mSpanState uint8
+
 const (
-	_MSpanInUse = iota // allocated for garbage collected heap
-	_MSpanStack        // allocated for use by stack allocator
+	_MSpanInUse mSpanState = iota // allocated for garbage collected heap
+	_MSpanStack                   // allocated for use by stack allocator
 	_MSpanFree
 	_MSpanDead
 )
 
-// mSpanList heads a linked list of spans.
-//
-// Linked list structure is based on BSD's "tail queue" data structure.
-type mSpanList struct {
-	first *mspan  // first span in list, or nil if none
-	last  **mspan // last span's next field, or first if none
+// mSpanStateNames are the names of the span states, indexed by
+// mSpanState.
+var mSpanStateNames = []string{
+	"_MSpanInUse",
+	"_MSpanStack",
+	"_MSpanFree",
+	"_MSpanDead",
 }
 
+// mSpanList heads a linked list of spans.
+//
+//go:notinheap
+type mSpanList struct {
+	first *mspan // first span in list, or nil if none
+	last  *mspan // last span in list, or nil if none
+}
+
+//go:notinheap
 type mspan struct {
 	next *mspan     // next span in list, or nil if none
-	prev **mspan    // previous span's next field, or list head's first field if none
+	prev *mspan     // previous span in list, or nil if none
 	list *mSpanList // For debugging. TODO: Remove.
 
 	startAddr     uintptr   // address of first byte of span aka s.base()
@@ -186,21 +203,21 @@ type mspan struct {
 	// h->sweepgen is incremented by 2 after every GC
 
 	sweepgen    uint32
-	divMul      uint32   // for divide by elemsize - divMagic.mul
-	allocCount  uint16   // capacity - number of objects in freelist
-	sizeclass   uint8    // size class
-	incache     bool     // being used by an mcache
-	state       uint8    // mspaninuse etc
-	needzero    uint8    // needs to be zeroed before allocation
-	divShift    uint8    // for divide by elemsize - divMagic.shift
-	divShift2   uint8    // for divide by elemsize - divMagic.shift2
-	elemsize    uintptr  // computed from sizeclass or from npages
-	unusedsince int64    // first time spotted by gc in mspanfree state
-	npreleased  uintptr  // number of pages released to the os
-	limit       uintptr  // end of data in span
-	speciallock mutex    // guards specials list
-	specials    *special // linked list of special records sorted by offset.
-	baseMask    uintptr  // if non-0, elemsize is a power of 2, & this will get object allocation base
+	divMul      uint32     // for divide by elemsize - divMagic.mul
+	allocCount  uint16     // capacity - number of objects in freelist
+	sizeclass   uint8      // size class
+	incache     bool       // being used by an mcache
+	state       mSpanState // mspaninuse etc
+	needzero    uint8      // needs to be zeroed before allocation
+	divShift    uint8      // for divide by elemsize - divMagic.shift
+	divShift2   uint8      // for divide by elemsize - divMagic.shift2
+	elemsize    uintptr    // computed from sizeclass or from npages
+	unusedsince int64      // first time spotted by gc in mspanfree state
+	npreleased  uintptr    // number of pages released to the os
+	limit       uintptr    // end of data in span
+	speciallock mutex      // guards specials list
+	specials    *special   // linked list of special records sorted by offset.
+	baseMask    uintptr    // if non-0, elemsize is a power of 2, & this will get object allocation base
 }
 
 func (s *mspan) base() uintptr {
@@ -986,28 +1003,30 @@ func (span *mspan) init(base uintptr, npages uintptr) {
 }
 
 func (span *mspan) inList() bool {
-	return span.prev != nil
+	return span.list != nil
 }
 
 // Initialize an empty doubly-linked list.
 func (list *mSpanList) init() {
 	list.first = nil
-	list.last = &list.first
+	list.last = nil
 }
 
 func (list *mSpanList) remove(span *mspan) {
-	if span.prev == nil || span.list != list {
+	if span.list != list {
 		println("runtime: failed MSpanList_Remove", span, span.prev, span.list, list)
 		throw("MSpanList_Remove")
 	}
-	if span.next != nil {
-		span.next.prev = span.prev
+	if list.first == span {
+		list.first = span.next
 	} else {
-		// TODO: After we remove the span.list != list check above,
-		// we could at least still check list.last == &span.next here.
-		list.last = span.prev
+		span.prev.next = span.next
 	}
-	*span.prev = span.next
+	if list.last == span {
+		list.last = span.prev
+	} else {
+		span.next.prev = span.prev
+	}
 	span.next = nil
 	span.prev = nil
 	span.list = nil
@@ -1024,12 +1043,14 @@ func (list *mSpanList) insert(span *mspan) {
 	}
 	span.next = list.first
 	if list.first != nil {
-		list.first.prev = &span.next
+		// The list contains at least one span; link it in.
+		// The last span in the list doesn't change.
+		list.first.prev = span
 	} else {
-		list.last = &span.next
+		// The list contains no spans, so this is also the last span.
+		list.last = span
 	}
 	list.first = span
-	span.prev = &list.first
 	span.list = list
 }
 
@@ -1038,10 +1059,15 @@ func (list *mSpanList) insertBack(span *mspan) {
 		println("failed MSpanList_InsertBack", span, span.next, span.prev, span.list)
 		throw("MSpanList_InsertBack")
 	}
-	span.next = nil
 	span.prev = list.last
-	*list.last = span
-	list.last = &span.next
+	if list.last != nil {
+		// The list contains at least one span.
+		list.last.next = span
+	} else {
+		// The list contains no spans, so this is also the first span.
+		list.first = span
+	}
+	list.last = span
 	span.list = list
 }
 
@@ -1054,6 +1080,7 @@ const (
 	// if that happens.
 )
 
+//go:notinheap
 type special struct {
 	next   *special // linked list in span
 	offset uint16   // span offset of object
@@ -1151,12 +1178,17 @@ func removespecial(p unsafe.Pointer, kind uint8) *special {
 }
 
 // The described object has a finalizer set for it.
+//
+// specialfinalizer is allocated from non-GC'd memory, so any heap
+// pointers must be specially handled.
+//
+//go:notinheap
 type specialfinalizer struct {
 	special special
-	fn      *funcval
+	fn      *funcval // May be a heap pointer.
 	nret    uintptr
-	fint    *_type
-	ot      *ptrtype
+	fint    *_type   // May be a heap pointer, but always live.
+	ot      *ptrtype // May be a heap pointer, but always live.
 }
 
 // Adds a finalizer to the object p. Returns true if it succeeded.
@@ -1211,6 +1243,8 @@ func removefinalizer(p unsafe.Pointer) {
 }
 
 // The described object is being heap profiled.
+//
+//go:notinheap
 type specialprofile struct {
 	special special
 	b       *bucket
@@ -1258,6 +1292,7 @@ type gcBitsHeader struct {
 	next uintptr // *gcBits triggers recursive type bug. (issue 14620)
 }
 
+//go:notinheap
 type gcBits struct {
 	// gcBitsHeader // side step recursive type bug (issue 14620) by including fields by hand.
 	free uintptr // free is the index into bits of the next free byte.

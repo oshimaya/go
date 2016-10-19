@@ -74,6 +74,7 @@ type encoding int
 
 const (
 	encodePath encoding = 1 + iota
+	encodePathSegment
 	encodeHost
 	encodeZone
 	encodeUserPassword
@@ -132,8 +133,13 @@ func shouldEscape(c byte, mode encoding) bool {
 			// The RFC allows : @ & = + $ but saves / ; , for assigning
 			// meaning to individual path segments. This package
 			// only manipulates the path as a whole, so we allow those
-			// last two as well. That leaves only ? to escape.
+			// last three as well. That leaves only ? to escape.
 			return c == '?'
+
+		case encodePathSegment: // §3.3
+			// The RFC allows : @ & = + $ but saves / ; , for assigning
+			// meaning to individual path segments.
+			return c == '/' || c == ';' || c == ',' || c == '?'
 
 		case encodeUserPassword: // §3.2.1
 			// The RFC allows ';', ':', '&', '=', '+', '$', and ',' in
@@ -162,6 +168,15 @@ func shouldEscape(c byte, mode encoding) bool {
 // any % is not followed by two hexadecimal digits.
 func QueryUnescape(s string) (string, error) {
 	return unescape(s, encodeQueryComponent)
+}
+
+// PathUnescape does the inverse transformation of PathEscape, converting
+// %AB into the byte 0xAB. It returns an error if any % is not followed by
+// two hexadecimal digits.
+//
+// PathUnescape is identical to QueryUnescape except that it does not unescape '+' to ' ' (space).
+func PathUnescape(s string) (string, error) {
+	return unescape(s, encodePathSegment)
 }
 
 // unescape unescapes a string; the mode specifies
@@ -248,6 +263,12 @@ func unescape(s string, mode encoding) (string, error) {
 // inside a URL query.
 func QueryEscape(s string) string {
 	return escape(s, encodeQueryComponent)
+}
+
+// PathEscape escapes the string so it can be safely placed
+// inside a URL path segment.
+func PathEscape(s string) string {
+	return escape(s, encodePathSegment)
 }
 
 func escape(s string, mode encoding) string {
@@ -777,6 +798,10 @@ func (v Values) Del(key string) {
 // ParseQuery always returns a non-nil map containing all the
 // valid query parameters found; err describes the first decoding error
 // encountered, if any.
+//
+// Query is expected to be a list of key=value settings separated by
+// ampersands or semicolons. A setting without an equals sign is
+// interpreted as a key set to an empty value.
 func ParseQuery(query string) (Values, error) {
 	m := make(Values)
 	err := parseQuery(m, query)

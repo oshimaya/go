@@ -7,44 +7,6 @@
 #include "funcdata.h"
 #include "textflag.h"
 
-// Indicate the status of vector facility
-// -1: 	init value
-// 0:	vector not installed
-// 1:	vector installed and enabled
-// 2:	vector installed but not enabled
-
-DATA runtime·vectorfacility+0x00(SB)/4, $-1
-GLOBL runtime·vectorfacility(SB), NOPTR, $4
-
-TEXT runtime·checkvectorfacility(SB),NOSPLIT,$32-0
-	MOVD    $2, R0
-	MOVD	R1, tmp-32(SP)
-	MOVD    $x-24(SP), R1
-	XC	$24, 0(R1), 0(R1)
-//      STFLE   0(R1)
-	WORD    $0xB2B01000
-	MOVBZ   z-8(SP), R1
-	AND     $0x40, R1
-	BNE     vectorinstalled
-	MOVB    $0, runtime·vectorfacility(SB) //Vector not installed
-	MOVD	tmp-32(SP), R1
-	MOVD    $0, R0
-	RET
-vectorinstalled:
-	// check if the vector instruction has been enabled
-	VLEIB   $0, $0xF, V16
-	VLGVB   $0, V16, R0
-	CMPBEQ  R0, $0xF, vectorenabled
-	MOVB    $2, runtime·vectorfacility(SB) //Vector installed but not enabled
-	MOVD    tmp-32(SP), R1
-	MOVD    $0, R0
-	RET
-vectorenabled:
-	MOVB    $1, runtime·vectorfacility(SB) //Vector installed and enabled
-	MOVD    tmp-32(SP), R1
-	MOVD    $0, R0
-	RET
-
 TEXT runtime·rt0_go(SB),NOSPLIT,$0
 	// R2 = argc; R3 = argv; R11 = temp; R13 = g; R15 = stack pointer
 	// C TLS base pointer in AR0:AR1
@@ -279,13 +241,15 @@ TEXT runtime·morestack(SB),NOSPLIT|NOFRAME,$0-0
 	// Cannot grow scheduler stack (m->g0).
 	MOVD	g_m(g), R7
 	MOVD	m_g0(R7), R8
-	CMPBNE	g, R8, 2(PC)
+	CMPBNE	g, R8, 3(PC)
+	BL	runtime·badmorestackg0(SB)
 	BL	runtime·abort(SB)
 
 	// Cannot grow signal stack (m->gsignal).
 	MOVD	m_gsignal(R7), R8
 	CMP	g, R8
-	BNE	2(PC)
+	BNE	3(PC)
+	BL	runtime·badmorestackgsignal(SB)
 	BL	runtime·abort(SB)
 
 	// Called from f.
@@ -387,53 +351,55 @@ TEXT ·reflectcall(SB), NOSPLIT, $-8-32
 TEXT NAME(SB), WRAPPER, $MAXSIZE-24;		\
 	NO_LOCAL_POINTERS;			\
 	/* copy arguments to stack */		\
-	MOVD	arg+16(FP), R3;			\
-	MOVWZ	argsize+24(FP), R4;			\
-	MOVD	R15, R5;				\
-	ADD	$(8-1), R5;			\
-	SUB	$1, R3;				\
-	ADD	R5, R4;				\
-	CMP	R5, R4;				\
-	BEQ	6(PC);				\
-	ADD	$1, R3;				\
-	ADD	$1, R5;				\
-	MOVBZ	0(R3), R6;			\
-	MOVBZ	R6, 0(R5);			\
-	BR	-6(PC);				\
-	/* call function */			\
+	MOVD	arg+16(FP), R4;			\
+	MOVWZ	argsize+24(FP), R5;		\
+	MOVD	$stack-MAXSIZE(SP), R6;		\
+loopArgs: /* copy 256 bytes at a time */	\
+	CMP	R5, $256;			\
+	BLT	tailArgs;			\
+	SUB	$256, R5;			\
+	MVC	$256, 0(R4), 0(R6);		\
+	MOVD	$256(R4), R4;			\
+	MOVD	$256(R6), R6;			\
+	BR	loopArgs;			\
+tailArgs: /* copy remaining bytes */		\
+	CMP	R5, $0;				\
+	BEQ	callFunction;			\
+	SUB	$1, R5;				\
+	EXRL	$callfnMVC<>(SB), R5;		\
+callFunction:					\
 	MOVD	f+8(FP), R12;			\
 	MOVD	(R12), R8;			\
 	PCDATA  $PCDATA_StackMapIndex, $0;	\
 	BL	(R8);				\
 	/* copy return values back */		\
-	MOVD	arg+16(FP), R3;			\
-	MOVWZ	n+24(FP), R4;			\
-	MOVWZ	retoffset+28(FP), R6;		\
-	MOVD	R15, R5;				\
-	ADD	R6, R5; 			\
-	ADD	R6, R3;				\
-	SUB	R6, R4;				\
-	ADD	$(8-1), R5;			\
-	SUB	$1, R3;				\
-	ADD	R5, R4;				\
-loop:						\
-	CMP	R5, R4;				\
-	BEQ	end;				\
-	ADD	$1, R5;				\
-	ADD	$1, R3;				\
-	MOVBZ	0(R5), R6;			\
-	MOVBZ	R6, 0(R3);			\
-	BR	loop;				\
-end:						\
+	MOVD	arg+16(FP), R6;			\
+	MOVWZ	n+24(FP), R5;			\
+	MOVD	$stack-MAXSIZE(SP), R4;		\
+	MOVWZ	retoffset+28(FP), R1;		\
+	ADD	R1, R4;				\
+	ADD	R1, R6;				\
+	SUB	R1, R5;				\
+loopRets: /* copy 256 bytes at a time */	\
+	CMP	R5, $256;			\
+	BLT	tailRets;			\
+	SUB	$256, R5;			\
+	MVC	$256, 0(R4), 0(R6);		\
+	MOVD	$256(R4), R4;			\
+	MOVD	$256(R6), R6;			\
+	BR	loopRets;			\
+tailRets: /* copy remaining bytes */		\
+	CMP	R5, $0;				\
+	BEQ	writeBarrierUpdates;		\
+	SUB	$1, R5;				\
+	EXRL	$callfnMVC<>(SB), R5;		\
+writeBarrierUpdates:				\
 	/* execute write barrier updates */	\
-	MOVD	argtype+0(FP), R7;		\
-	MOVD	arg+16(FP), R3;			\
-	MOVWZ	n+24(FP), R4;			\
-	MOVWZ	retoffset+28(FP), R6;		\
-	MOVD	R7, 8(R15);			\
-	MOVD	R3, 16(R15);			\
-	MOVD	R4, 24(R15);			\
-	MOVD	R6, 32(R15);			\
+	MOVD	argtype+0(FP), R1;		\
+	MOVD	arg+16(FP), R2;			\
+	MOVWZ	n+24(FP), R3;			\
+	MOVWZ	retoffset+28(FP), R4;		\
+	STMG	R1, R4, stack-MAXSIZE(SP);	\
 	BL	runtime·callwritebarrier(SB);	\
 	RET
 
@@ -463,6 +429,10 @@ CALLFN(·call134217728, 134217728)
 CALLFN(·call268435456, 268435456)
 CALLFN(·call536870912, 536870912)
 CALLFN(·call1073741824, 1073741824)
+
+// Not a function: target for EXRL (execute relative long) instruction.
+TEXT callfnMVC<>(SB),NOSPLIT|NOFRAME,$0-0
+	MVC	$1, 0(R4), 0(R6)
 
 TEXT runtime·procyield(SB),NOSPLIT,$0-0
 	RET
@@ -880,14 +850,14 @@ TEXT runtime·fastrand(SB), NOSPLIT, $0-4
 	MOVW	R3, ret+0(FP)
 	RET
 
-TEXT bytes·IndexByte(SB),NOSPLIT,$0-40
+TEXT bytes·IndexByte(SB),NOSPLIT|NOFRAME,$0-40
 	MOVD	s+0(FP), R3     // s => R3
 	MOVD	s_len+8(FP), R4 // s_len => R4
 	MOVBZ	c+24(FP), R5    // c => R5
 	MOVD	$ret+32(FP), R2 // &ret => R9
 	BR	runtime·indexbytebody(SB)
 
-TEXT strings·IndexByte(SB),NOSPLIT,$0-32
+TEXT strings·IndexByte(SB),NOSPLIT|NOFRAME,$0-32
 	MOVD	s+0(FP), R3     // s => R3
 	MOVD	s_len+8(FP), R4 // s_len => R4
 	MOVBZ	c+16(FP), R5    // c => R5
@@ -899,7 +869,7 @@ TEXT strings·IndexByte(SB),NOSPLIT,$0-32
 // R4: s_len
 // R5: c -- byte sought
 // R2: &ret -- address to put index into
-TEXT runtime·indexbytebody(SB),NOSPLIT,$0
+TEXT runtime·indexbytebody(SB),NOSPLIT|NOFRAME,$0
 	CMPBEQ	R4, $0, notfound
 	MOVD	R3, R6          // store base for later
 	ADD	R3, R4, R8      // the address after the end of the string
@@ -923,12 +893,10 @@ notfound:
 	RET
 
 large:
-	MOVB	runtime·vectorfacility(SB), R1
-	CMPBEQ	R1, $-1, checkvector	// vectorfacility = -1, vector not checked yet
-vectorchecked:
-	CMPBEQ	R1, $1, vectorimpl      // vectorfacility = 1, vector supported
+	MOVBZ	·cpu+facilities_hasVX(SB), R1
+	CMPBNE	R1, $0, vectorimpl
 
-srstimpl:                       // vectorfacility != 1, not support or enable vector
+srstimpl:                       // no vector facility
 	MOVBZ	R5, R0          // c needs to be in R0, leave until last minute as currently R0 is expected to be 0
 srstloop:
 	WORD	$0xB25E0083     // srst %r8, %r3 (search the range [R3, R8))
@@ -980,11 +948,6 @@ notalignedloop:
 	LA	1(R3), R3
 	CMPBNE	R7, R5, notalignedloop
 	BR	found
-
-checkvector:
-	CALL	runtime·checkvectorfacility(SB)
-	MOVB    runtime·vectorfacility(SB), R1
-	BR	vectorchecked
 
 TEXT runtime·return0(SB), NOSPLIT, $0
 	MOVW	$0, R3

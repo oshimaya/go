@@ -187,6 +187,9 @@ func gcinit() {
 	//   goal = marked * (1 + GOGC/100)
 	//        = trigger / (1 + triggerRatio) * (1 + GOGC/100)
 	memstats.next_gc = uint64(float64(memstats.gc_trigger) / (1 + gcController.triggerRatio) * (1 + float64(gcpercent)/100))
+	if gcpercent < 0 {
+		memstats.next_gc = ^uint64(0)
+	}
 	work.startSema = 1
 	work.markDoneSema = 1
 }
@@ -232,7 +235,7 @@ func setGCPercent(in int32) (out int32) {
 }
 
 // Garbage collector phase.
-// Indicates to write barrier and sychronization task to preform.
+// Indicates to write barrier and synchronization task to perform.
 var gcphase uint32
 
 // The compiler knows about this variable.
@@ -434,6 +437,9 @@ func (c *gcControllerState) startCycle() {
 	// Re-compute the heap goal for this cycle in case something
 	// changed. This is the same calculation we use elsewhere.
 	memstats.next_gc = memstats.heap_marked + memstats.heap_marked*uint64(gcpercent)/100
+	if gcpercent < 0 {
+		memstats.next_gc = ^uint64(0)
+	}
 
 	// Ensure that the heap goal is at least a little larger than
 	// the current live heap size. This may not be the case if GC
@@ -1140,11 +1146,6 @@ top:
 		// this before waking blocked assists.
 		atomic.Store(&gcBlackenEnabled, 0)
 
-		// Flush the gcWork caches. This must be done before
-		// endCycle since endCycle depends on statistics kept
-		// in these caches.
-		gcFlushGCWork()
-
 		// Wake all blocked assists. These will run when we
 		// start the world again.
 		gcWakeAllAssists()
@@ -1154,6 +1155,8 @@ top:
 		// world again.
 		semrelease(&work.markDoneSema)
 
+		// endCycle depends on all gcWork cache stats being
+		// flushed. This is ensured by mark 2.
 		gcController.endCycle()
 
 		// Perform mark termination. This will restart the world.
@@ -1272,6 +1275,18 @@ func gcMarkTermination() {
 	sweep.npausesweep = 0
 
 	systemstack(startTheWorldWithSema)
+
+	// Update heap profile stats if gcSweep didn't do it. This is
+	// relatively expensive, so we don't want to do it while the
+	// world is stopped, but it needs to happen ASAP after
+	// starting the world to prevent too many allocations from the
+	// next cycle leaking in. It must happen before releasing
+	// worldsema since there are applications that do a
+	// runtime.GC() to update the heap profile and then
+	// immediately collect the profile.
+	if _ConcurrentSweep && work.mode != gcForceBlockMode {
+		mProf_GC()
+	}
 
 	// Free stack spans. This must be done between GC cycles.
 	systemstack(freeStackSpans)
@@ -1534,18 +1549,8 @@ func gcMarkWorkAvailable(p *p) bool {
 	return false
 }
 
-// gcFlushGCWork disposes the gcWork caches of all Ps. The world must
-// be stopped.
-//go:nowritebarrier
-func gcFlushGCWork() {
-	// Gather all cached GC work. All other Ps are stopped, so
-	// it's safe to manipulate their GC work caches.
-	for i := 0; i < int(gomaxprocs); i++ {
-		allp[i].gcw.dispose()
-	}
-}
-
 // gcMark runs the mark (or, for concurrent GC, mark termination)
+// All gcWork caches must be empty.
 // STW is in effect at this point.
 //TODO go:nowritebarrier
 func gcMark(start_time int64) {
@@ -1559,11 +1564,6 @@ func gcMark(start_time int64) {
 	work.tstart = start_time
 
 	gcCopySpans() // TODO(rlh): should this be hoisted and done only once? Right now it is done for normal marking and also for checkmarking.
-
-	// Make sure the per-P gcWork caches are empty. During mark
-	// termination, these caches can still be used temporarily,
-	// but must be disposed to the global lists immediately.
-	gcFlushGCWork()
 
 	// Queue root marking jobs.
 	gcMarkRootPrepare()
@@ -1603,6 +1603,8 @@ func gcMark(start_time int64) {
 	// Record that at least one root marking pass has completed.
 	work.markrootDone = true
 
+	// Double-check that all gcWork caches are empty. This should
+	// be ensured by mark 2 before we enter mark termination.
 	for i := 0; i < int(gomaxprocs); i++ {
 		gcw := &allp[i].gcw
 		if !gcw.empty() {
@@ -1658,6 +1660,9 @@ func gcMark(start_time int64) {
 	// The next GC cycle should finish before the allocated heap
 	// has grown by GOGC/100.
 	memstats.next_gc = memstats.heap_marked + memstats.heap_marked*uint64(gcpercent)/100
+	if gcpercent < 0 {
+		memstats.next_gc = ^uint64(0)
+	}
 	if memstats.next_gc < memstats.gc_trigger {
 		memstats.next_gc = memstats.gc_trigger
 	}
@@ -1721,7 +1726,6 @@ func gcSweep(mode gcMode) {
 		ready(sweep.g, 0, true)
 	}
 	unlock(&sweep.lock)
-	mProf_GC()
 }
 
 func gcCopySpans() {

@@ -132,9 +132,9 @@ package gc
 import (
 	"bufio"
 	"bytes"
-	"cmd/compile/internal/big"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 	"sort"
 	"strings"
 )
@@ -204,14 +204,11 @@ type exporter struct {
 // export writes the exportlist for localpkg to out and returns the number of bytes written.
 func export(out *bufio.Writer, trace bool) int {
 	p := exporter{
-		out:      out,
-		strIndex: map[string]int{"": 0}, // empty string is mapped to 0
-		pkgIndex: make(map[*Pkg]int),
-		typIndex: make(map[*Type]int),
-		// don't emit pos info for builtin packages
-		// (not needed and avoids path name diffs in builtin.go between
-		// Windows and non-Windows machines, exposed via builtin_test.go)
-		posInfoFormat: Debug['A'] == 0,
+		out:           out,
+		strIndex:      map[string]int{"": 0}, // empty string is mapped to 0
+		pkgIndex:      make(map[*Pkg]int),
+		typIndex:      make(map[*Type]int),
+		posInfoFormat: true,
 		trace:         trace,
 	}
 
@@ -1154,8 +1151,8 @@ func (p *exporter) elemList(list Nodes) {
 		if p.trace {
 			p.tracef("\n")
 		}
-		p.fieldSym(n.Left.Sym, false)
-		p.expr(n.Right)
+		p.fieldSym(n.Sym, false)
+		p.expr(n.Left)
 	}
 }
 
@@ -1266,6 +1263,9 @@ func (p *exporter) expr(n *Node) {
 	case OKEY:
 		p.op(OKEY)
 		p.exprsOrNil(n.Left, n.Right)
+
+	// case OSTRUCTKEY:
+	//	unreachable - handled in case OSTRUCTLIT by elemList
 
 	// case OCALLPART:
 	//	unimplemented - handled by default case

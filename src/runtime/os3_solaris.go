@@ -252,14 +252,10 @@ func sigtramp()
 
 //go:nosplit
 //go:nowritebarrierrec
-func setsig(i int32, fn uintptr, restart bool) {
+func setsig(i uint32, fn uintptr) {
 	var sa sigactiont
 
-	sa.sa_flags = _SA_SIGINFO | _SA_ONSTACK
-	sa.sa_flags = _SA_SIGINFO | _SA_ONSTACK
-	if restart {
-		sa.sa_flags |= _SA_RESTART
-	}
+	sa.sa_flags = _SA_SIGINFO | _SA_ONSTACK | _SA_RESTART
 	sa.sa_mask = sigset_all
 	if fn == funcPC(sighandler) {
 		fn = funcPC(sigtramp)
@@ -270,11 +266,10 @@ func setsig(i int32, fn uintptr, restart bool) {
 
 //go:nosplit
 //go:nowritebarrierrec
-func setsigstack(i int32) {
+func setsigstack(i uint32) {
 	var sa sigactiont
 	sigaction(i, nil, &sa)
-	handler := *((*uintptr)(unsafe.Pointer(&sa._funcptr)))
-	if handler == 0 || handler == _SIG_DFL || handler == _SIG_IGN || sa.sa_flags&_SA_ONSTACK != 0 {
+	if sa.sa_flags&_SA_ONSTACK != 0 {
 		return
 	}
 	sa.sa_flags |= _SA_ONSTACK
@@ -283,27 +278,22 @@ func setsigstack(i int32) {
 
 //go:nosplit
 //go:nowritebarrierrec
-func getsig(i int32) uintptr {
+func getsig(i uint32) uintptr {
 	var sa sigactiont
 	sigaction(i, nil, &sa)
-	if *((*uintptr)(unsafe.Pointer(&sa._funcptr))) == funcPC(sigtramp) {
-		return funcPC(sighandler)
-	}
 	return *((*uintptr)(unsafe.Pointer(&sa._funcptr)))
 }
 
 // setSignaltstackSP sets the ss_sp field of a stackt.
 //go:nosplit
 func setSignalstackSP(s *stackt, sp uintptr) {
-	s.ss_sp = (*byte)(unsafe.Pointer(sp))
+	*(*uintptr)(unsafe.Pointer(&s.ss_sp)) = sp
 }
 
 //go:nosplit
 //go:nowritebarrierrec
-func sigmaskToSigset(m sigmask) sigset {
-	var set sigset
-	copy(set.__sigbits[:], m[:])
-	return set
+func sigaddset(mask *sigset, i int) {
+	mask.__sigbits[(i-1)/32] |= 1 << ((uint32(i) - 1) & 31)
 }
 
 func sigdelset(mask *sigset, i int) {
@@ -467,11 +457,11 @@ func pthread_create(thread *pthread, attr *pthreadattr, fn uintptr, arg unsafe.P
 
 //go:nosplit
 //go:nowritebarrierrec
-func raise(sig int32) /* int32 */ {
+func raise(sig uint32) /* int32 */ {
 	sysvicall1(&libc_raise, uintptr(sig))
 }
 
-func raiseproc(sig int32) /* int32 */ {
+func raiseproc(sig uint32) /* int32 */ {
 	pid := sysvicall0(&libc_getpid)
 	sysvicall2(&libc_kill, pid, uintptr(sig))
 }
@@ -507,7 +497,7 @@ func setitimer(which int32, value *itimerval, ovalue *itimerval) /* int32 */ {
 
 //go:nosplit
 //go:nowritebarrierrec
-func sigaction(sig int32, act *sigactiont, oact *sigactiont) /* int32 */ {
+func sigaction(sig uint32, act *sigactiont, oact *sigactiont) /* int32 */ {
 	sysvicall3(&libc_sigaction, uintptr(sig), uintptr(unsafe.Pointer(act)), uintptr(unsafe.Pointer(oact)))
 }
 

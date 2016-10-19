@@ -182,6 +182,7 @@ var failthreadcreate = []byte("runtime: failed to create new OS thread\n")
 const (
 	_AT_NULL   = 0  // End of vector
 	_AT_PAGESZ = 6  // System physical page size
+	_AT_HWCAP  = 16 // hardware capability bit vector
 	_AT_RANDOM = 25 // introduced in 2.6.29
 )
 
@@ -329,8 +330,8 @@ func sigprocmask(how int32, new, old *sigset) {
 
 //go:noescape
 func getrlimit(kind int32, limit unsafe.Pointer) int32
-func raise(sig int32)
-func raiseproc(sig int32)
+func raise(sig uint32)
+func raiseproc(sig uint32)
 
 //go:noescape
 func sched_getaffinity(pid, len uintptr, buf *uintptr) int32
@@ -338,12 +339,9 @@ func osyield()
 
 //go:nosplit
 //go:nowritebarrierrec
-func setsig(i int32, fn uintptr, restart bool) {
+func setsig(i uint32, fn uintptr) {
 	var sa sigactiont
-	sa.sa_flags = _SA_SIGINFO | _SA_ONSTACK | _SA_RESTORER
-	if restart {
-		sa.sa_flags |= _SA_RESTART
-	}
+	sa.sa_flags = _SA_SIGINFO | _SA_ONSTACK | _SA_RESTORER | _SA_RESTART
 	sigfillset(&sa.sa_mask)
 	// Although Linux manpage says "sa_restorer element is obsolete and
 	// should not be used". x86_64 kernel requires it. Only use it on
@@ -364,29 +362,22 @@ func setsig(i int32, fn uintptr, restart bool) {
 
 //go:nosplit
 //go:nowritebarrierrec
-func setsigstack(i int32) {
+func setsigstack(i uint32) {
 	var sa sigactiont
-	if rt_sigaction(uintptr(i), nil, &sa, unsafe.Sizeof(sa.sa_mask)) != 0 {
-		throw("rt_sigaction failure")
-	}
-	if sa.sa_handler == 0 || sa.sa_handler == _SIG_DFL || sa.sa_handler == _SIG_IGN || sa.sa_flags&_SA_ONSTACK != 0 {
+	rt_sigaction(uintptr(i), nil, &sa, unsafe.Sizeof(sa.sa_mask))
+	if sa.sa_flags&_SA_ONSTACK != 0 {
 		return
 	}
 	sa.sa_flags |= _SA_ONSTACK
-	if rt_sigaction(uintptr(i), &sa, nil, unsafe.Sizeof(sa.sa_mask)) != 0 {
-		throw("rt_sigaction failure")
-	}
+	rt_sigaction(uintptr(i), &sa, nil, unsafe.Sizeof(sa.sa_mask))
 }
 
 //go:nosplit
 //go:nowritebarrierrec
-func getsig(i int32) uintptr {
+func getsig(i uint32) uintptr {
 	var sa sigactiont
 	if rt_sigaction(uintptr(i), nil, &sa, unsafe.Sizeof(sa.sa_mask)) != 0 {
 		throw("rt_sigaction read failure")
-	}
-	if sa.sa_handler == funcPC(sigtramp) || sa.sa_handler == funcPC(cgoSigtramp) {
-		return funcPC(sighandler)
 	}
 	return sa.sa_handler
 }
@@ -394,7 +385,7 @@ func getsig(i int32) uintptr {
 // setSignaltstackSP sets the ss_sp field of a stackt.
 //go:nosplit
 func setSignalstackSP(s *stackt, sp uintptr) {
-	s.ss_sp = (*byte)(unsafe.Pointer(sp))
+	*(*uintptr)(unsafe.Pointer(&s.ss_sp)) = sp
 }
 
 func (c *sigctxt) fixsigcode(sig uint32) {

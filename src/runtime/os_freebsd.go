@@ -18,7 +18,7 @@ func thr_new(param *thrparam, size int32)
 func sigaltstack(new, old *stackt)
 
 //go:noescape
-func sigaction(sig int32, new, old *sigactiont)
+func sigaction(sig uint32, new, old *sigactiont)
 
 //go:noescape
 func sigprocmask(how int32, new, old *sigset)
@@ -31,11 +31,11 @@ func sysctl(mib *uint32, miblen uint32, out *byte, size *uintptr, dst *byte, nds
 
 //go:noescape
 func getrlimit(kind int32, limit unsafe.Pointer) int32
-func raise(sig int32)
-func raiseproc(sig int32)
+func raise(sig uint32)
+func raiseproc(sig uint32)
 
 //go:noescape
-func sys_umtx_op(addr *uint32, mode int32, val uint32, ptr2, ts *timespec) int32
+func sys_umtx_op(addr *uint32, mode int32, val uint32, uaddr1 uintptr, ut *umtx_time) int32
 
 func osyield()
 
@@ -82,14 +82,14 @@ func futexsleep(addr *uint32, val uint32, ns int64) {
 }
 
 func futexsleep1(addr *uint32, val uint32, ns int64) {
-	var tsp *timespec
+	var utp *umtx_time
 	if ns >= 0 {
-		var ts timespec
-		ts.tv_nsec = 0
-		ts.set_sec(int64(timediv(ns, 1000000000, (*int32)(unsafe.Pointer(&ts.tv_nsec)))))
-		tsp = &ts
+		var ut umtx_time
+		ut._clockid = _CLOCK_MONOTONIC
+		ut._timeout.set_sec(int64(timediv(ns, 1000000000, (*int32)(unsafe.Pointer(&ut._timeout.tv_nsec)))))
+		utp = &ut
 	}
-	ret := sys_umtx_op(addr, _UMTX_OP_WAIT_UINT_PRIVATE, val, nil, tsp)
+	ret := sys_umtx_op(addr, _UMTX_OP_WAIT_UINT_PRIVATE, val, unsafe.Sizeof(*utp), utp)
 	if ret >= 0 || ret == -_EINTR {
 		return
 	}
@@ -99,7 +99,7 @@ func futexsleep1(addr *uint32, val uint32, ns int64) {
 
 //go:nosplit
 func futexwakeup(addr *uint32, cnt uint32) {
-	ret := sys_umtx_op(addr, _UMTX_OP_WAKE_PRIVATE, cnt, nil, nil)
+	ret := sys_umtx_op(addr, _UMTX_OP_WAKE_PRIVATE, cnt, 0, nil)
 	if ret >= 0 {
 		return
 	}
@@ -224,12 +224,9 @@ type sigactiont struct {
 
 //go:nosplit
 //go:nowritebarrierrec
-func setsig(i int32, fn uintptr, restart bool) {
+func setsig(i uint32, fn uintptr) {
 	var sa sigactiont
-	sa.sa_flags = _SA_SIGINFO | _SA_ONSTACK
-	if restart {
-		sa.sa_flags |= _SA_RESTART
-	}
+	sa.sa_flags = _SA_SIGINFO | _SA_ONSTACK | _SA_RESTART
 	sa.sa_mask = sigset_all
 	if fn == funcPC(sighandler) {
 		fn = funcPC(sigtramp)
@@ -240,18 +237,15 @@ func setsig(i int32, fn uintptr, restart bool) {
 
 //go:nosplit
 //go:nowritebarrierrec
-func setsigstack(i int32) {
+func setsigstack(i uint32) {
 	throw("setsigstack")
 }
 
 //go:nosplit
 //go:nowritebarrierrec
-func getsig(i int32) uintptr {
+func getsig(i uint32) uintptr {
 	var sa sigactiont
 	sigaction(i, nil, &sa)
-	if sa.sa_handler == funcPC(sigtramp) {
-		return funcPC(sighandler)
-	}
 	return sa.sa_handler
 }
 
@@ -263,10 +257,8 @@ func setSignalstackSP(s *stackt, sp uintptr) {
 
 //go:nosplit
 //go:nowritebarrierrec
-func sigmaskToSigset(m sigmask) sigset {
-	var set sigset
-	copy(set.__bits[:], m[:])
-	return set
+func sigaddset(mask *sigset, i int) {
+	mask.__bits[(i-1)/32] |= 1 << ((uint32(i) - 1) & 31)
 }
 
 func sigdelset(mask *sigset, i int) {

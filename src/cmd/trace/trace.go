@@ -160,7 +160,11 @@ func httpJsonTrace(w http.ResponseWriter, r *http.Request) {
 		params.gs = trace.RelatedGoroutines(events, goid)
 	}
 
-	data := generateTrace(params)
+	data, err := generateTrace(params)
+	if err != nil {
+		log.Printf("failed to generate trace: %v", err)
+		return
+	}
 
 	if startStr, endStr := r.FormValue("start"), r.FormValue("end"); startStr != "" && endStr != "" {
 		// If start/end arguments are present, we are rendering a range of the trace.
@@ -307,7 +311,7 @@ type SortIndexArg struct {
 // If gtrace=true, generate trace for goroutine goid, otherwise whole trace.
 // startTime, endTime determine part of the trace that we are interested in.
 // gset restricts goroutines that are included in the resulting trace.
-func generateTrace(params *traceParams) ViewerData {
+func generateTrace(params *traceParams) (ViewerData, error) {
 	ctx := &traceContext{traceParams: params}
 	ctx.frameTree.children = make(map[uint64]frameNode)
 	ctx.data.Frames = make(map[string]ViewerFrame)
@@ -362,7 +366,7 @@ func generateTrace(params *traceParams) ViewerData {
 			if ctx.gtrace {
 				continue
 			}
-			ctx.emitSlice(ev, "MARK")
+			ctx.emitSlice(ev, "MARK TERMINATION")
 		case trace.EvGCScanDone:
 		case trace.EvGCSweepStart:
 			ctx.emitSlice(ev, "SWEEP")
@@ -408,9 +412,10 @@ func generateTrace(params *traceParams) ViewerData {
 			ctx.grunning--
 			ctx.emitGoroutineCounters(ev)
 		case trace.EvGoWaiting:
-			ctx.grunnable--
+			ctx.grunnable-- // cancels out the effect of EvGoCreate at the beginning
 			ctx.emitGoroutineCounters(ev)
 		case trace.EvGoInSyscall:
+			ctx.grunnable-- // cancels out the effect of EvGoCreate at the beginning
 			ctx.insyscall++
 			ctx.emitThreadCounters(ev)
 		case trace.EvHeapAlloc:
@@ -420,6 +425,9 @@ func generateTrace(params *traceParams) ViewerData {
 			ctx.nextGC = ev.Args[0]
 			ctx.emitHeapCounters(ev)
 		}
+		if ctx.grunnable < 0 || ctx.grunning < 0 || ctx.insyscall < 0 {
+			return ctx.data, fmt.Errorf("invalid state after processing %v: runnable=%d running=%d insyscall=%d", ev, ctx.grunnable, ctx.grunning, ctx.insyscall)
+		}
 	}
 
 	ctx.data.footer = len(ctx.data.Events)
@@ -428,6 +436,9 @@ func generateTrace(params *traceParams) ViewerData {
 
 	ctx.emit(&ViewerEvent{Name: "process_name", Phase: "M", Pid: 1, Arg: &NameArg{"STATS"}})
 	ctx.emit(&ViewerEvent{Name: "process_sort_index", Phase: "M", Pid: 1, Arg: &SortIndexArg{0}})
+
+	ctx.emit(&ViewerEvent{Name: "thread_name", Phase: "M", Pid: 0, Tid: trace.GCP, Arg: &NameArg{"GC"}})
+	ctx.emit(&ViewerEvent{Name: "thread_sort_index", Phase: "M", Pid: 0, Tid: trace.GCP, Arg: &SortIndexArg{-6}})
 
 	ctx.emit(&ViewerEvent{Name: "thread_name", Phase: "M", Pid: 0, Tid: trace.NetpollP, Arg: &NameArg{"Network"}})
 	ctx.emit(&ViewerEvent{Name: "thread_sort_index", Phase: "M", Pid: 0, Tid: trace.NetpollP, Arg: &SortIndexArg{-5}})
@@ -456,7 +467,7 @@ func generateTrace(params *traceParams) ViewerData {
 		ctx.emit(&ViewerEvent{Name: "thread_sort_index", Phase: "M", Pid: 0, Tid: 0, Arg: &SortIndexArg{-1}})
 	}
 
-	return ctx.data
+	return ctx.data, nil
 }
 
 func (ctx *traceContext) emit(e *ViewerEvent) {
@@ -488,11 +499,12 @@ func (ctx *traceContext) emitSlice(ev *trace.Event, name string) {
 	})
 }
 
+type heapCountersArg struct {
+	Allocated uint64
+	NextGC    uint64
+}
+
 func (ctx *traceContext) emitHeapCounters(ev *trace.Event) {
-	type Arg struct {
-		Allocated uint64
-		NextGC    uint64
-	}
 	if ctx.gtrace {
 		return
 	}
@@ -500,29 +512,31 @@ func (ctx *traceContext) emitHeapCounters(ev *trace.Event) {
 	if ctx.nextGC > ctx.heapAlloc {
 		diff = ctx.nextGC - ctx.heapAlloc
 	}
-	ctx.emit(&ViewerEvent{Name: "Heap", Phase: "C", Time: ctx.time(ev), Pid: 1, Arg: &Arg{ctx.heapAlloc, diff}})
+	ctx.emit(&ViewerEvent{Name: "Heap", Phase: "C", Time: ctx.time(ev), Pid: 1, Arg: &heapCountersArg{ctx.heapAlloc, diff}})
+}
+
+type goroutineCountersArg struct {
+	Running  uint64
+	Runnable uint64
 }
 
 func (ctx *traceContext) emitGoroutineCounters(ev *trace.Event) {
-	type Arg struct {
-		Running  uint64
-		Runnable uint64
-	}
 	if ctx.gtrace {
 		return
 	}
-	ctx.emit(&ViewerEvent{Name: "Goroutines", Phase: "C", Time: ctx.time(ev), Pid: 1, Arg: &Arg{ctx.grunning, ctx.grunnable}})
+	ctx.emit(&ViewerEvent{Name: "Goroutines", Phase: "C", Time: ctx.time(ev), Pid: 1, Arg: &goroutineCountersArg{ctx.grunning, ctx.grunnable}})
+}
+
+type threadCountersArg struct {
+	Running   uint64
+	InSyscall uint64
 }
 
 func (ctx *traceContext) emitThreadCounters(ev *trace.Event) {
-	type Arg struct {
-		Running   uint64
-		InSyscall uint64
-	}
 	if ctx.gtrace {
 		return
 	}
-	ctx.emit(&ViewerEvent{Name: "Threads", Phase: "C", Time: ctx.time(ev), Pid: 1, Arg: &Arg{ctx.prunning, ctx.insyscall}})
+	ctx.emit(&ViewerEvent{Name: "Threads", Phase: "C", Time: ctx.time(ev), Pid: 1, Arg: &threadCountersArg{ctx.prunning, ctx.insyscall}})
 }
 
 func (ctx *traceContext) emitInstant(ev *trace.Event, name string) {

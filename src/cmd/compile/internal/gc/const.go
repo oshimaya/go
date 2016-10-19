@@ -4,11 +4,7 @@
 
 package gc
 
-import (
-	"cmd/compile/internal/big"
-	"cmd/internal/obj"
-	"strings"
-)
+import "strings"
 
 // Ctype describes the constant kind of an "ideal" (untyped) constant.
 type Ctype int8
@@ -112,19 +108,6 @@ func (v Val) Interface() interface{} {
 
 type NilVal struct{}
 
-// IntLiteral returns the Node's literal value as an integer.
-func (n *Node) IntLiteral() (x int64, ok bool) {
-	switch {
-	case n == nil:
-		return
-	case Isconst(n, CTINT):
-		return n.Int64(), true
-	case Isconst(n, CTBOOL):
-		return int64(obj.Bool2int(n.Bool())), true
-	}
-	return
-}
-
 // Int64 returns n as an int64.
 // n must be an integer or rune constant.
 func (n *Node) Int64() int64 {
@@ -132,33 +115,6 @@ func (n *Node) Int64() int64 {
 		Fatalf("Int(%v)", n)
 	}
 	return n.Val().U.(*Mpint).Int64()
-}
-
-// SetInt sets n's value to i.
-// n must be an integer constant.
-func (n *Node) SetInt(i int64) {
-	if !Isconst(n, CTINT) {
-		Fatalf("SetInt(%v)", n)
-	}
-	n.Val().U.(*Mpint).SetInt64(i)
-}
-
-// SetBigInt sets n's value to x.
-// n must be an integer constant.
-func (n *Node) SetBigInt(x *big.Int) {
-	if !Isconst(n, CTINT) {
-		Fatalf("SetBigInt(%v)", n)
-	}
-	n.Val().U.(*Mpint).Val.Set(x)
-}
-
-// Bool returns n as an bool.
-// n must be an boolean constant.
-func (n *Node) Bool() bool {
-	if !Isconst(n, CTBOOL) {
-		Fatalf("Int(%v)", n)
-	}
-	return n.Val().U.(bool)
 }
 
 // truncate float literal fv to 32-bit or 64-bit precision
@@ -1542,91 +1498,6 @@ func nonnegintconst(n *Node) int64 {
 	return vi.Int64()
 }
 
-// convert x to type et and back to int64
-// for sign extension and truncation.
-func iconv(x int64, et EType) int64 {
-	switch et {
-	case TINT8:
-		x = int64(int8(x))
-
-	case TUINT8:
-		x = int64(uint8(x))
-
-	case TINT16:
-		x = int64(int16(x))
-
-	case TUINT16:
-		x = int64(uint64(x))
-
-	case TINT32:
-		x = int64(int32(x))
-
-	case TUINT32:
-		x = int64(uint32(x))
-
-	case TINT64, TUINT64:
-		break
-	}
-
-	return x
-}
-
-// Convconst converts constant node n to type t and
-// places the result in con.
-func (n *Node) Convconst(con *Node, t *Type) {
-	tt := Simsimtype(t)
-
-	// copy the constant for conversion
-	Nodconst(con, Types[TINT8], 0)
-
-	con.Type = t
-	con.SetVal(n.Val())
-
-	if isInt[tt] {
-		con.SetVal(Val{new(Mpint)})
-		var i int64
-		switch n.Val().Ctype() {
-		default:
-			Fatalf("convconst ctype=%d %L", n.Val().Ctype(), t)
-
-		case CTINT, CTRUNE:
-			i = n.Int64()
-
-		case CTBOOL:
-			i = int64(obj.Bool2int(n.Val().U.(bool)))
-
-		case CTNIL:
-			i = 0
-		}
-
-		i = iconv(i, tt)
-		con.Val().U.(*Mpint).SetInt64(i)
-		return
-	}
-
-	if isFloat[tt] {
-		con.SetVal(toflt(con.Val()))
-		if con.Val().Ctype() != CTFLT {
-			Fatalf("convconst ctype=%d %v", con.Val().Ctype(), t)
-		}
-		if tt == TFLOAT32 {
-			con.SetVal(Val{truncfltlit(con.Val().U.(*Mpflt), t)})
-		}
-		return
-	}
-
-	if isComplex[tt] {
-		con.SetVal(tocplx(con.Val()))
-		if tt == TCOMPLEX64 {
-			con.Val().U.(*Mpcplx).Real = *truncfltlit(&con.Val().U.(*Mpcplx).Real, Types[TFLOAT32])
-			con.Val().U.(*Mpcplx).Imag = *truncfltlit(&con.Val().U.(*Mpcplx).Imag, Types[TFLOAT32])
-		}
-		return
-	}
-
-	Fatalf("convconst %L constant", t)
-}
-
 // complex multiply v *= rv
 //	(a, b) * (c, d) = (a*c - b*d, b*c + a*d)
 func cmplxmpy(v *Mpcplx, rv *Mpcplx) {
@@ -1786,19 +1657,8 @@ func isgoconst(n *Node) bool {
 			return true
 		}
 
-		// Only constant calls are unsafe.Alignof, Offsetof, and Sizeof.
-	case OCALL:
-		l := n.Left
-
-		for l.Op == OPAREN {
-			l = l.Left
-		}
-		if l.Op != ONAME || l.Sym.Pkg != unsafepkg {
-			break
-		}
-		if l.Sym.Name == "Alignof" || l.Sym.Name == "Offsetof" || l.Sym.Name == "Sizeof" {
-			return true
-		}
+	case OALIGNOF, OOFFSETOF, OSIZEOF:
+		return true
 	}
 
 	//dump("nonconst", n);

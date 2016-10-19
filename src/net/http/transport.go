@@ -25,9 +25,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"golang_org/x/net/idna"
 	"golang_org/x/net/lex/httplex"
 )
 
@@ -80,8 +80,8 @@ type Transport struct {
 	reqMu       sync.Mutex
 	reqCanceler map[*Request]func(error)
 
-	altMu    sync.RWMutex
-	altProto map[string]RoundTripper // nil or map of URI scheme => RoundTripper
+	altMu    sync.Mutex   // guards changing altProto only
+	altProto atomic.Value // of nil or map[string]RoundTripper, key is URI scheme
 
 	// Proxy specifies a function to return a proxy for a given
 	// Request. If the function returns a non-nil error, the
@@ -332,11 +332,9 @@ func (t *Transport) RoundTrip(req *Request) (*Response, error) {
 			}
 		}
 	}
-	// TODO(bradfitz): switch to atomic.Value for this map instead of RWMutex
-	t.altMu.RLock()
-	altRT := t.altProto[scheme]
-	t.altMu.RUnlock()
-	if altRT != nil {
+
+	altProto, _ := t.altProto.Load().(map[string]RoundTripper)
+	if altRT := altProto[scheme]; altRT != nil {
 		if resp, err := altRT.RoundTrip(req); err != ErrSkipAltProtocol {
 			return resp, err
 		}
@@ -461,13 +459,16 @@ var ErrSkipAltProtocol = errors.New("net/http: skip alternate protocol")
 func (t *Transport) RegisterProtocol(scheme string, rt RoundTripper) {
 	t.altMu.Lock()
 	defer t.altMu.Unlock()
-	if t.altProto == nil {
-		t.altProto = make(map[string]RoundTripper)
-	}
-	if _, exists := t.altProto[scheme]; exists {
+	oldMap, _ := t.altProto.Load().(map[string]RoundTripper)
+	if _, exists := oldMap[scheme]; exists {
 		panic("protocol " + scheme + " already registered")
 	}
-	t.altProto[scheme] = rt
+	newMap := make(map[string]RoundTripper)
+	for k, v := range oldMap {
+		newMap[k] = v
+	}
+	newMap[scheme] = rt
+	t.altProto.Store(newMap)
 }
 
 // CloseIdleConnections closes any connections which were previously
@@ -954,6 +955,7 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (*persistCon
 		writeErrCh:    make(chan error, 1),
 		writeLoopDone: make(chan struct{}),
 	}
+	trace := httptrace.ContextClientTrace(ctx)
 	tlsDial := t.DialTLS != nil && cm.targetScheme == "https" && cm.proxyURL == nil
 	if tlsDial {
 		var err error
@@ -967,11 +969,20 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (*persistCon
 		if tc, ok := pconn.conn.(*tls.Conn); ok {
 			// Handshake here, in case DialTLS didn't. TLSNextProto below
 			// depends on it for knowing the connection state.
+			if trace != nil && trace.TLSHandshakeStart != nil {
+				trace.TLSHandshakeStart()
+			}
 			if err := tc.Handshake(); err != nil {
 				go pconn.conn.Close()
+				if trace != nil && trace.TLSHandshakeDone != nil {
+					trace.TLSHandshakeDone(tls.ConnectionState{}, err)
+				}
 				return nil, err
 			}
 			cs := tc.ConnectionState()
+			if trace != nil && trace.TLSHandshakeDone != nil {
+				trace.TLSHandshakeDone(cs, nil)
+			}
 			pconn.tlsState = &cs
 		}
 	} else {
@@ -1041,6 +1052,9 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (*persistCon
 			})
 		}
 		go func() {
+			if trace != nil && trace.TLSHandshakeStart != nil {
+				trace.TLSHandshakeStart()
+			}
 			err := tlsConn.Handshake()
 			if timer != nil {
 				timer.Stop()
@@ -1049,6 +1063,9 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (*persistCon
 		}()
 		if err := <-errc; err != nil {
 			plainConn.Close()
+			if trace != nil && trace.TLSHandshakeDone != nil {
+				trace.TLSHandshakeDone(tls.ConnectionState{}, err)
+			}
 			return nil, err
 		}
 		if !cfg.InsecureSkipVerify {
@@ -1058,6 +1075,9 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (*persistCon
 			}
 		}
 		cs := tlsConn.ConnectionState()
+		if trace != nil && trace.TLSHandshakeDone != nil {
+			trace.TLSHandshakeDone(cs, nil)
+		}
 		pconn.tlsState = &cs
 		pconn.conn = tlsConn
 	}
@@ -1945,7 +1965,7 @@ var portMap = map[string]string{
 // canonicalAddr returns url.Host but always with a ":port" suffix
 func canonicalAddr(url *url.URL) string {
 	addr := url.Hostname()
-	if v, err := idna.ToASCII(addr); err == nil {
+	if v, err := idnaASCII(addr); err == nil {
 		addr = v
 	}
 	port := url.Port()

@@ -4,19 +4,6 @@
 
 package gc
 
-//	case OADD:
-//		if(n->right->op == OLITERAL) {
-//			v = n->right->vconst;
-//			naddr(n->left, a, canemitcode);
-//		} else
-//		if(n->left->op == OLITERAL) {
-//			v = n->left->vconst;
-//			naddr(n->right, a, canemitcode);
-//		} else
-//			goto bad;
-//		a->offset += v;
-//		break;
-
 // a function named init is a special case.
 // it is called by the initialization before
 // main is run. to make it unique within a
@@ -88,11 +75,6 @@ func anyinit(n []*Node) bool {
 }
 
 func fninit(n []*Node) {
-	if Debug['A'] != 0 {
-		// sys.go or unsafe.go during compiler build
-		return
-	}
-
 	nf := initfix(n)
 	if !anyinit(nf) {
 		return

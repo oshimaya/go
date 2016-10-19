@@ -40,7 +40,7 @@ import (
 // Instruction layout.
 
 const (
-	FuncAlign = 8
+	funcAlign = 8
 )
 
 const (
@@ -569,7 +569,7 @@ func span9(ctxt *obj.Link, cursym *obj.LSym) {
 		cursym.Size = c
 	}
 
-	c += -c & (FuncAlign - 1)
+	c += -c & (funcAlign - 1)
 	cursym.Size = c
 
 	/*
@@ -1513,6 +1513,7 @@ func buildop(ctxt *obj.Link) {
 
 		case AMOVHBR:
 			opset(AMOVWBR, r0)
+			opset(AMOVDBR, r0)
 
 		case ASLBMFEE:
 			opset(ASLBMFEV, r0)
@@ -2137,12 +2138,35 @@ func asmout(ctxt *obj.Link, p *obj.Prog, o *Optab, out []uint32) {
 		16: /* bc bo,bi,sbra */
 		a := 0
 
+		r := int(p.Reg)
+
 		if p.From.Type == obj.TYPE_CONST {
 			a = int(regoff(ctxt, &p.From))
-		}
-		r := int(p.Reg)
-		if r == 0 {
-			r = 0
+		} else if p.From.Type == obj.TYPE_REG {
+			if r != 0 {
+				ctxt.Diag("unexpected register setting for branch with CR: %d\n", r)
+			}
+			// BI values for the CR
+			switch p.From.Reg {
+			case REG_CR0:
+				r = BI_CR0
+			case REG_CR1:
+				r = BI_CR1
+			case REG_CR2:
+				r = BI_CR2
+			case REG_CR3:
+				r = BI_CR3
+			case REG_CR4:
+				r = BI_CR4
+			case REG_CR5:
+				r = BI_CR5
+			case REG_CR6:
+				r = BI_CR6
+			case REG_CR7:
+				r = BI_CR7
+			default:
+				ctxt.Diag("unrecognized register: expecting CR\n")
+			}
 		}
 		v := int32(0)
 		if p.Pcond != nil {
@@ -3900,6 +3924,8 @@ func oploadx(ctxt *obj.Link, a obj.As) uint32 {
 		return OPVCC(31, 790, 0, 0) /* lhbrx */
 	case AMOVWBR:
 		return OPVCC(31, 534, 0, 0) /* lwbrx */
+	case AMOVDBR:
+		return OPVCC(31, 532, 0, 0) /* ldbrx */
 	case AMOVHZ:
 		return OPVCC(31, 279, 0, 0) /* lhzx */
 	case AMOVHZU:

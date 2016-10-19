@@ -12,6 +12,10 @@ import (
 	"unsafe"
 )
 
+// finblock is allocated from non-GC'd memory, so any heap pointers
+// must be specially handled.
+//
+//go:notinheap
 type finblock struct {
 	alllink *finblock
 	next    *finblock
@@ -31,11 +35,11 @@ var allfin *finblock // list of all blocks
 
 // NOTE: Layout known to queuefinalizer.
 type finalizer struct {
-	fn   *funcval       // function to call
-	arg  unsafe.Pointer // ptr to object
+	fn   *funcval       // function to call (may be a heap pointer)
+	arg  unsafe.Pointer // ptr to object (may be a heap pointer)
 	nret uintptr        // bytes of return values from fn
 	fint *_type         // type of first argument of fn
-	ot   *ptrtype       // type of ptr to object
+	ot   *ptrtype       // type of ptr to object (may be a heap pointer)
 }
 
 var finalizer1 = [...]byte{
@@ -70,7 +74,6 @@ func queuefinalizer(p unsafe.Pointer, fn *funcval, nret uintptr, fint *_type, ot
 	lock(&finlock)
 	if finq == nil || finq.cnt == int32(len(finq.fin)) {
 		if finc == nil {
-			// Note: write barrier here, assigning to finc, but should be okay.
 			finc = (*finblock)(persistentalloc(_FinBlockSize, 0, &memstats.gc_sys))
 			finc.alllink = allfin
 			allfin = finc
@@ -226,11 +229,12 @@ func runfinq() {
 //
 // SetFinalizer(obj, nil) clears any finalizer associated with obj.
 //
-// The argument obj must be a pointer to an object allocated by
-// calling new or by taking the address of a composite literal.
+// The argument obj must be a pointer to an object allocated by calling
+// new, by taking the address of a composite literal, or by taking the
+// address of a local variable.
 // The argument finalizer must be a function that takes a single argument
 // to which obj's type can be assigned, and can have arbitrary ignored return
-// values. If either of these is not true, SetFinalizer aborts the
+// values. If either of these is not true, SetFinalizer may abort the
 // program.
 //
 // Finalizers are run in dependency order: if A points at B, both have
