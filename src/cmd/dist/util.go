@@ -528,10 +528,9 @@ func xgetgoarm() string {
 		// or lator. For example src/sync/atomic/asm_arm.s
 		return "6"
 	}
-	if goos == "freebsd" || goos == "openbsd"  || goos == "netbsd"{
+	if goos == "freebsd" || goos == "openbsd" {
 		// FreeBSD has broken VFP support.
 		// OpenBSD currently only supports softfloat.
-		// NetBSD supports many arm machines with armv5 cpu.
 		return "5"
 	}
 
