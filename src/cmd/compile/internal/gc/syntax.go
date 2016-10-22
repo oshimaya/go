@@ -33,12 +33,11 @@ type Node struct {
 	Sym *Sym        // various
 	E   interface{} // Opt or Val, see methods below
 
-	// Various. Usually an offset into a struct. For example, ONAME nodes
-	// that refer to local variables use it to identify their stack frame
-	// position. ODOT, ODOTPTR, and OINDREG use it to indicate offset
-	// relative to their base address. ONAME nodes on the left side of an
-	// OKEY within an OSTRUCTLIT use it to store the named field's offset.
-	// OXCASE and OXFALL use it to validate the use of fallthrough.
+	// Various. Usually an offset into a struct. For example:
+	// - ONAME nodes that refer to local variables use it to identify their stack frame position.
+	// - ODOT, ODOTPTR, and OINDREG use it to indicate offset relative to their base address.
+	// - OSTRUCTKEY uses it to store the named field's offset.
+	// - OXCASE and OXFALL use it to validate the use of fallthrough.
 	// Possibly still more uses. If you find any, document them.
 	Xoffset int64
 
@@ -52,7 +51,7 @@ type Node struct {
 	Op        Op
 	Ullman    uint8 // sethi/ullman number
 	Addable   bool  // addressable
-	Etype     EType // op for OASOP, etype for OTYPE, exclam for export, 6g saved reg, ChanDir for OTCHAN
+	Etype     EType // op for OASOP, etype for OTYPE, exclam for export, 6g saved reg, ChanDir for OTCHAN, for OINDEXMAP 1=LHS,0=RHS
 	Bounded   bool  // bounds check unnecessary
 	NonNil    bool  // guaranteed to be non-nil
 	Class     Class // PPARAM, PAUTO, PEXTERN, etc
@@ -166,7 +165,7 @@ func (n *Node) SetOpt(x interface{}) {
 	n.E = x
 }
 
-// Name holds Node fields used only by named nodes (ONAME, OPACK, OLABEL, ODCLFIELD, some OLITERAL).
+// Name holds Node fields used only by named nodes (ONAME, OPACK, OLABEL, some OLITERAL).
 type Name struct {
 	Pack      *Node  // real package for import . names
 	Pkg       *Pkg   // pkg for OPACK nodes
@@ -174,7 +173,7 @@ type Name struct {
 	Inlvar    *Node  // ONAME substitute while inlining (could move to Param?)
 	Defn      *Node  // initializing assignment
 	Curfn     *Node  // function for local variables
-	Param     *Param // additional fields for ONAME, ODCLFIELD
+	Param     *Param // additional fields for ONAME
 	Decldepth int32  // declaration loop depth, increased for every loop or label
 	Vargen    int32  // unique name for ONAME within a function.  Function outputs are numbered starting at one.
 	Iota      int32  // value if this name is iota
@@ -267,6 +266,11 @@ type Param struct {
 	// and x.Innermost/Outer means x.Name.Param.Innermost/Outer.
 	Innermost *Node
 	Outer     *Node
+
+	// OTYPE pragmas
+	//
+	// TODO: Should Func pragmas also be stored on the Name?
+	Pragma Pragma
 }
 
 // Func holds Node fields used only with function-like nodes.
@@ -384,6 +388,7 @@ const (
 	OINDEX     // Left[Right] (index of array or slice)
 	OINDEXMAP  // Left[Right] (index of map)
 	OKEY       // Left:Right (key:value in struct/array/map literal, or slice index pair)
+	OSTRUCTKEY // Sym:Left (key:value in struct literal, after type checking)
 	OIDATA     // data word of an interface value in Left; TODO: move next to OITAB once it is easier to regenerate the binary blob in builtin.go (issues 15835, 15839)
 	OLEN       // len(Left)
 	OMAKE      // make(List) (before type checking converts to one of the following)
@@ -422,6 +427,9 @@ const (
 	OREAL      // real(Left)
 	OIMAG      // imag(Left)
 	OCOMPLEX   // complex(Left, Right)
+	OALIGNOF   // unsafe.Alignof(Left)
+	OOFFSETOF  // unsafe.Offsetof(Left)
+	OSIZEOF    // unsafe.Sizeof(Left)
 
 	// statements
 	OBLOCK    // { List } (block of code)

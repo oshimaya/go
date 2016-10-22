@@ -77,7 +77,7 @@ func newOpensslOutputSink() *opensslOutputSink {
 
 // opensslEndOfHandshake is a message that the “openssl s_server” tool will
 // print when a handshake completes if run with “-state”.
-const opensslEndOfHandshake = "SSL_accept:SSLv3 write finished A"
+const opensslEndOfHandshake = "SSL_accept:SSLv3/TLS write finished"
 
 func (o *opensslOutputSink) Write(data []byte) (n int, err error) {
 	o.line = append(o.line, data...)
@@ -276,6 +276,8 @@ func (test *clientTest) loadData() (flows [][]byte, err error) {
 }
 
 func (test *clientTest) run(t *testing.T, write bool) {
+	checkOpenSSLVersion(t)
+
 	var clientConn, serverConn net.Conn
 	var recordingConn *recordingConn
 	var childProcess *exec.Cmd
@@ -410,7 +412,7 @@ func (test *clientTest) run(t *testing.T, write bool) {
 		childProcess.Process.Kill()
 		childProcess.Wait()
 		if len(recordingConn.flows) < 3 {
-			childProcess.Stdout.(*bytes.Buffer).WriteTo(os.Stdout)
+			os.Stdout.Write(childProcess.Stdout.(*opensslOutputSink).all)
 			t.Fatalf("Client connection didn't work")
 		}
 		recordingConn.WriteTo(out)
@@ -535,6 +537,47 @@ func TestHandshakeClientECDHEECDSAAES128CBCSHA256(t *testing.T) {
 	runClientTestTLS12(t, test)
 }
 
+func TestHandshakeClientX25519(t *testing.T) {
+	config := testConfig.Clone()
+	config.CurvePreferences = []CurveID{X25519}
+
+	test := &clientTest{
+		name:    "X25519-ECDHE-RSA-AES-GCM",
+		command: []string{"openssl", "s_server", "-cipher", "ECDHE-RSA-AES128-GCM-SHA256"},
+		config:  config,
+	}
+
+	runClientTestTLS12(t, test)
+}
+
+func TestHandshakeClientECDHERSAChaCha20(t *testing.T) {
+	config := testConfig.Clone()
+	config.CipherSuites = []uint16{TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305}
+
+	test := &clientTest{
+		name:    "ECDHE-RSA-CHACHA20-POLY1305",
+		command: []string{"openssl", "s_server", "-cipher", "ECDHE-RSA-CHACHA20-POLY1305"},
+		config:  config,
+	}
+
+	runClientTestTLS12(t, test)
+}
+
+func TestHandshakeClientECDHEECDSAChaCha20(t *testing.T) {
+	config := testConfig.Clone()
+	config.CipherSuites = []uint16{TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305}
+
+	test := &clientTest{
+		name:    "ECDHE-ECDSA-CHACHA20-POLY1305",
+		command: []string{"openssl", "s_server", "-cipher", "ECDHE-ECDSA-CHACHA20-POLY1305"},
+		config:  config,
+		cert:    testECDSACertificate,
+		key:     testECDSAPrivateKey,
+	}
+
+	runClientTestTLS12(t, test)
+}
+
 func TestHandshakeClientCertRSA(t *testing.T) {
 	config := testConfig.Clone()
 	cert, _ := X509KeyPair([]byte(clientCertificatePEM), []byte(clientKeyPEM))
@@ -542,7 +585,7 @@ func TestHandshakeClientCertRSA(t *testing.T) {
 
 	test := &clientTest{
 		name:    "ClientCert-RSA-RSA",
-		command: []string{"openssl", "s_server", "-cipher", "RC4-SHA", "-verify", "1"},
+		command: []string{"openssl", "s_server", "-cipher", "AES128", "-verify", "1"},
 		config:  config,
 	}
 
@@ -578,7 +621,7 @@ func TestHandshakeClientCertECDSA(t *testing.T) {
 
 	test := &clientTest{
 		name:    "ClientCert-ECDSA-RSA",
-		command: []string{"openssl", "s_server", "-cipher", "RC4-SHA", "-verify", "1"},
+		command: []string{"openssl", "s_server", "-cipher", "AES128", "-verify", "1"},
 		config:  config,
 	}
 
@@ -728,45 +771,55 @@ func TestLRUClientSessionCache(t *testing.T) {
 	}
 }
 
-func TestHandshakeClientKeyLog(t *testing.T) {
-	config := testConfig.Clone()
-	buf := &bytes.Buffer{}
-	config.KeyLogWriter = buf
+func TestKeyLog(t *testing.T) {
+	var serverBuf, clientBuf bytes.Buffer
 
-	// config.Rand is zero reader, so client random is all-0
-	var zeroRandom = strings.Repeat("0", 64)
+	clientConfig := testConfig.Clone()
+	clientConfig.KeyLogWriter = &clientBuf
 
-	test := &clientTest{
-		name:    "KeyLogWriter",
-		command: []string{"openssl", "s_server"},
-		config:  config,
-		validate: func(state ConnectionState) error {
-			var format, clientRandom, masterSecret string
-			if _, err := fmt.Fscanf(buf, "%s %s %s\n", &format, &clientRandom, &masterSecret); err != nil {
-				return fmt.Errorf("failed to parse KeyLogWriter: " + err.Error())
-			}
-			if format != "CLIENT_RANDOM" {
-				return fmt.Errorf("got key log format %q, wanted CLIENT_RANDOM", format)
-			}
-			if clientRandom != zeroRandom {
-				return fmt.Errorf("got key log client random %q, wanted %q", clientRandom, zeroRandom)
-			}
+	serverConfig := testConfig.Clone()
+	serverConfig.KeyLogWriter = &serverBuf
 
-			// Master secret is random from server; check length only
-			if len(masterSecret) != 96 {
-				return fmt.Errorf("got wrong length master secret in key log %v, want 96", len(masterSecret))
-			}
+	c, s := net.Pipe()
+	done := make(chan bool)
 
-			// buf should contain no more lines
-			var trailingGarbage string
-			if _, err := fmt.Fscanln(buf, &trailingGarbage); err == nil {
-				return fmt.Errorf("expected exactly one key in log, got trailing garbage %q", trailingGarbage)
-			}
+	go func() {
+		defer close(done)
 
-			return nil
-		},
+		if err := Server(s, serverConfig).Handshake(); err != nil {
+			t.Errorf("server: %s", err)
+			return
+		}
+		s.Close()
+	}()
+
+	if err := Client(c, clientConfig).Handshake(); err != nil {
+		t.Fatalf("client: %s", err)
 	}
-	runClientTestTLS10(t, test)
+
+	c.Close()
+	<-done
+
+	checkKeylogLine := func(side, loggedLine string) {
+		if len(loggedLine) == 0 {
+			t.Fatalf("%s: no keylog line was produced", side)
+		}
+		const expectedLen = 13 /* "CLIENT_RANDOM" */ +
+			1 /* space */ +
+			32*2 /* hex client nonce */ +
+			1 /* space */ +
+			48*2 /* hex master secret */ +
+			1 /* new line */
+		if len(loggedLine) != expectedLen {
+			t.Fatalf("%s: keylog line has incorrect length (want %d, got %d): %q", side, expectedLen, len(loggedLine), loggedLine)
+		}
+		if !strings.HasPrefix(loggedLine, "CLIENT_RANDOM "+strings.Repeat("0", 64)+" ") {
+			t.Fatalf("%s: keylog line has incorrect structure or nonce: %q", side, loggedLine)
+		}
+	}
+
+	checkKeylogLine("client", string(clientBuf.Bytes()))
+	checkKeylogLine("server", string(serverBuf.Bytes()))
 }
 
 func TestHandshakeClientALPNMatch(t *testing.T) {
@@ -783,27 +836,6 @@ func TestHandshakeClientALPNMatch(t *testing.T) {
 			// The server's preferences should override the client.
 			if state.NegotiatedProtocol != "proto1" {
 				return fmt.Errorf("Got protocol %q, wanted proto1", state.NegotiatedProtocol)
-			}
-			return nil
-		},
-	}
-	runClientTestTLS12(t, test)
-}
-
-func TestHandshakeClientALPNNoMatch(t *testing.T) {
-	config := testConfig.Clone()
-	config.NextProtos = []string{"proto3"}
-
-	test := &clientTest{
-		name: "ALPN-NoMatch",
-		// Note that this needs OpenSSL 1.0.2 because that is the first
-		// version that supports the -alpn flag.
-		command: []string{"openssl", "s_server", "-alpn", "proto1,proto2"},
-		config:  config,
-		validate: func(state ConnectionState) error {
-			// There's no overlap so OpenSSL will not select a protocol.
-			if state.NegotiatedProtocol != "" {
-				return fmt.Errorf("Got protocol %q, wanted ''", state.NegotiatedProtocol)
 			}
 			return nil
 		},

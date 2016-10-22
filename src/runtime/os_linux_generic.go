@@ -5,6 +5,7 @@
 // +build !mips64
 // +build !mips64le
 // +build !s390x
+// +build !ppc64
 // +build linux
 
 package runtime
@@ -31,6 +32,8 @@ type rlimit struct {
 
 var sigset_all = sigset{^uint32(0), ^uint32(0)}
 
+//go:nosplit
+//go:nowritebarrierrec
 func sigaddset(mask *sigset, i int) {
 	(*mask)[(i-1)/32] |= 1 << ((uint32(i) - 1) & 31)
 }
@@ -41,12 +44,4 @@ func sigdelset(mask *sigset, i int) {
 
 func sigfillset(mask *uint64) {
 	*mask = ^uint64(0)
-}
-
-//go:nosplit
-//go:nowritebarrierrec
-func sigmaskToSigset(m sigmask) sigset {
-	var set sigset
-	copy(set[:], m[:])
-	return set
 }

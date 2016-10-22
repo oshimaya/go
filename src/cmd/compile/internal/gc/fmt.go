@@ -148,6 +148,7 @@ var goopnames = []string{
 	OADDR:     "&",
 	OADD:      "+",
 	OADDSTR:   "+",
+	OALIGNOF:  "unsafe.Alignof",
 	OANDAND:   "&&",
 	OANDNOT:   "&^",
 	OAND:      "&",
@@ -188,6 +189,7 @@ var goopnames = []string{
 	ONEW:      "new",
 	ONE:       "!=",
 	ONOT:      "!",
+	OOFFSETOF: "unsafe.Offsetof",
 	OOROR:     "||",
 	OOR:       "|",
 	OPANIC:    "panic",
@@ -202,6 +204,7 @@ var goopnames = []string{
 	ORSH:      ">>",
 	OSELECT:   "select",
 	OSEND:     "<-",
+	OSIZEOF:   "unsafe.Sizeof",
 	OSUB:      "-",
 	OSWITCH:   "switch",
 	OXOR:      "^",
@@ -286,7 +289,7 @@ func (n *Node) jconv(s fmt.State, flag FmtFlag) {
 	}
 
 	if c == 0 && n.Xoffset != BADWIDTH {
-		fmt.Fprintf(s, " x(%d%+d)", n.Xoffset, stkdelta[n])
+		fmt.Fprintf(s, " x(%d)", n.Xoffset)
 	}
 
 	if n.Class != 0 {
@@ -330,8 +333,8 @@ func (n *Node) jconv(s fmt.State, flag FmtFlag) {
 		fmt.Fprintf(s, " esc(%d)", n.Esc)
 	}
 
-	if e, ok := n.Opt().(*NodeEscState); ok && e.Escloopdepth != 0 {
-		fmt.Fprintf(s, " ld(%d)", e.Escloopdepth)
+	if e, ok := n.Opt().(*NodeEscState); ok && e.Loopdepth != 0 {
+		fmt.Fprintf(s, " ld(%d)", e.Loopdepth)
 	}
 
 	if c == 0 && n.Typecheck != 0 {
@@ -991,6 +994,7 @@ func (n *Node) stmtfmt(s fmt.State) {
 }
 
 var opprec = []int{
+	OALIGNOF:      8,
 	OAPPEND:       8,
 	OARRAYBYTESTR: 8,
 	OARRAYLIT:     8,
@@ -1016,12 +1020,14 @@ var opprec = []int{
 	ONAME:         8,
 	ONEW:          8,
 	ONONAME:       8,
+	OOFFSETOF:     8,
 	OPACK:         8,
 	OPANIC:        8,
 	OPAREN:        8,
 	OPRINTN:       8,
 	OPRINT:        8,
 	ORUNESTR:      8,
+	OSIZEOF:       8,
 	OSTRARRAYBYTE: 8,
 	OSTRARRAYRUNE: 8,
 	OSTRUCTLIT:    8,
@@ -1272,6 +1278,9 @@ func (n *Node) exprfmt(s fmt.State, prec int) {
 		}
 		fmt.Fprint(s, ":")
 
+	case OSTRUCTKEY:
+		fmt.Fprintf(s, "%v:%v", n.Sym, n.Left)
+
 	case OCALLPART:
 		n.Left.exprfmt(s, nprec)
 		if n.Right == nil || n.Right.Sym == nil {
@@ -1351,6 +1360,9 @@ func (n *Node) exprfmt(s fmt.State, prec int) {
 		ONEW,
 		OPANIC,
 		ORECOVER,
+		OALIGNOF,
+		OOFFSETOF,
+		OSIZEOF,
 		OPRINT,
 		OPRINTN:
 		if n.Left != nil {

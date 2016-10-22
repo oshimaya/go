@@ -64,16 +64,24 @@ func plan9quote(s string) string {
 type Pragma syntax.Pragma
 
 const (
-	Nointerface       Pragma = 1 << iota
-	Noescape                 // func parameters don't escape
-	Norace                   // func must not have race detector annotations
-	Nosplit                  // func should not execute on separate stack
-	Noinline                 // func should not be inlined
-	Systemstack              // func must run on system stack
-	Nowritebarrier           // emit compiler error instead of write barrier
-	Nowritebarrierrec        // error on write barrier in this or recursive callees
-	CgoUnsafeArgs            // treat a pointer to one arg as a pointer to them all
-	UintptrEscapes           // pointers converted to uintptr escape
+	// Func pragmas.
+	Nointerface    Pragma = 1 << iota
+	Noescape              // func parameters don't escape
+	Norace                // func must not have race detector annotations
+	Nosplit               // func should not execute on separate stack
+	Noinline              // func should not be inlined
+	CgoUnsafeArgs         // treat a pointer to one arg as a pointer to them all
+	UintptrEscapes        // pointers converted to uintptr escape
+
+	// Runtime-only func pragmas.
+	// See ../../../../runtime/README.md for detailed descriptions.
+	Systemstack        // func must run on system stack
+	Nowritebarrier     // emit compiler error instead of write barrier
+	Nowritebarrierrec  // error on write barrier in this or recursive callees
+	Yeswritebarrierrec // cancels Nowritebarrierrec in this function and callees
+
+	// Runtime-only type pragmas
+	NotInHeap // values of this type must not be heap allocated
 )
 
 func pragmaValue(verb string) Pragma {
@@ -105,6 +113,11 @@ func pragmaValue(verb string) Pragma {
 			yyerror("//go:nowritebarrierrec only allowed in runtime")
 		}
 		return Nowritebarrierrec | Nowritebarrier // implies Nowritebarrier
+	case "go:yeswritebarrierrec":
+		if !compiling_runtime {
+			yyerror("//go:yeswritebarrierrec only allowed in runtime")
+		}
+		return Yeswritebarrierrec
 	case "go:cgo_unsafe_args":
 		return CgoUnsafeArgs
 	case "go:uintptrescapes":
@@ -120,6 +133,8 @@ func pragmaValue(verb string) Pragma {
 		// in the argument list.
 		// Used in syscall/dll_windows.go.
 		return UintptrEscapes
+	case "go:notinheap":
+		return NotInHeap
 	}
 	return 0
 }

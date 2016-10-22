@@ -152,7 +152,6 @@ func Main() {
 
 	flag.BoolVar(&compiling_runtime, "+", false, "compiling runtime")
 	obj.Flagcount("%", "debug non-static initializers", &Debug['%'])
-	obj.Flagcount("A", "for bootstrapping, allow 'any' type", &Debug['A'])
 	obj.Flagcount("B", "disable bounds checking", &Debug['B'])
 	flag.StringVar(&localimport, "D", "", "set relative `path` for local imports")
 	obj.Flagcount("E", "debug symbol export", &Debug['E'])
@@ -208,6 +207,7 @@ func Main() {
 	flag.StringVar(&cpuprofile, "cpuprofile", "", "write cpu profile to `file`")
 	flag.StringVar(&memprofile, "memprofile", "", "write memory profile to `file`")
 	flag.Int64Var(&memprofilerate, "memprofilerate", 0, "set runtime.MemProfileRate to `rate`")
+	flag.StringVar(&traceprofile, "traceprofile", "", "write an execution trace to `file`")
 	flag.StringVar(&benchfile, "bench", "", "append benchmark times to `file`")
 	obj.Flagparse(usage)
 
@@ -246,12 +246,16 @@ func Main() {
 				continue
 			}
 			val := 1
+			valstring := ""
 			if i := strings.Index(name, "="); i >= 0 {
 				var err error
 				val, err = strconv.Atoi(name[i+1:])
 				if err != nil {
 					log.Fatalf("invalid debug value %v", name)
 				}
+				name = name[:i]
+			} else if i := strings.Index(name, ":"); i >= 0 {
+				valstring = name[i+1:]
 				name = name[:i]
 			}
 			for _, t := range debugtab {
@@ -273,7 +277,7 @@ func Main() {
 					flag = phase[i+1:]
 					phase = phase[:i]
 				}
-				err := ssa.PhaseOption(phase, flag, val)
+				err := ssa.PhaseOption(phase, flag, val, valstring)
 				if err != "" {
 					log.Fatalf(err)
 				}
@@ -672,21 +676,36 @@ func findpkg(name string) (file string, ok bool) {
 	return "", false
 }
 
-// loadsys loads the definitions for the low-level runtime and unsafe functions,
+// loadsys loads the definitions for the low-level runtime functions,
 // so that the compiler can generate calls to them,
-// but does not make the names "runtime" or "unsafe" visible as packages.
+// but does not make them visible to user code.
 func loadsys() {
-	if Debug['A'] != 0 {
-		return
-	}
-
 	block = 1
 	iota_ = -1000000
 
 	importpkg = Runtimepkg
-	Import(bufio.NewReader(strings.NewReader(runtimeimport)))
-	importpkg = unsafepkg
-	Import(bufio.NewReader(strings.NewReader(unsafeimport)))
+	typecheckok = true
+	defercheckwidth()
+
+	typs := runtimeTypes()
+	for _, d := range runtimeDecls {
+		sym := Pkglookup(d.name, importpkg)
+		typ := typs[d.typ]
+		switch d.tag {
+		case funcTag:
+			importsym(sym, ONAME)
+			n := newfuncname(sym)
+			n.Type = typ
+			declare(n, PFUNC)
+		case varTag:
+			importvar(sym, typ)
+		default:
+			Fatalf("unhandled declaration tag %v", d.tag)
+		}
+	}
+
+	typecheckok = false
+	resumecheckwidth()
 	importpkg = nil
 }
 

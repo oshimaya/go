@@ -36,11 +36,6 @@ const (
 // Signal forwarding is currently available only on Darwin and Linux.
 var fwdSig [_NSIG]uintptr
 
-// sigmask represents a general signal mask compatible with the GOOS
-// specific sigset types: the signal numbered x is represented by bit x-1
-// to match the representation expected by sigprocmask.
-type sigmask [(_NSIG + 31) / 32]uint32
-
 // channels for synchronizing signal mask updates with the signal mask
 // thread
 var (
@@ -76,7 +71,7 @@ func initsig(preinit bool) {
 		return
 	}
 
-	for i := int32(0); i < _NSIG; i++ {
+	for i := uint32(0); i < _NSIG; i++ {
 		t := &sigtable[i]
 		if t.flags == 0 || t.flags&_SigDefault != 0 {
 			continue
@@ -93,13 +88,13 @@ func initsig(preinit bool) {
 		}
 
 		t.flags |= _SigHandling
-		setsig(i, funcPC(sighandler), true)
+		setsig(i, funcPC(sighandler))
 	}
 }
 
 //go:nosplit
 //go:nowritebarrierrec
-func sigInstallGoHandler(sig int32) bool {
+func sigInstallGoHandler(sig uint32) bool {
 	// For some signals, we respect an inherited SIG_IGN handler
 	// rather than insist on installing our own default handler.
 	// Even these signals can be fetched using the os/signal package.
@@ -136,8 +131,8 @@ func sigenable(sig uint32) {
 		<-maskUpdatedChan
 		if t.flags&_SigHandling == 0 {
 			t.flags |= _SigHandling
-			fwdSig[sig] = getsig(int32(sig))
-			setsig(int32(sig), funcPC(sighandler), true)
+			fwdSig[sig] = getsig(sig)
+			setsig(sig, funcPC(sighandler))
 		}
 	}
 }
@@ -156,9 +151,9 @@ func sigdisable(sig uint32) {
 		// If initsig does not install a signal handler for a
 		// signal, then to go back to the state before Notify
 		// we should remove the one we installed.
-		if !sigInstallGoHandler(int32(sig)) {
+		if !sigInstallGoHandler(sig) {
 			t.flags &^= _SigHandling
-			setsig(int32(sig), fwdSig[sig], true)
+			setsig(sig, fwdSig[sig])
 		}
 	}
 }
@@ -171,7 +166,7 @@ func sigignore(sig uint32) {
 	t := &sigtable[sig]
 	if t.flags&_SigNotify != 0 {
 		t.flags &^= _SigHandling
-		setsig(int32(sig), _SIG_IGN, true)
+		setsig(sig, _SIG_IGN)
 	}
 }
 
@@ -207,15 +202,12 @@ func sigtrampgo(sig uint32, info *siginfo, ctx unsafe.Pointer) {
 	}
 	g := getg()
 	if g == nil {
+		c := &sigctxt{info, ctx}
 		if sig == _SIGPROF {
-			// Ignore profiling signals that arrive on
-			// non-Go threads. On some systems they will
-			// be handled directly by the signal handler,
-			// by calling sigprofNonGo, in which case we won't
-			// get here anyhow.
+			sigprofNonGoPC(c.sigpc())
 			return
 		}
-		badsignal(uintptr(sig), &sigctxt{info, ctx})
+		badsignal(uintptr(sig), c)
 		return
 	}
 
@@ -226,12 +218,16 @@ func sigtrampgo(sig uint32, info *siginfo, ctx unsafe.Pointer) {
 		sigaltstack(nil, &st)
 		if st.ss_flags&_SS_DISABLE != 0 {
 			setg(nil)
-			cgocallback(unsafe.Pointer(funcPC(noSignalStack)), noescape(unsafe.Pointer(&sig)), unsafe.Sizeof(sig), 0)
+			needm(0)
+			noSignalStack(sig)
+			dropm()
 		}
 		stsp := uintptr(unsafe.Pointer(st.ss_sp))
 		if sp < stsp || sp >= stsp+st.ss_size {
 			setg(nil)
-			cgocallback(unsafe.Pointer(funcPC(sigNotOnStack)), noescape(unsafe.Pointer(&sig)), unsafe.Sizeof(sig), 0)
+			needm(0)
+			sigNotOnStack(sig)
+			dropm()
 		}
 		setGsignalStack(&st)
 		g.m.gsignal.stktopsp = getcallersp(unsafe.Pointer(&sig))
@@ -300,9 +296,9 @@ func sigpanic() {
 // This is only called with fatal signals expected to kill the process.
 //go:nosplit
 //go:nowritebarrierrec
-func dieFromSignal(sig int32) {
-	setsig(sig, _SIG_DFL, false)
-	updatesigmask(sigmask{})
+func dieFromSignal(sig uint32) {
+	setsig(sig, _SIG_DFL)
+	unblocksig(sig)
 	raise(sig)
 
 	// That should have killed us. On some systems, though, raise
@@ -321,7 +317,7 @@ func dieFromSignal(sig int32) {
 // raisebadsignal is called when a signal is received on a non-Go
 // thread, and the Go program does not want to handle it (that is, the
 // program has not called os/signal.Notify for the signal).
-func raisebadsignal(sig int32, c *sigctxt) {
+func raisebadsignal(sig uint32, c *sigctxt) {
 	if sig == _SIGPROF {
 		// Ignore profiling signals that arrive on non-Go threads.
 		return
@@ -343,7 +339,7 @@ func raisebadsignal(sig int32, c *sigctxt) {
 	// it. That means that we don't have to worry about blocking it
 	// again.
 	unblocksig(sig)
-	setsig(sig, handler, false)
+	setsig(sig, handler)
 
 	// If we're linked into a non-Go program we want to try to
 	// avoid modifying the original context in which the signal
@@ -364,7 +360,7 @@ func raisebadsignal(sig int32, c *sigctxt) {
 	// We may receive another instance of the signal before we
 	// restore the Go handler, but that is not so bad: we know
 	// that the Go program has been ignoring the signal.
-	setsig(sig, funcPC(sighandler), true)
+	setsig(sig, funcPC(sighandler))
 }
 
 func crash() {
@@ -401,28 +397,25 @@ func ensureSigM() {
 		// initially all signals except the essential. When signal.Notify()/Stop is called,
 		// sigenable/sigdisable in turn notify this thread to update its signal
 		// mask accordingly.
-		var sigBlocked sigmask
-		for i := range sigBlocked {
-			sigBlocked[i] = ^uint32(0)
-		}
+		sigBlocked := sigset_all
 		for i := range sigtable {
 			if sigtable[i].flags&_SigUnblock != 0 {
-				sigBlocked[(i-1)/32] &^= 1 << ((uint32(i) - 1) & 31)
+				sigdelset(&sigBlocked, i)
 			}
 		}
-		updatesigmask(sigBlocked)
+		sigprocmask(_SIG_SETMASK, &sigBlocked, nil)
 		for {
 			select {
 			case sig := <-enableSigChan:
-				if b := sig - 1; sig > 0 {
-					sigBlocked[b/32] &^= (1 << (b & 31))
+				if sig > 0 {
+					sigdelset(&sigBlocked, int(sig))
 				}
 			case sig := <-disableSigChan:
-				if b := sig - 1; sig > 0 {
-					sigBlocked[b/32] |= (1 << (b & 31))
+				if sig > 0 {
+					sigaddset(&sigBlocked, int(sig))
 				}
 			}
-			updatesigmask(sigBlocked)
+			sigprocmask(_SIG_SETMASK, &sigBlocked, nil)
 			maskUpdatedChan <- struct{}{}
 		}
 	}()
@@ -430,7 +423,7 @@ func ensureSigM() {
 
 // This is called when we receive a signal when there is no signal stack.
 // This can only happen if non-Go code calls sigaltstack to disable the
-// signal stack. This is called via cgocallback to establish a stack.
+// signal stack.
 func noSignalStack(sig uint32) {
 	println("signal", sig, "received on thread with no signal stack")
 	throw("non-Go code disabled sigaltstack")
@@ -449,15 +442,13 @@ func sigNotOnStack(sig uint32) {
 //go:norace
 //go:nowritebarrierrec
 func badsignal(sig uintptr, c *sigctxt) {
-	cgocallback(unsafe.Pointer(funcPC(badsignalgo)), noescape(unsafe.Pointer(&sig)), unsafe.Sizeof(sig)+unsafe.Sizeof(c), 0)
-}
-
-func badsignalgo(sig uintptr, c *sigctxt) {
+	needm(0)
 	if !sigsend(uint32(sig)) {
 		// A foreign thread received the signal sig, and the
 		// Go code does not want to handle it.
-		raisebadsignal(int32(sig), c)
+		raisebadsignal(uint32(sig), c)
 	}
+	dropm()
 }
 
 //go:noescape
@@ -481,7 +472,7 @@ func sigfwdgo(sig uint32, info *siginfo, ctx unsafe.Pointer) bool {
 		// at program startup, but the Go runtime has not yet
 		// been initialized.
 		if fwdFn == _SIG_DFL {
-			dieFromSignal(int32(sig))
+			dieFromSignal(sig)
 		} else {
 			sigfwd(fwdFn, sig, info, ctx)
 		}
@@ -554,22 +545,15 @@ func sigblock() {
 	sigprocmask(_SIG_SETMASK, &sigset_all, nil)
 }
 
-// updatesigmask sets the current thread's signal mask to m.
+// unblocksig removes sig from the current thread's signal mask.
 // This is nosplit and nowritebarrierrec because it is called from
 // dieFromSignal, which can be called by sigfwdgo while running in the
 // signal handler, on the signal stack, with no g available.
 //go:nosplit
 //go:nowritebarrierrec
-func updatesigmask(m sigmask) {
-	set := sigmaskToSigset(m)
-	sigprocmask(_SIG_SETMASK, &set, nil)
-}
-
-// unblocksig removes sig from the current thread's signal mask.
-func unblocksig(sig int32) {
-	var m sigmask
-	m[(sig-1)/32] |= 1 << ((uint32(sig) - 1) & 31)
-	set := sigmaskToSigset(m)
+func unblocksig(sig uint32) {
+	var set sigset
+	sigaddset(&set, int(sig))
 	sigprocmask(_SIG_UNBLOCK, &set, nil)
 }
 
@@ -624,7 +608,8 @@ func minitSignalMask() {
 //go:nosplit
 func unminitSignals() {
 	if getg().m.newSigstack {
-		signalstack(nil)
+		st := stackt{ss_flags: _SS_DISABLE}
+		sigaltstack(&st, nil)
 	}
 }
 
@@ -645,17 +630,10 @@ func setGsignalStack(st *stackt) {
 }
 
 // signalstack sets the current thread's alternate signal stack to s.
-// If s is nil, the current thread's alternate signal stack is disabled.
 //go:nosplit
 func signalstack(s *stack) {
-	var st stackt
-	if s == nil {
-		st.ss_flags = _SS_DISABLE
-	} else {
-		setSignalstackSP(&st, s.lo)
-		st.ss_size = s.hi - s.lo
-		st.ss_flags = 0
-	}
+	st := stackt{ss_size: s.hi - s.lo}
+	setSignalstackSP(&st, s.lo)
 	sigaltstack(&st, nil)
 }
 

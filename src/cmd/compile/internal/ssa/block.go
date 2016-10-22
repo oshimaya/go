@@ -89,13 +89,16 @@ type Edge struct {
 func (e Edge) Block() *Block {
 	return e.b
 }
+func (e Edge) Index() int {
+	return e.i
+}
 
 //     kind           control    successors
 //   ------------------------------------------
 //     Exit        return mem                []
 //    Plain               nil            [next]
 //       If   a boolean Value      [then, else]
-//     Call               mem  [nopanic, panic]  (control opcode should be OpCall or OpStaticCall)
+//    Defer               mem  [nopanic, panic]  (control opcode should be OpDeferCall)
 type BlockKind int8
 
 // short form print

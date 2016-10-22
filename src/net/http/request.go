@@ -27,6 +27,8 @@ import (
 	"sync"
 
 	"golang_org/x/net/idna"
+	"golang_org/x/text/unicode/norm"
+	"golang_org/x/text/width"
 )
 
 const (
@@ -148,6 +150,14 @@ type Request struct {
 	// The Server will close the request body. The ServeHTTP
 	// Handler does not need to.
 	Body io.ReadCloser
+
+	// GetBody defines an optional func to return a new copy of
+	// Body. It used for client requests when a redirect requires
+	// reading the body more than once. Use of GetBody still
+	// requires setting Body.
+	//
+	// For server requests it is unused.
+	GetBody func() (io.ReadCloser, error)
 
 	// ContentLength records the length of the associated content.
 	// The value -1 indicates that the length is unknown.
@@ -327,6 +337,8 @@ var ErrNoCookie = errors.New("http: named cookie not present")
 
 // Cookie returns the named cookie provided in the request or
 // ErrNoCookie if not found.
+// If multiple cookies match the given name, only one cookie will
+// be returned.
 func (r *Request) Cookie(name string) (*Cookie, error) {
 	for _, c := range readCookies(r.Header, name) {
 		return c, nil
@@ -581,6 +593,19 @@ func (req *Request) write(w io.Writer, usingProxy bool, extraHeaders Header, wai
 	return nil
 }
 
+func idnaASCII(v string) (string, error) {
+	if isASCII(v) {
+		return v, nil
+	}
+	// The idna package doesn't do everything from
+	// https://tools.ietf.org/html/rfc5895 so we do it here.
+	// TODO(bradfitz): should the idna package do this instead?
+	v = strings.ToLower(v)
+	v = width.Fold.String(v)
+	v = norm.NFC.String(v)
+	return idna.ToASCII(v)
+}
+
 // cleanHost cleans up the host sent in request's Host header.
 //
 // It both strips anything after '/' or ' ', and puts the value
@@ -600,13 +625,13 @@ func cleanHost(in string) string {
 	}
 	host, port, err := net.SplitHostPort(in)
 	if err != nil { // input was just a host
-		a, err := idna.ToASCII(in)
+		a, err := idnaASCII(in)
 		if err != nil {
 			return in // garbage in, garbage out
 		}
 		return a
 	}
-	a, err := idna.ToASCII(host)
+	a, err := idnaASCII(host)
 	if err != nil {
 		return in // garbage in, garbage out
 	}
@@ -721,10 +746,35 @@ func NewRequest(method, urlStr string, body io.Reader) (*Request, error) {
 		switch v := body.(type) {
 		case *bytes.Buffer:
 			req.ContentLength = int64(v.Len())
+			buf := v.Bytes()
+			req.GetBody = func() (io.ReadCloser, error) {
+				r := bytes.NewReader(buf)
+				return ioutil.NopCloser(r), nil
+			}
 		case *bytes.Reader:
 			req.ContentLength = int64(v.Len())
+			snapshot := *v
+			req.GetBody = func() (io.ReadCloser, error) {
+				r := snapshot
+				return ioutil.NopCloser(&r), nil
+			}
 		case *strings.Reader:
 			req.ContentLength = int64(v.Len())
+			snapshot := *v
+			req.GetBody = func() (io.ReadCloser, error) {
+				r := snapshot
+				return ioutil.NopCloser(&r), nil
+			}
+		default:
+			req.ContentLength = -1 // unknown
+		}
+		// For client requests, Request.ContentLength of 0
+		// means either actually 0, or unknown. The only way
+		// to explicitly say that the ContentLength is zero is
+		// to set the Body to nil.
+		if req.ContentLength == 0 {
+			req.Body = nil
+			req.GetBody = nil
 		}
 	}
 
@@ -1197,4 +1247,16 @@ func (r *Request) isReplayable() bool {
 		}
 	}
 	return false
+}
+
+// outgoingLength reports the Content-Length of this outgoing (Client) request.
+// It maps 0 into -1 (unknown) when the Body is non-nil.
+func (r *Request) outgoingLength() int64 {
+	if r.Body == nil {
+		return 0
+	}
+	if r.ContentLength != 0 {
+		return r.ContentLength
+	}
+	return -1
 }

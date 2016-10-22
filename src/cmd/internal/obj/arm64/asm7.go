@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	FuncAlign = 16
+	funcAlign = 16
 )
 
 const (
@@ -466,6 +466,10 @@ var optab = []Optab{
 	{AFMOVD, C_FREG, C_NONE, C_FREG, 54, 4, 0, 0, 0},
 	{AFCVTZSD, C_FREG, C_NONE, C_REG, 29, 4, 0, 0, 0},
 	{ASCVTFD, C_REG, C_NONE, C_FREG, 29, 4, 0, 0, 0},
+	{AFMOVS, C_REG, C_NONE, C_FREG, 29, 4, 0, 0, 0},
+	{AFMOVS, C_FREG, C_NONE, C_REG, 29, 4, 0, 0, 0},
+	{AFMOVD, C_REG, C_NONE, C_FREG, 29, 4, 0, 0, 0},
+	{AFMOVD, C_FREG, C_NONE, C_REG, 29, 4, 0, 0, 0},
 	{AFCMPS, C_FREG, C_FREG, C_NONE, 56, 4, 0, 0, 0},
 	{AFCMPS, C_FCON, C_FREG, C_NONE, 56, 4, 0, 0, 0},
 	{AFCCMPS, C_COND, C_REG, C_VCON, 57, 4, 0, 0, 0},
@@ -629,7 +633,7 @@ func span7(ctxt *obj.Link, cursym *obj.LSym) {
 		}
 	}
 
-	c += -c & (FuncAlign - 1)
+	c += -c & (funcAlign - 1)
 	cursym.Size = c
 
 	/*
@@ -802,7 +806,7 @@ func addpool(ctxt *obj.Link, p *obj.Prog, a *obj.Addr) {
 		ctxt.Elitrl.Link = q
 	}
 	ctxt.Elitrl = q
-	pool.size = -pool.size & (FuncAlign - 1)
+	pool.size = -pool.size & (funcAlign - 1)
 	pool.size += uint32(sz)
 	p.Pcond = q
 }
@@ -2376,8 +2380,18 @@ func asmout(ctxt *obj.Link, p *obj.Prog, o *Optab, out []uint32) {
 		o2 |= uint32(p.To.Reg & 31)
 
 	case 29: /* op Rn, Rd */
-		o1 = oprrr(ctxt, p.As)
-
+		if (p.As == AFMOVD || p.As == AFMOVS) && (aclass(ctxt, &p.From) == C_REG || aclass(ctxt, &p.To) == C_REG) {
+			// FMOV Rx, Fy or FMOV Fy, Rx
+			o1 = FPCVTI(0, 0, 0, 0, 6)
+			if p.As == AFMOVD {
+				o1 |= 1<<31 | 1<<22 // 64-bit
+			}
+			if aclass(ctxt, &p.From) == C_REG {
+				o1 |= 1 << 16 // FMOV Rx, Fy
+			}
+		} else {
+			o1 = oprrr(ctxt, p.As)
+		}
 		o1 |= uint32(p.From.Reg&31)<<5 | uint32(p.To.Reg&31)
 
 	case 30: /* movT R,L(R) -> strT */
@@ -3852,8 +3866,7 @@ func opbra(ctxt *obj.Link, a obj.As) uint32 {
 	case AB:
 		return 0<<31 | 5<<26 /* imm26 */
 
-	case obj.ADUFFZERO,
-		ABL:
+	case obj.ADUFFZERO, obj.ADUFFCOPY, ABL:
 		return 1<<31 | 5<<26
 	}
 

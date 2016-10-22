@@ -406,6 +406,7 @@ func gcAssistAlloc(gp *g) {
 		return
 	}
 
+retry:
 	// Compute the amount of scan work we need to do to make the
 	// balance positive. When the required amount of work is low,
 	// we over-assist to build up credit for future allocations
@@ -417,7 +418,6 @@ func gcAssistAlloc(gp *g) {
 		debtBytes = int64(gcController.assistBytesPerWork * float64(scanWork))
 	}
 
-retry:
 	// Steal as much credit as we can from the background GC's
 	// scan credit. This is racy and may drop the background
 	// credit below 0 if two mutators steal at the same time. This
@@ -538,40 +538,9 @@ retry:
 		// there wasn't enough work to do anyway, so we might
 		// as well let background marking take care of the
 		// work that is available.
-		lock(&work.assistQueue.lock)
-
-		// If the GC cycle is over, just return. This is the
-		// likely path if we completed above. We do this
-		// under the lock to prevent a GC cycle from ending
-		// between this check and queuing the assist.
-		if atomic.Load(&gcBlackenEnabled) == 0 {
-			unlock(&work.assistQueue.lock)
-			return
-		}
-
-		oldHead, oldTail := work.assistQueue.head, work.assistQueue.tail
-		if oldHead == 0 {
-			work.assistQueue.head.set(gp)
-		} else {
-			oldTail.ptr().schedlink.set(gp)
-		}
-		work.assistQueue.tail.set(gp)
-		gp.schedlink.set(nil)
-		// Recheck for background credit now that this G is in
-		// the queue, but can still back out. This avoids a
-		// race in case background marking has flushed more
-		// credit since we checked above.
-		if atomic.Loadint64(&gcController.bgScanCredit) > 0 {
-			work.assistQueue.head = oldHead
-			work.assistQueue.tail = oldTail
-			if oldTail != 0 {
-				oldTail.ptr().schedlink.set(nil)
-			}
-			unlock(&work.assistQueue.lock)
+		if !gcParkAssist() {
 			goto retry
 		}
-		// Park for real.
-		goparkunlock(&work.assistQueue.lock, "GC assist wait", traceEvGoBlock, 2)
 
 		// At this point either background GC has satisfied
 		// this G's assist debt, or the GC cycle is over.
@@ -587,6 +556,50 @@ func gcWakeAllAssists() {
 	work.assistQueue.head.set(nil)
 	work.assistQueue.tail.set(nil)
 	unlock(&work.assistQueue.lock)
+}
+
+// gcParkAssist puts the current goroutine on the assist queue and parks.
+//
+// gcParkAssist returns whether the assist is now satisfied. If it
+// returns false, the caller must retry the assist.
+//
+//go:nowritebarrier
+func gcParkAssist() bool {
+	lock(&work.assistQueue.lock)
+	// If the GC cycle finished while we were getting the lock,
+	// exit the assist. The cycle can't finish while we hold the
+	// lock.
+	if atomic.Load(&gcBlackenEnabled) == 0 {
+		unlock(&work.assistQueue.lock)
+		return true
+	}
+
+	gp := getg()
+	oldHead, oldTail := work.assistQueue.head, work.assistQueue.tail
+	if oldHead == 0 {
+		work.assistQueue.head.set(gp)
+	} else {
+		oldTail.ptr().schedlink.set(gp)
+	}
+	work.assistQueue.tail.set(gp)
+	gp.schedlink.set(nil)
+
+	// Recheck for background credit now that this G is in
+	// the queue, but can still back out. This avoids a
+	// race in case background marking has flushed more
+	// credit since we checked above.
+	if atomic.Loadint64(&gcController.bgScanCredit) > 0 {
+		work.assistQueue.head = oldHead
+		work.assistQueue.tail = oldTail
+		if oldTail != 0 {
+			oldTail.ptr().schedlink.set(nil)
+		}
+		unlock(&work.assistQueue.lock)
+		return false
+	}
+	// Park.
+	goparkunlock(&work.assistQueue.lock, "GC assist wait", traceEvGoBlock, 2)
+	return true
 }
 
 // gcFlushBgCredit flushes scanWork units of background scan work
@@ -1320,9 +1333,22 @@ func gcDumpObject(label string, obj, off uintptr) {
 		print(" s=nil\n")
 		return
 	}
-	print(" s.base()=", hex(s.base()), " s.limit=", hex(s.limit), " s.sizeclass=", s.sizeclass, " s.elemsize=", s.elemsize, "\n")
+	print(" s.base()=", hex(s.base()), " s.limit=", hex(s.limit), " s.sizeclass=", s.sizeclass, " s.elemsize=", s.elemsize, " s.state=")
+	if 0 <= s.state && int(s.state) < len(mSpanStateNames) {
+		print(mSpanStateNames[s.state], "\n")
+	} else {
+		print("unknown(", s.state, ")\n")
+	}
+
 	skipped := false
-	for i := uintptr(0); i < s.elemsize; i += sys.PtrSize {
+	size := s.elemsize
+	if s.state == _MSpanStack && size == 0 {
+		// We're printing something from a stack frame. We
+		// don't know how big it is, so just show up to an
+		// including off.
+		size = off + sys.PtrSize
+	}
+	for i := uintptr(0); i < size; i += sys.PtrSize {
 		// For big objects, just print the beginning (because
 		// that usually hints at the object's type) and the
 		// fields around off.
@@ -1360,6 +1386,11 @@ func gcmarknewobject(obj, size, scanSize uintptr) {
 	gcw := &getg().m.p.ptr().gcw
 	gcw.bytesMarked += uint64(size)
 	gcw.scanWork += int64(scanSize)
+	if gcBlackenPromptly {
+		// There shouldn't be anything in the work queue, but
+		// we still need to flush stats.
+		gcw.dispose()
+	}
 }
 
 // Checkmarking

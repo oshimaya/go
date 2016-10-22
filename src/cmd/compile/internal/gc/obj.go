@@ -271,6 +271,15 @@ func duintptr(s *Sym, off int, v uint64) int {
 	return duintxx(s, off, v, Widthptr)
 }
 
+func dbvec(s *Sym, off int, bv bvec) int {
+	// Runtime reads the bitmaps as byte arrays. Oblige.
+	for j := 0; int32(j) < bv.n; j += 8 {
+		word := bv.b[j/32]
+		off = duint8(s, off, uint8(word>>(uint(j)%32)))
+	}
+	return off
+}
+
 // stringConstantSyms holds the pair of symbols we create for a
 // constant string.
 type stringConstantSyms struct {

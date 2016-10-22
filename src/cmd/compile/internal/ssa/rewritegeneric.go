@@ -6380,6 +6380,64 @@ func rewriteValuegeneric_OpNilCheck(v *Value, config *Config) bool {
 		v.AddArg(mem)
 		return true
 	}
+	// match: (NilCheck (Load (OffPtr [c] (SP)) mem) mem)
+	// cond: mem.Op == OpStaticCall 	&& isSameSym(mem.Aux, "runtime.newobject") 	&& c == config.ctxt.FixedFrameSize() + config.RegSize 	&& warnRule(config.Debug_checknil() && int(v.Line) > 1, v, "removed nil check")
+	// result: (Invalid)
+	for {
+		v_0 := v.Args[0]
+		if v_0.Op != OpLoad {
+			break
+		}
+		v_0_0 := v_0.Args[0]
+		if v_0_0.Op != OpOffPtr {
+			break
+		}
+		c := v_0_0.AuxInt
+		v_0_0_0 := v_0_0.Args[0]
+		if v_0_0_0.Op != OpSP {
+			break
+		}
+		mem := v_0.Args[1]
+		if mem != v.Args[1] {
+			break
+		}
+		if !(mem.Op == OpStaticCall && isSameSym(mem.Aux, "runtime.newobject") && c == config.ctxt.FixedFrameSize()+config.RegSize && warnRule(config.Debug_checknil() && int(v.Line) > 1, v, "removed nil check")) {
+			break
+		}
+		v.reset(OpInvalid)
+		return true
+	}
+	// match: (NilCheck (OffPtr (Load (OffPtr [c] (SP)) mem)) mem)
+	// cond: mem.Op == OpStaticCall 	&& isSameSym(mem.Aux, "runtime.newobject") 	&& c == config.ctxt.FixedFrameSize() + config.RegSize 	&& warnRule(config.Debug_checknil() && int(v.Line) > 1, v, "removed nil check")
+	// result: (Invalid)
+	for {
+		v_0 := v.Args[0]
+		if v_0.Op != OpOffPtr {
+			break
+		}
+		v_0_0 := v_0.Args[0]
+		if v_0_0.Op != OpLoad {
+			break
+		}
+		v_0_0_0 := v_0_0.Args[0]
+		if v_0_0_0.Op != OpOffPtr {
+			break
+		}
+		c := v_0_0_0.AuxInt
+		v_0_0_0_0 := v_0_0_0.Args[0]
+		if v_0_0_0_0.Op != OpSP {
+			break
+		}
+		mem := v_0_0.Args[1]
+		if mem != v.Args[1] {
+			break
+		}
+		if !(mem.Op == OpStaticCall && isSameSym(mem.Aux, "runtime.newobject") && c == config.ctxt.FixedFrameSize()+config.RegSize && warnRule(config.Debug_checknil() && int(v.Line) > 1, v, "removed nil check")) {
+			break
+		}
+		v.reset(OpInvalid)
+		return true
+	}
 	return false
 }
 func rewriteValuegeneric_OpNot(v *Value, config *Config) bool {
@@ -9598,6 +9656,25 @@ func rewriteValuegeneric_OpSliceCap(v *Value, config *Config) bool {
 		v.AuxInt = c
 		return true
 	}
+	// match: (SliceCap (SliceMake _ _ (Const32 <t> [c])))
+	// cond:
+	// result: (Const32 <t> [c])
+	for {
+		v_0 := v.Args[0]
+		if v_0.Op != OpSliceMake {
+			break
+		}
+		v_0_2 := v_0.Args[2]
+		if v_0_2.Op != OpConst32 {
+			break
+		}
+		t := v_0_2.Type
+		c := v_0_2.AuxInt
+		v.reset(OpConst32)
+		v.Type = t
+		v.AuxInt = c
+		return true
+	}
 	// match: (SliceCap (SliceMake _ _ (SliceCap x)))
 	// cond:
 	// result: (SliceCap x)
@@ -9652,6 +9729,25 @@ func rewriteValuegeneric_OpSliceLen(v *Value, config *Config) bool {
 		t := v_0_1.Type
 		c := v_0_1.AuxInt
 		v.reset(OpConst64)
+		v.Type = t
+		v.AuxInt = c
+		return true
+	}
+	// match: (SliceLen (SliceMake _ (Const32 <t> [c]) _))
+	// cond:
+	// result: (Const32 <t> [c])
+	for {
+		v_0 := v.Args[0]
+		if v_0.Op != OpSliceMake {
+			break
+		}
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpConst32 {
+			break
+		}
+		t := v_0_1.Type
+		c := v_0_1.AuxInt
+		v.reset(OpConst32)
 		v.Type = t
 		v.AuxInt = c
 		return true

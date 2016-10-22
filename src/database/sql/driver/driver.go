@@ -8,7 +8,11 @@
 // Most code should use package sql.
 package driver
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"reflect"
+)
 
 // Value is a value that drivers must be able to handle.
 // It is either nil or an instance of one of these types:
@@ -20,6 +24,16 @@ import "errors"
 //   string
 //   time.Time
 type Value interface{}
+
+// NamedValue holds both the value name and value.
+// The Ordinal is the position of the parameter starting from one and is always set.
+// If the Name is not empty it should be used for the parameter identifier and
+// not the ordinal position.
+type NamedValue struct {
+	Name    string
+	Ordinal int
+	Value   Value
+}
 
 // Driver is the interface that must be implemented by a database
 // driver.
@@ -65,6 +79,12 @@ type Execer interface {
 	Exec(query string, args []Value) (Result, error)
 }
 
+// ExecerContext is like execer, but must honor the context timeout and return
+// when the context is cancelled.
+type ExecerContext interface {
+	ExecContext(ctx context.Context, query string, args []NamedValue) (Result, error)
+}
+
 // Queryer is an optional interface that may be implemented by a Conn.
 //
 // If a Conn does not implement Queryer, the sql package's DB.Query will
@@ -74,6 +94,12 @@ type Execer interface {
 // Query may return ErrSkip.
 type Queryer interface {
 	Query(query string, args []Value) (Rows, error)
+}
+
+// QueryerContext is like Queryer, but most honor the context timeout and return
+// when the context is cancelled.
+type QueryerContext interface {
+	QueryContext(ctx context.Context, query string, args []NamedValue) (Rows, error)
 }
 
 // Conn is a connection to a database. It is not used concurrently
@@ -96,6 +122,23 @@ type Conn interface {
 
 	// Begin starts and returns a new transaction.
 	Begin() (Tx, error)
+}
+
+// ConnPrepareContext enhances the Conn interface with context.
+type ConnPrepareContext interface {
+	// PrepareContext returns a prepared statement, bound to this connection.
+	// context is for the preparation of the statement,
+	// it must not store the context within the statement itself.
+	PrepareContext(ctx context.Context, query string) (Stmt, error)
+}
+
+// ConnBeginContext enhances the Conn interface with context.
+type ConnBeginContext interface {
+	// BeginContext starts and returns a new transaction.
+	// the provided context should be used to roll the transaction back
+	// if it is cancelled. If there is an isolation level in context
+	// that is not supported by the driver an error must be returned.
+	BeginContext(ctx context.Context) (Tx, error)
 }
 
 // Result is the result of a query execution.
@@ -139,6 +182,18 @@ type Stmt interface {
 	Query(args []Value) (Rows, error)
 }
 
+// StmtExecContext enhances the Stmt interface by providing Exec with context.
+type StmtExecContext interface {
+	// ExecContext must honor the context timeout and return when it is cancelled.
+	ExecContext(ctx context.Context, args []NamedValue) (Result, error)
+}
+
+// StmtQueryContext enhances the Stmt interface by providing Query with context.
+type StmtQueryContext interface {
+	// QueryContext must honor the context timeout and return when it is cancelled.
+	QueryContext(ctx context.Context, args []NamedValue) (Rows, error)
+}
+
 // ColumnConverter may be optionally implemented by Stmt if the
 // statement is aware of its own columns' types and can convert from
 // any type to a driver Value.
@@ -167,6 +222,76 @@ type Rows interface {
 	//
 	// Next should return io.EOF when there are no more rows.
 	Next(dest []Value) error
+}
+
+// RowsNextResultSet extends the Rows interface by providing a way to signal
+// the driver to advance to the next result set.
+type RowsNextResultSet interface {
+	Rows
+
+	// HasNextResultSet is called at the end of the current result set and
+	// reports whether there is another result set after the current one.
+	HasNextResultSet() bool
+
+	// NextResultSet advances the driver to the next result set even
+	// if there are remaining rows in the current result set.
+	//
+	// NextResultSet should return io.EOF when there are no more result sets.
+	NextResultSet() error
+}
+
+// RowsColumnTypeScanType may be implemented by Rows. It should return
+// the value type that can be used to scan types into. For example, the database
+// column type "bigint" this should return "reflect.TypeOf(int64(0))".
+type RowsColumnTypeScanType interface {
+	Rows
+	ColumnTypeScanType(index int) reflect.Type
+}
+
+// RowsColumnTypeDatabaseTypeName may be implemented by Rows. It should return the
+// database system type name without the length. Type names should be uppercase.
+// Examples of returned types: "VARCHAR", "NVARCHAR", "VARCHAR2", "CHAR", "TEXT",
+// "DECIMAL", "SMALLINT", "INT", "BIGINT", "BOOL", "[]BIGINT", "JSONB", "XML",
+// "TIMESTAMP".
+type RowsColumnTypeDatabaseTypeName interface {
+	Rows
+	ColumnTypeDatabaseTypeName(index int) string
+}
+
+// RowsColumnTypeLength may be implemented by Rows. It should return the length
+// of the column type if the column is a variable length type. If the column is
+// not a variable length type ok should return false.
+// If length is not limited other than system limits, it should return math.MaxInt64.
+// The following are examples of returned values for various types:
+//   TEXT          (math.MaxInt64, true)
+//   varchar(10)   (10, true)
+//   nvarchar(10)  (10, true)
+//   decimal       (0, false)
+//   int           (0, false)
+//   bytea(30)     (30, true)
+type RowsColumnTypeLength interface {
+	Rows
+	ColumnTypeLength(index int) (length int64, ok bool)
+}
+
+// RowsColumnTypeNullable may be implemented by Rows. The nullable value should
+// be true if it is known the column may be null, or false if the column is known
+// to be not nullable.
+// If the column nullability is unknown, ok should be false.
+type RowsColumnTypeNullable interface {
+	Rows
+	ColumnTypeNullable(index int) (nullable, ok bool)
+}
+
+// RowsColumnTypePrecisionScale may be implemented by Rows. It should return
+// the precision and scale for decimal types. If not applicable, ok should be false.
+// The following are examples of returned values for various types:
+//   decimal(38, 4)    (38, 4, true)
+//   int               (0, 0, false)
+//   decimal           (math.MaxInt64, math.MaxInt64, true)
+type RowsColumnTypePrecisionScale interface {
+	Rows
+	ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool)
 }
 
 // Tx is a transaction.

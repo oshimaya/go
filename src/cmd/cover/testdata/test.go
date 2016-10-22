@@ -25,6 +25,7 @@ func testAll() {
 	testPanic()
 	testEmptySwitches()
 	testFunctionLiteral()
+	testGoto()
 }
 
 // The indexes of the counters in testPanic are known to main.go
@@ -245,4 +246,34 @@ func testFunctionLiteral() {
 		check(LINE, 2)
 	}) {
 	}
+}
+
+func testGoto() {
+	for i := 0; i < 2; i++ {
+		if i == 0 {
+			goto Label
+		}
+		check(LINE, 1)
+	Label:
+		check(LINE, 2)
+	}
+	// Now test that we don't inject empty statements
+	// between a label and a loop.
+loop:
+	for {
+		check(LINE, 1)
+		break loop
+	}
+}
+
+// This comment shouldn't appear in generated go code.
+func haha() {
+	// Needed for cover to add counter increment here.
+	_ = 42
+}
+
+// Some someFunction.
+//
+//go:nosplit
+func someFunction() {
 }

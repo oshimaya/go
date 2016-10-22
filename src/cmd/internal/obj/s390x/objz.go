@@ -380,7 +380,7 @@ func preprocess(ctxt *obj.Link, cursym *obj.LSym) {
 		case obj.ATEXT:
 			autosize = int32(textstksiz)
 
-			if p.Mark&LEAF != 0 && autosize == 0 && p.From3.Offset&obj.NOFRAME == 0 {
+			if p.Mark&LEAF != 0 && autosize == 0 {
 				// A leaf function with no locals has no frame.
 				p.From3.Offset |= obj.NOFRAME
 			}
@@ -391,11 +391,17 @@ func preprocess(ctxt *obj.Link, cursym *obj.LSym) {
 				autosize += int32(ctxt.FixedFrameSize())
 			}
 
+			if p.Mark&LEAF != 0 && autosize < obj.StackSmall {
+				// A leaf function with a small stack can be marked
+				// NOSPLIT, avoiding a stack check.
+				p.From3.Offset |= obj.NOSPLIT
+			}
+
 			p.To.Offset = int64(autosize)
 
 			q = p
 
-			if p.From3.Offset&obj.NOSPLIT == 0 && p.From3.Offset&obj.NOFRAME == 0 {
+			if p.From3.Offset&obj.NOSPLIT == 0 {
 				p, pPreempt = stacksplitPre(ctxt, p, autosize) // emit pre part of split check
 				pPre = p
 				wasSplit = true //need post part of split
@@ -599,7 +605,7 @@ func preprocess(ctxt *obj.Link, cursym *obj.LSym) {
 		}
 	}
 	if wasSplit {
-		pLast = stacksplitPost(ctxt, pLast, pPre, pPreempt) // emit post part of split check
+		pLast = stacksplitPost(ctxt, pLast, pPre, pPreempt, autosize) // emit post part of split check
 	}
 }
 
@@ -775,10 +781,25 @@ func stacksplitPre(ctxt *obj.Link, p *obj.Prog, framesize int32) (*obj.Prog, *ob
 	return p, q
 }
 
-func stacksplitPost(ctxt *obj.Link, p *obj.Prog, pPre *obj.Prog, pPreempt *obj.Prog) *obj.Prog {
+func stacksplitPost(ctxt *obj.Link, p *obj.Prog, pPre *obj.Prog, pPreempt *obj.Prog, framesize int32) *obj.Prog {
+	// Now we are at the end of the function, but logically
+	// we are still in function prologue. We need to fix the
+	// SP data and PCDATA.
+	spfix := obj.Appendp(ctxt, p)
+	spfix.As = obj.ANOP
+	spfix.Spadj = -framesize
+
+	pcdata := obj.Appendp(ctxt, spfix)
+	pcdata.Lineno = ctxt.Cursym.Text.Lineno
+	pcdata.Mode = ctxt.Cursym.Text.Mode
+	pcdata.As = obj.APCDATA
+	pcdata.From.Type = obj.TYPE_CONST
+	pcdata.From.Offset = obj.PCDATA_StackMapIndex
+	pcdata.To.Type = obj.TYPE_CONST
+	pcdata.To.Offset = -1 // pcdata starts at -1 at function entry
 
 	// MOVD	LR, R5
-	p = obj.Appendp(ctxt, p)
+	p = obj.Appendp(ctxt, pcdata)
 	pPre.Pcond = p
 	p.As = AMOVD
 	p.From.Type = obj.TYPE_REG

@@ -80,6 +80,7 @@ func buildssa(fn *Node) *ssa.Func {
 	// Allocate starting values
 	s.labels = map[string]*ssaLabel{}
 	s.labeledNodes = map[*Node]*ssaLabel{}
+	s.fwdVars = map[*Node]*ssa.Value{}
 	s.startmem = s.entryNewValue0(ssa.OpInitMem, ssa.TypeMem)
 	s.sp = s.entryNewValue0(ssa.OpSP, Types[TUINTPTR]) // TODO: use generic pointer type (unsafe.Pointer?) instead
 	s.sb = s.entryNewValue0(ssa.OpSB, Types[TUINTPTR])
@@ -114,9 +115,24 @@ func buildssa(fn *Node) *ssa.Func {
 		}
 	}
 
+	// Populate arguments.
+	for _, n := range fn.Func.Dcl {
+		if n.Class != PPARAM {
+			continue
+		}
+		var v *ssa.Value
+		if s.canSSA(n) {
+			v = s.newValue0A(ssa.OpArg, n.Type, n)
+		} else {
+			// Not SSAable. Load it.
+			v = s.newValue2(ssa.OpLoad, n.Type, s.decladdrs[n], s.startmem)
+		}
+		s.vars[n] = v
+	}
+
 	// Convert the AST-based IR to the SSA-based IR
-	s.stmts(fn.Func.Enter)
-	s.stmts(fn.Nbody)
+	s.stmtList(fn.Func.Enter)
+	s.stmtList(fn.Nbody)
 
 	// fallthrough to exit
 	if s.curBlock != nil {
@@ -151,16 +167,7 @@ func buildssa(fn *Node) *ssa.Func {
 		return nil
 	}
 
-	prelinkNumvars := s.f.NumValues()
-	sparseDefState := s.locatePotentialPhiFunctions(fn)
-
-	// Link up variable uses to variable definitions
-	s.linkForwardReferences(sparseDefState)
-
-	if ssa.BuildStats > 0 {
-		s.f.LogStat("build", s.f.NumBlocks(), "blocks", prelinkNumvars, "vars_before",
-			s.f.NumValues(), "vars_after", prelinkNumvars*s.f.NumBlocks(), "ssa_phi_loc_cutoff_score")
-	}
+	s.insertPhis()
 
 	// Don't carry reference this around longer than necessary
 	s.exitCode = Nodes{}
@@ -197,7 +204,13 @@ type state struct {
 
 	// variable assignments in the current block (map from variable symbol to ssa value)
 	// *Node is the unique identifier (an ONAME Node) for the variable.
+	// TODO: keep a single varnum map, then make all of these maps slices instead?
 	vars map[*Node]*ssa.Value
+
+	// fwdVars are variables that are used before they are defined in the current block.
+	// This map exists just to coalesce multiple references into a single FwdRef op.
+	// *Node is the unique identifier (an ONAME Node) for the variable.
+	fwdVars map[*Node]*ssa.Value
 
 	// all defined variables at the end of each block. Indexed by block ID.
 	defvars []map[*Node]*ssa.Value
@@ -220,11 +233,11 @@ type state struct {
 	// Used to deduplicate panic calls.
 	panics map[funcLine]*ssa.Block
 
-	// list of FwdRef values.
-	fwdRefs []*ssa.Value
-
 	// list of PPARAMOUT (return) variables.
 	returns []*Node
+
+	// A dummy value used during phi construction.
+	placeholder *ssa.Value
 
 	cgoUnsafeArgs bool
 	noWB          bool
@@ -292,6 +305,9 @@ func (s *state) startBlock(b *ssa.Block) {
 	}
 	s.curBlock = b
 	s.vars = map[*Node]*ssa.Value{}
+	for n := range s.fwdVars {
+		delete(s.fwdVars, n)
+	}
 }
 
 // endBlock marks the end of generating code for the current block.
@@ -465,20 +481,14 @@ func (s *state) constInt(t ssa.Type, c int64) *ssa.Value {
 	return s.constInt32(t, int32(c))
 }
 
-func (s *state) stmts(a Nodes) {
-	for _, x := range a.Slice() {
-		s.stmt(x)
-	}
-}
-
-// ssaStmtList converts the statement n to SSA and adds it to s.
+// stmtList converts the statement list n to SSA and adds it to s.
 func (s *state) stmtList(l Nodes) {
 	for _, n := range l.Slice() {
 		s.stmt(n)
 	}
 }
 
-// ssaStmt converts the statement n to SSA and adds it to s.
+// stmt converts the statement n to SSA and adds it to s.
 func (s *state) stmt(n *Node) {
 	s.pushLine(n.Lineno)
 	defer s.popLine()
@@ -533,6 +543,22 @@ func (s *state) stmt(n *Node) {
 		res, resok := s.dottype(n.Rlist.First(), true)
 		s.assign(n.List.First(), res, needwritebarrier(n.List.First(), n.Rlist.First()), false, n.Lineno, 0, false)
 		s.assign(n.List.Second(), resok, false, false, n.Lineno, 0, false)
+		return
+
+	case OAS2FUNC:
+		// We come here only when it is an intrinsic call returning two values.
+		if !isIntrinsicCall(n.Rlist.First()) {
+			s.Fatalf("non-intrinsic AS2FUNC not expanded %v", n.Rlist.First())
+		}
+		v := s.intrinsicCall(n.Rlist.First())
+		v1 := s.newValue1(ssa.OpSelect0, n.List.First().Type, v)
+		v2 := s.newValue1(ssa.OpSelect1, n.List.Second().Type, v)
+		// Make a fake node to mimic loading return value, ONLY for write barrier test.
+		// This is future-proofing against non-scalar 2-result intrinsics.
+		// Currently we only have scalar ones, which result in no write barrier.
+		fakeret := &Node{Op: OINDREG, Reg: int16(Thearch.REGSP)}
+		s.assign(n.List.First(), v1, needwritebarrier(n.List.First(), fakeret), false, n.Lineno, 0, false)
+		s.assign(n.List.Second(), v2, needwritebarrier(n.List.Second(), fakeret), false, n.Lineno, 0, false)
 		return
 
 	case ODCL:
@@ -644,9 +670,18 @@ func (s *state) stmt(n *Node) {
 				// If the slice can be SSA'd, it'll be on the stack,
 				// so there will be no write barriers,
 				// so there's no need to attempt to prevent them.
-				if samesafeexpr(n.Left, rhs.List.First()) && !s.canSSA(n.Left) {
-					s.append(rhs, true)
-					return
+				if samesafeexpr(n.Left, rhs.List.First()) {
+					if !s.canSSA(n.Left) {
+						if Debug_append > 0 {
+							Warnl(n.Lineno, "append: len-only update")
+						}
+						s.append(rhs, true)
+						return
+					} else {
+						if Debug_append > 0 { // replicating old diagnostic message
+							Warnl(n.Lineno, "append: len-only update (in local slice)")
+						}
+					}
 				}
 			}
 		}
@@ -667,7 +702,7 @@ func (s *state) stmt(n *Node) {
 				r = s.expr(rhs)
 			}
 		}
-		if rhs != nil && rhs.Op == OAPPEND {
+		if rhs != nil && rhs.Op == OAPPEND && needwritebarrier(n.Left, rhs) {
 			// The frontend gets rid of the write barrier to enable the special OAPPEND
 			// handling above, but since this is not a special case, we need it.
 			// TODO: just add a ptr graying to the end of growslice?
@@ -721,7 +756,7 @@ func (s *state) stmt(n *Node) {
 		}
 
 		s.startBlock(bThen)
-		s.stmts(n.Nbody)
+		s.stmtList(n.Nbody)
 		if b := s.endBlock(); b != nil {
 			b.AddEdgeTo(bEnd)
 		}
@@ -831,7 +866,7 @@ func (s *state) stmt(n *Node) {
 
 		// generate body
 		s.startBlock(bBody)
-		s.stmts(n.Nbody)
+		s.stmtList(n.Nbody)
 
 		// tear down continue/break
 		s.continueTo = prevContinue
@@ -870,7 +905,7 @@ func (s *state) stmt(n *Node) {
 		}
 
 		// generate body code
-		s.stmts(n.Nbody)
+		s.stmtList(n.Nbody)
 
 		s.breakTo = prevBreak
 		if lab != nil {
@@ -924,7 +959,7 @@ func (s *state) exit() *ssa.Block {
 
 	// Run exit code. Typically, this code copies heap-allocated PPARAMOUT
 	// variables back to the stack.
-	s.stmts(s.exitCode)
+	s.stmtList(s.exitCode)
 
 	// Store SSAable PPARAMOUT variables back to stack locations.
 	for _, n := range s.returns {
@@ -1915,6 +1950,12 @@ func (s *state) expr(n *Node) *ssa.Value {
 	case OINDEX:
 		switch {
 		case n.Left.Type.IsString():
+			if n.Bounded && Isconst(n.Left, CTSTR) && Isconst(n.Right, CTINT) {
+				// Replace "abc"[1] with 'b'.
+				// Delayed until now because "abc"[1] is not an ideal constant.
+				// See test/fixedbugs/issue11370.go.
+				return s.newValue0I(ssa.OpConst8, Types[TUINT8], int64(int8(n.Left.Val().U.(string)[n.Right.Int64()])))
+			}
 			a := s.expr(n.Left)
 			i := s.expr(n.Right)
 			i = s.extendIndex(i, panicindex)
@@ -2151,7 +2192,11 @@ func (s *state) append(n *Node, inplace bool) *ssa.Value {
 		}
 		capaddr := s.newValue1I(ssa.OpOffPtr, pt, int64(array_cap), addr)
 		s.vars[&memVar] = s.newValue3I(ssa.OpStore, ssa.TypeMem, s.config.IntSize, capaddr, r[2], s.mem())
-		s.insertWBstore(pt, addr, r[0], n.Lineno, 0)
+		if isStackAddr(addr) {
+			s.vars[&memVar] = s.newValue3I(ssa.OpStore, ssa.TypeMem, pt.Size(), addr, r[0], s.mem())
+		} else {
+			s.insertWBstore(pt, addr, r[0], n.Lineno, 0)
+		}
 		// load the value we just stored to avoid having to spill it
 		s.vars[&ptrVar] = s.newValue2(ssa.OpLoad, pt, addr, s.mem())
 		s.vars[&lenVar] = r[1] // avoid a spill in the fast path
@@ -2349,7 +2394,7 @@ func (s *state) assign(left *Node, right *ssa.Value, wb, deref bool, line int32,
 			s.vars[&memVar] = s.newValue2I(ssa.OpZero, ssa.TypeMem, sizeAlignAuxInt(t), addr, s.mem())
 			return
 		}
-		if wb {
+		if wb && !isStackAddr(addr) {
 			s.insertWBmove(t, addr, right, line, rightIsVolatile)
 			return
 		}
@@ -2357,7 +2402,7 @@ func (s *state) assign(left *Node, right *ssa.Value, wb, deref bool, line int32,
 		return
 	}
 	// Treat as a store.
-	if wb {
+	if wb && !isStackAddr(addr) {
 		if skip&skipPtr != 0 {
 			// Special case: if we don't write back the pointers, don't bother
 			// doing the write barrier check.
@@ -2469,23 +2514,15 @@ type sizedIntrinsicKey struct {
 }
 
 // disableForInstrumenting returns nil when instrumenting, fn otherwise
-func disableForInstrumenting(fn func(*state, *Node) *ssa.Value) func(*state, *Node) *ssa.Value {
+func disableForInstrumenting(fn intrinsicBuilder) intrinsicBuilder {
 	if instrumenting {
 		return nil
 	}
 	return fn
 }
 
-// enableForRuntime returns fn when compiling runtime, nil otherwise
-func enableForRuntime(fn func(*state, *Node) *ssa.Value) func(*state, *Node) *ssa.Value {
-	if compiling_runtime {
-		return fn
-	}
-	return nil
-}
-
 // enableOnArch returns fn on given archs, nil otherwise
-func enableOnArch(fn func(*state, *Node) *ssa.Value, archs ...sys.ArchFamily) func(*state, *Node) *ssa.Value {
+func enableOnArch(fn intrinsicBuilder, archs ...sys.ArchFamily) intrinsicBuilder {
 	if Thearch.LinkArch.InFamily(archs...) {
 		return fn
 	}
@@ -2499,9 +2536,7 @@ func intrinsicInit() {
 	// initial set of intrinsics.
 	i.std = map[intrinsicKey]intrinsicBuilder{
 		/******** runtime ********/
-		intrinsicKey{"", "slicebytetostringtmp"}: enableForRuntime(disableForInstrumenting(func(s *state, n *Node) *ssa.Value {
-			// pkg name left empty because intrinsification only should apply
-			// inside the runtime package when non instrumented.
+		intrinsicKey{"runtime", "slicebytetostringtmp"}: disableForInstrumenting(func(s *state, n *Node) *ssa.Value {
 			// Compiler frontend optimizations emit OARRAYBYTESTRTMP nodes
 			// for the backend instead of slicebytetostringtmp calls
 			// when not instrumenting.
@@ -2509,7 +2544,7 @@ func intrinsicInit() {
 			ptr := s.newValue1(ssa.OpSlicePtr, ptrto(Types[TUINT8]), slice)
 			len := s.newValue1(ssa.OpSliceLen, Types[TINT], slice)
 			return s.newValue2(ssa.OpStringMake, n.Type, ptr, len)
-		})),
+		}),
 		intrinsicKey{"runtime", "KeepAlive"}: func(s *state, n *Node) *ssa.Value {
 			data := s.newValue1(ssa.OpIData, ptrto(Types[TUINT8]), s.intrinsicFirstArg(n))
 			s.vars[&memVar] = s.newValue2(ssa.OpKeepAlive, ssa.TypeMem, data, s.mem())
@@ -2703,6 +2738,16 @@ func intrinsicInit() {
 		i.std[intrinsicKey{"runtime/internal/atomic", "Xadd"}]
 	i.ptrSized[sizedIntrinsicKey{"sync/atomic", "AddUintptr", 8}] =
 		i.std[intrinsicKey{"runtime/internal/atomic", "Xadd64"}]
+
+	/******** math/big ********/
+	i.intSized[sizedIntrinsicKey{"math/big", "mulWW", 8}] =
+		enableOnArch(func(s *state, n *Node) *ssa.Value {
+			return s.newValue2(ssa.OpMul64uhilo, ssa.MakeTuple(Types[TUINT64], Types[TUINT64]), s.intrinsicArg(n, 0), s.intrinsicArg(n, 1))
+		}, sys.AMD64)
+	i.intSized[sizedIntrinsicKey{"math/big", "divWW", 8}] =
+		enableOnArch(func(s *state, n *Node) *ssa.Value {
+			return s.newValue3(ssa.OpDiv128u, ssa.MakeTuple(Types[TUINT64], Types[TUINT64]), s.intrinsicArg(n, 0), s.intrinsicArg(n, 1), s.intrinsicArg(n, 2))
+		}, sys.AMD64)
 }
 
 // findIntrinsic returns a function which builds the SSA equivalent of the
@@ -2718,6 +2763,9 @@ func findIntrinsic(sym *Sym) intrinsicBuilder {
 		intrinsicInit()
 	}
 	pkg := sym.Pkg.Path
+	if sym.Pkg == localpkg {
+		pkg = myimportpath
+	}
 	fn := sym.Name
 	f := intrinsics.std[intrinsicKey{pkg, fn}]
 	if f != nil {
@@ -2951,9 +2999,8 @@ func (s *state) addr(n *Node, bounded bool) (*ssa.Value, bool) {
 			if v != nil {
 				return v, false
 			}
-			if n.String() == ".fp" {
-				// Special arg that points to the frame pointer.
-				// (Used by the race detector, others?)
+			if n == nodfp {
+				// Special arg that points to the frame pointer (Used by ORECOVER).
 				aux := s.lookupSymbol(n, &ssa.ArgSymbol{Typ: n.Type, Node: n})
 				return s.entryNewValue1A(ssa.OpAddr, t, aux, s.sp), false
 			}
@@ -3250,6 +3297,20 @@ func (s *state) rtcall(fn *Node, returns bool, results []*Type, args ...*ssa.Val
 	return res
 }
 
+// isStackAddr returns whether v is known to be an address of a stack slot
+func isStackAddr(v *ssa.Value) bool {
+	for v.Op == ssa.OpOffPtr || v.Op == ssa.OpAddPtr || v.Op == ssa.OpPtrIndex || v.Op == ssa.OpCopy {
+		v = v.Args[0]
+	}
+	switch v.Op {
+	case ssa.OpSP:
+		return true
+	case ssa.OpAddr:
+		return v.Args[0].Op == ssa.OpSP
+	}
+	return false
+}
+
 // insertWBmove inserts the assignment *left = *right including a write barrier.
 // t is the type being assigned.
 func (s *state) insertWBmove(t *Type, left, right *ssa.Value, line int32, rightIsVolatile bool) {
@@ -3260,7 +3321,7 @@ func (s *state) insertWBmove(t *Type, left, right *ssa.Value, line int32, rightI
 	// }
 
 	if s.noWB {
-		s.Fatalf("write barrier prohibited")
+		s.Error("write barrier prohibited")
 	}
 	if s.WBLineno == 0 {
 		s.WBLineno = left.Line
@@ -3325,7 +3386,7 @@ func (s *state) insertWBstore(t *Type, left, right *ssa.Value, line int32, skip 
 	// }
 
 	if s.noWB {
-		s.Fatalf("write barrier prohibited")
+		s.Error("write barrier prohibited")
 	}
 	if s.WBLineno == 0 {
 		s.WBLineno = left.Line
@@ -3971,130 +4032,28 @@ func (s *state) checkgoto(from *Node, to *Node) {
 // variable returns the value of a variable at the current location.
 func (s *state) variable(name *Node, t ssa.Type) *ssa.Value {
 	v := s.vars[name]
-	if v == nil {
-		v = s.newValue0A(ssa.OpFwdRef, t, name)
-		s.fwdRefs = append(s.fwdRefs, v)
-		s.vars[name] = v
-		s.addNamedValue(name, v)
+	if v != nil {
+		return v
 	}
+	v = s.fwdVars[name]
+	if v != nil {
+		return v
+	}
+
+	if s.curBlock == s.f.Entry {
+		// No variable should be live at entry.
+		s.Fatalf("Value live at entry. It shouldn't be. func %s, node %v, value %v", s.f.Name, name, v)
+	}
+	// Make a FwdRef, which records a value that's live on block input.
+	// We'll find the matching definition as part of insertPhis.
+	v = s.newValue0A(ssa.OpFwdRef, t, name)
+	s.fwdVars[name] = v
+	s.addNamedValue(name, v)
 	return v
 }
 
 func (s *state) mem() *ssa.Value {
 	return s.variable(&memVar, ssa.TypeMem)
-}
-
-func (s *state) linkForwardReferences(dm *sparseDefState) {
-
-	// Build SSA graph. Each variable on its first use in a basic block
-	// leaves a FwdRef in that block representing the incoming value
-	// of that variable. This function links that ref up with possible definitions,
-	// inserting Phi values as needed. This is essentially the algorithm
-	// described by Braun, Buchwald, Hack, Leißa, Mallon, and Zwinkau:
-	// http://pp.info.uni-karlsruhe.de/uploads/publikationen/braun13cc.pdf
-	// Differences:
-	//   - We use FwdRef nodes to postpone phi building until the CFG is
-	//     completely built. That way we can avoid the notion of "sealed"
-	//     blocks.
-	//   - Phi optimization is a separate pass (in ../ssa/phielim.go).
-	for len(s.fwdRefs) > 0 {
-		v := s.fwdRefs[len(s.fwdRefs)-1]
-		s.fwdRefs = s.fwdRefs[:len(s.fwdRefs)-1]
-		s.resolveFwdRef(v, dm)
-	}
-}
-
-// resolveFwdRef modifies v to be the variable's value at the start of its block.
-// v must be a FwdRef op.
-func (s *state) resolveFwdRef(v *ssa.Value, dm *sparseDefState) {
-	b := v.Block
-	name := v.Aux.(*Node)
-	v.Aux = nil
-	if b == s.f.Entry {
-		// Live variable at start of function.
-		if s.canSSA(name) {
-			if strings.HasPrefix(name.Sym.Name, "autotmp_") {
-				// It's likely that this is an uninitialized variable in the entry block.
-				s.Fatalf("Treating auto as if it were arg, func %s, node %v, value %v", b.Func.Name, name, v)
-			}
-			v.Op = ssa.OpArg
-			v.Aux = name
-			return
-		}
-		// Not SSAable. Load it.
-		addr := s.decladdrs[name]
-		if addr == nil {
-			// TODO: closure args reach here.
-			s.Fatalf("unhandled closure arg %v at entry to function %s", name, b.Func.Name)
-		}
-		if _, ok := addr.Aux.(*ssa.ArgSymbol); !ok {
-			s.Fatalf("variable live at start of function %s is not an argument %v", b.Func.Name, name)
-		}
-		v.Op = ssa.OpLoad
-		v.AddArgs(addr, s.startmem)
-		return
-	}
-	if len(b.Preds) == 0 {
-		// This block is dead; we have no predecessors and we're not the entry block.
-		// It doesn't matter what we use here as long as it is well-formed.
-		v.Op = ssa.OpUnknown
-		return
-	}
-	// Find variable value on each predecessor.
-	var argstore [4]*ssa.Value
-	args := argstore[:0]
-	for _, e := range b.Preds {
-		p := e.Block()
-		p = dm.FindBetterDefiningBlock(name, p) // try sparse improvement on p
-		args = append(args, s.lookupVarOutgoing(p, v.Type, name, v.Line))
-	}
-
-	// Decide if we need a phi or not. We need a phi if there
-	// are two different args (which are both not v).
-	var w *ssa.Value
-	for _, a := range args {
-		if a == v {
-			continue // self-reference
-		}
-		if a == w {
-			continue // already have this witness
-		}
-		if w != nil {
-			// two witnesses, need a phi value
-			v.Op = ssa.OpPhi
-			v.AddArgs(args...)
-			return
-		}
-		w = a // save witness
-	}
-	if w == nil {
-		s.Fatalf("no witness for reachable phi %s", v)
-	}
-	// One witness. Make v a copy of w.
-	v.Op = ssa.OpCopy
-	v.AddArg(w)
-}
-
-// lookupVarOutgoing finds the variable's value at the end of block b.
-func (s *state) lookupVarOutgoing(b *ssa.Block, t ssa.Type, name *Node, line int32) *ssa.Value {
-	for {
-		if v, ok := s.defvars[b.ID][name]; ok {
-			return v
-		}
-		// The variable is not defined by b and we haven't looked it up yet.
-		// If b has exactly one predecessor, loop to look it up there.
-		// Otherwise, give up and insert a new FwdRef and resolve it later.
-		if len(b.Preds) != 1 {
-			break
-		}
-		b = b.Preds[0].Block()
-	}
-	// Generate a FwdRef for the variable and return that.
-	v := b.NewValue0A(line, ssa.OpFwdRef, t, name)
-	s.fwdRefs = append(s.fwdRefs, v)
-	s.defvars[b.ID][name] = v
-	s.addNamedValue(name, v)
-	return v
 }
 
 func (s *state) addNamedValue(n *Node, v *ssa.Value) {
@@ -4145,7 +4104,7 @@ type SSAGenState struct {
 
 // Pc returns the current Prog.
 func (s *SSAGenState) Pc() *obj.Prog {
-	return Pc
+	return pc
 }
 
 // SetLineno sets the current source line number.
@@ -4170,26 +4129,26 @@ func genssa(f *ssa.Func, ptxt *obj.Prog, gcargs, gclocals *Sym) {
 		valueProgs = make(map[*obj.Prog]*ssa.Value, f.NumValues())
 		blockProgs = make(map[*obj.Prog]*ssa.Block, f.NumBlocks())
 		f.Logf("genssa %s\n", f.Name)
-		blockProgs[Pc] = f.Blocks[0]
+		blockProgs[pc] = f.Blocks[0]
 	}
 
 	if Thearch.Use387 {
 		s.SSEto387 = map[int16]int16{}
 	}
-	if f.Config.NeedsFpScratch {
-		s.ScratchFpMem = temp(Types[TUINT64])
-	}
+
+	s.ScratchFpMem = scratchFpMem
+	scratchFpMem = nil
 
 	// Emit basic blocks
 	for i, b := range f.Blocks {
-		s.bstart[b.ID] = Pc
+		s.bstart[b.ID] = pc
 		// Emit values in block
 		Thearch.SSAMarkMoves(&s, b)
 		for _, v := range b.Values {
-			x := Pc
+			x := pc
 			Thearch.SSAGenValue(&s, v)
 			if logProgs {
-				for ; x != Pc; x = x.Link {
+				for ; x != pc; x = x.Link {
 					valueProgs[x] = v
 				}
 			}
@@ -4203,10 +4162,10 @@ func genssa(f *ssa.Func, ptxt *obj.Prog, gcargs, gclocals *Sym) {
 			// line numbers for otherwise empty blocks.
 			next = f.Blocks[i+1]
 		}
-		x := Pc
+		x := pc
 		Thearch.SSAGenBlock(&s, b, next)
 		if logProgs {
-			for ; x != Pc; x = x.Link {
+			for ; x != pc; x = x.Link {
 				blockProgs[x] = b
 			}
 		}
@@ -4263,9 +4222,6 @@ func genssa(f *ssa.Func, ptxt *obj.Prog, gcargs, gclocals *Sym) {
 			}
 		}
 	}
-
-	// Allocate stack frame
-	allocauto(ptxt)
 
 	// Generate gc bitmaps.
 	liveness(Curfn, ptxt, gcargs, gclocals)
@@ -4374,12 +4330,13 @@ func AddAux2(a *obj.Addr, v *ssa.Value, offset int64) {
 		a.Name = obj.NAME_PARAM
 		a.Node = n
 		a.Sym = Linksym(n.Orig.Sym)
-		a.Offset += n.Xoffset // TODO: why do I have to add this here?  I don't for auto variables.
+		a.Offset += n.Xoffset
 	case *ssa.AutoSymbol:
 		n := sym.Node.(*Node)
 		a.Name = obj.NAME_AUTO
 		a.Node = n
 		a.Sym = Linksym(n.Sym)
+		a.Offset += n.Xoffset
 	default:
 		v.Fatalf("aux in %s not implemented %#v", v, v.Aux)
 	}
@@ -4499,6 +4456,31 @@ func AutoVar(v *ssa.Value) (*Node, int64) {
 		v.Fatalf("spill/restore type %s doesn't fit in slot type %s", v.Type, loc.Type)
 	}
 	return loc.N.(*Node), loc.Off
+}
+
+func AddrAuto(a *obj.Addr, v *ssa.Value) {
+	n, off := AutoVar(v)
+	a.Type = obj.TYPE_MEM
+	a.Node = n
+	a.Sym = Linksym(n.Sym)
+	a.Offset = n.Xoffset + off
+	if n.Class == PPARAM || n.Class == PPARAMOUT {
+		a.Name = obj.NAME_PARAM
+	} else {
+		a.Name = obj.NAME_AUTO
+	}
+}
+
+func (s *SSAGenState) AddrScratch(a *obj.Addr) {
+	if s.ScratchFpMem == nil {
+		panic("no scratch memory available; forgot to declare usesScratch for Op?")
+	}
+	a.Type = obj.TYPE_MEM
+	a.Name = obj.NAME_AUTO
+	a.Node = s.ScratchFpMem
+	a.Sym = Linksym(s.ScratchFpMem.Sym)
+	a.Reg = int16(Thearch.REGSP)
+	a.Offset = s.ScratchFpMem.Xoffset
 }
 
 // fieldIdx finds the index of the field referred to by the ODOT node n.

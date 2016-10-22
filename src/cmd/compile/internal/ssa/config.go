@@ -17,6 +17,7 @@ type Config struct {
 	arch            string                     // "amd64", etc.
 	IntSize         int64                      // 4 or 8
 	PtrSize         int64                      // 4 or 8
+	RegSize         int64                      // 4 or 8
 	lowerBlock      func(*Block, *Config) bool // lowering function
 	lowerValue      func(*Value, *Config) bool // lowering function
 	registers       []Register                 // machine registers
@@ -24,6 +25,7 @@ type Config struct {
 	fpRegMask       regMask                    // floating point register mask
 	specialRegMask  regMask                    // special register mask
 	FPReg           int8                       // register number of frame pointer, -1 if not used
+	LinkReg         int8                       // register number of link register if it is a general purpose register, -1 if not used
 	hasGReg         bool                       // has hardware g register
 	fe              Frontend                   // callbacks into compiler frontend
 	HTML            *HTMLWriter                // html writer, for debugging
@@ -116,6 +118,9 @@ type Frontend interface {
 
 	// Line returns a string describing the given line number.
 	Line(int32) string
+
+	// AllocFrame assigns frame offsets to all live auto variables.
+	AllocFrame(f *Func)
 }
 
 // interface used to hold *gc.Node. We'd use *gc.Node directly but
@@ -132,53 +137,63 @@ func NewConfig(arch string, fe Frontend, ctxt *obj.Link, optimize bool) *Config 
 	case "amd64":
 		c.IntSize = 8
 		c.PtrSize = 8
+		c.RegSize = 8
 		c.lowerBlock = rewriteBlockAMD64
 		c.lowerValue = rewriteValueAMD64
 		c.registers = registersAMD64[:]
 		c.gpRegMask = gpRegMaskAMD64
 		c.fpRegMask = fpRegMaskAMD64
 		c.FPReg = framepointerRegAMD64
+		c.LinkReg = linkRegAMD64
 		c.hasGReg = false
 	case "amd64p32":
 		c.IntSize = 4
 		c.PtrSize = 4
+		c.RegSize = 8
 		c.lowerBlock = rewriteBlockAMD64
 		c.lowerValue = rewriteValueAMD64
 		c.registers = registersAMD64[:]
 		c.gpRegMask = gpRegMaskAMD64
 		c.fpRegMask = fpRegMaskAMD64
 		c.FPReg = framepointerRegAMD64
+		c.LinkReg = linkRegAMD64
 		c.hasGReg = false
 		c.noDuffDevice = true
 	case "386":
 		c.IntSize = 4
 		c.PtrSize = 4
+		c.RegSize = 4
 		c.lowerBlock = rewriteBlock386
 		c.lowerValue = rewriteValue386
 		c.registers = registers386[:]
 		c.gpRegMask = gpRegMask386
 		c.fpRegMask = fpRegMask386
 		c.FPReg = framepointerReg386
+		c.LinkReg = linkReg386
 		c.hasGReg = false
 	case "arm":
 		c.IntSize = 4
 		c.PtrSize = 4
+		c.RegSize = 4
 		c.lowerBlock = rewriteBlockARM
 		c.lowerValue = rewriteValueARM
 		c.registers = registersARM[:]
 		c.gpRegMask = gpRegMaskARM
 		c.fpRegMask = fpRegMaskARM
 		c.FPReg = framepointerRegARM
+		c.LinkReg = linkRegARM
 		c.hasGReg = true
 	case "arm64":
 		c.IntSize = 8
 		c.PtrSize = 8
+		c.RegSize = 8
 		c.lowerBlock = rewriteBlockARM64
 		c.lowerValue = rewriteValueARM64
 		c.registers = registersARM64[:]
 		c.gpRegMask = gpRegMaskARM64
 		c.fpRegMask = fpRegMaskARM64
 		c.FPReg = framepointerRegARM64
+		c.LinkReg = linkRegARM64
 		c.hasGReg = true
 		c.noDuffDevice = obj.GOOS == "darwin" // darwin linker cannot handle BR26 reloc with non-zero addend
 	case "ppc64":
@@ -187,18 +202,21 @@ func NewConfig(arch string, fe Frontend, ctxt *obj.Link, optimize bool) *Config 
 	case "ppc64le":
 		c.IntSize = 8
 		c.PtrSize = 8
+		c.RegSize = 8
 		c.lowerBlock = rewriteBlockPPC64
 		c.lowerValue = rewriteValuePPC64
 		c.registers = registersPPC64[:]
 		c.gpRegMask = gpRegMaskPPC64
 		c.fpRegMask = fpRegMaskPPC64
 		c.FPReg = framepointerRegPPC64
+		c.LinkReg = linkRegPPC64
 		c.noDuffDevice = true // TODO: Resolve PPC64 DuffDevice (has zero, but not copy)
 		c.NeedsFpScratch = true
 		c.hasGReg = true
 	case "mips64", "mips64le":
 		c.IntSize = 8
 		c.PtrSize = 8
+		c.RegSize = 8
 		c.lowerBlock = rewriteBlockMIPS64
 		c.lowerValue = rewriteValueMIPS64
 		c.registers = registersMIPS64[:]
@@ -206,16 +224,19 @@ func NewConfig(arch string, fe Frontend, ctxt *obj.Link, optimize bool) *Config 
 		c.fpRegMask = fpRegMaskMIPS64
 		c.specialRegMask = specialRegMaskMIPS64
 		c.FPReg = framepointerRegMIPS64
+		c.LinkReg = linkRegMIPS64
 		c.hasGReg = true
 	case "s390x":
 		c.IntSize = 8
 		c.PtrSize = 8
+		c.RegSize = 8
 		c.lowerBlock = rewriteBlockS390X
 		c.lowerValue = rewriteValueS390X
 		c.registers = registersS390X[:]
 		c.gpRegMask = gpRegMaskS390X
 		c.fpRegMask = fpRegMaskS390X
 		c.FPReg = framepointerRegS390X
+		c.LinkReg = linkRegS390X
 		c.hasGReg = true
 		c.noDuffDevice = true
 	default:

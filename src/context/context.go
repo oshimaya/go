@@ -159,9 +159,9 @@ var DeadlineExceeded error = deadlineExceededError{}
 
 type deadlineExceededError struct{}
 
-func (deadlineExceededError) Error() string { return "context deadline exceeded" }
-
-func (deadlineExceededError) Timeout() bool { return true }
+func (deadlineExceededError) Error() string   { return "context deadline exceeded" }
+func (deadlineExceededError) Timeout() bool   { return true }
+func (deadlineExceededError) Temporary() bool { return true }
 
 // An emptyCtx is never canceled, has no values, and has no deadline. It is not
 // struct{}, since vars of this type must have distinct addresses.
@@ -443,7 +443,9 @@ func WithTimeout(parent Context, timeout time.Duration) (Context, CancelFunc) {
 // Use context Values only for request-scoped data that transits processes and
 // APIs, not for passing optional parameters to functions.
 //
-// The provided key must be comparable.
+// The provided key must be comparable and should not be
+// of type string or any other built-in type.
+// Users of WithValue should define their own types for keys.
 func WithValue(parent Context, key, val interface{}) Context {
 	if key == nil {
 		panic("nil key")
