@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -68,18 +69,23 @@ func checkGdbPython(t *testing.T) {
 const helloSource = `
 package main
 import "fmt"
+var gslice []string
 func main() {
 	mapvar := make(map[string]string,5)
 	mapvar["abc"] = "def"
 	mapvar["ghi"] = "jkl"
 	strvar := "abc"
 	ptrvar := &strvar
-	fmt.Println("hi") // line 10
+	slicevar := make([]string, 0, 16)
+	slicevar = append(slicevar, mapvar["abc"])
+	fmt.Println("hi") // line 12
 	_ = ptrvar
+	gslice = slicevar
 }
 `
 
 func TestGdbPython(t *testing.T) {
+	t.Parallel()
 	checkGdbEnvironment(t)
 	checkGdbVersion(t)
 	checkGdbPython(t)
@@ -119,6 +125,9 @@ func TestGdbPython(t *testing.T) {
 		"-ex", "echo END\n",
 		"-ex", "echo BEGIN print strvar\n",
 		"-ex", "print strvar",
+		"-ex", "echo END\n",
+		"-ex", "echo BEGIN info locals\n",
+		"-ex", "info locals",
 		"-ex", "echo END\n",
 		"-ex", "down", // back to fmt.Println (goroutine 2 below only works at bottom of stack.  TODO: fix that)
 		"-ex", "echo BEGIN goroutine 2 bt\n",
@@ -168,6 +177,15 @@ func TestGdbPython(t *testing.T) {
 		t.Fatalf("print strvar failed: %s", bl)
 	}
 
+	// Issue 16338: ssa decompose phase can split a structure into
+	// a collection of scalar vars holding the fields. In such cases
+	// the DWARF variable location expression should be of the
+	// form "var.field" and not just "field".
+	infoLocalsRe := regexp.MustCompile(`^slicevar.len = `)
+	if bl := blocks["info locals"]; !infoLocalsRe.MatchString(bl) {
+		t.Fatalf("info locals failed: %s", bl)
+	}
+
 	btGoroutineRe := regexp.MustCompile(`^#0\s+runtime.+at`)
 	if bl := blocks["goroutine 2 bt"]; !btGoroutineRe.MatchString(bl) {
 		t.Fatalf("goroutine 2 bt failed: %s", bl)
@@ -202,6 +220,7 @@ func main() {
 // TestGdbBacktrace tests that gdb can unwind the stack correctly
 // using only the DWARF debug info.
 func TestGdbBacktrace(t *testing.T) {
+	t.Parallel()
 	checkGdbEnvironment(t)
 	checkGdbVersion(t)
 
@@ -254,6 +273,75 @@ func TestGdbBacktrace(t *testing.T) {
 		if found := re.Find(got) != nil; !found {
 			t.Errorf("could not find '%v' in backtrace", s)
 			t.Fatalf("gdb output:\n%v", string(got))
+		}
+	}
+}
+
+const autotmpTypeSource = `
+package main
+
+type astruct struct {
+	a, b int
+}
+
+func main() {
+	var iface interface{} = map[string]astruct{}
+	var iface2 interface{} = []astruct{}
+	println(iface, iface2)
+}
+`
+
+// TestGdbAutotmpTypes ensures that types of autotmp variables appear in .debug_info
+// See bug #17830.
+func TestGdbAutotmpTypes(t *testing.T) {
+	t.Parallel()
+	checkGdbEnvironment(t)
+	checkGdbVersion(t)
+
+	dir, err := ioutil.TempDir("", "go-build")
+	if err != nil {
+		t.Fatalf("failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	// Build the source code.
+	src := filepath.Join(dir, "main.go")
+	err = ioutil.WriteFile(src, []byte(autotmpTypeSource), 0644)
+	if err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	cmd := exec.Command(testenv.GoToolPath(t), "build", "-gcflags=-N -l", "-o", "a.exe")
+	cmd.Dir = dir
+	out, err := testEnv(cmd).CombinedOutput()
+	if err != nil {
+		t.Fatalf("building source %v\n%s", err, out)
+	}
+
+	// Execute gdb commands.
+	args := []string{"-nx", "-batch",
+		"-ex", "set startup-with-shell off",
+		"-ex", "break main.main",
+		"-ex", "run",
+		"-ex", "step",
+		"-ex", "info types astruct",
+		filepath.Join(dir, "a.exe"),
+	}
+	got, _ := exec.Command("gdb", args...).CombinedOutput()
+
+	sgot := string(got)
+
+	// Check that the backtrace matches the source code.
+	types := []string{
+		"struct []main.astruct;",
+		"struct bucket<string,main.astruct>;",
+		"struct hash<string,main.astruct>;",
+		"struct main.astruct;",
+		"typedef struct hash<string,main.astruct> * map[string]main.astruct;",
+	}
+	for _, name := range types {
+		if !strings.Contains(sgot, name) {
+			t.Errorf("could not find %s in 'info typrs astruct' output", name)
+			t.Fatalf("gdb output:\n%v", sgot)
 		}
 	}
 }

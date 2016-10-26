@@ -58,10 +58,16 @@ func (d DummyFrontend) SplitInt64(s LocalSlot) (LocalSlot, LocalSlot) {
 func (d DummyFrontend) SplitStruct(s LocalSlot, i int) LocalSlot {
 	return LocalSlot{s.N, s.Type.FieldType(i), s.Off + s.Type.FieldOff(i)}
 }
+func (d DummyFrontend) SplitArray(s LocalSlot) LocalSlot {
+	return LocalSlot{s.N, s.Type.ElemType(), s.Off}
+}
 func (DummyFrontend) Line(line int32) string {
 	return "unknown.go:0"
 }
 func (DummyFrontend) AllocFrame(f *Func) {
+}
+func (DummyFrontend) Syslook(s string) interface{} {
+	return nil
 }
 
 func (d DummyFrontend) Logf(msg string, args ...interface{}) { d.t.Logf(msg, args...) }
@@ -70,6 +76,7 @@ func (d DummyFrontend) Log() bool                            { return true }
 func (d DummyFrontend) Fatalf(line int32, msg string, args ...interface{}) { d.t.Fatalf(msg, args...) }
 func (d DummyFrontend) Warnl(line int32, msg string, args ...interface{})  { d.t.Logf(msg, args...) }
 func (d DummyFrontend) Debug_checknil() bool                               { return false }
+func (d DummyFrontend) Debug_wb() bool                                     { return false }
 
 func (d DummyFrontend) TypeBool() Type    { return TypeBool }
 func (d DummyFrontend) TypeInt8() Type    { return TypeInt8 }

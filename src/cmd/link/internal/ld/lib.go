@@ -720,7 +720,7 @@ func objfile(ctxt *Link, lib *Library) {
 		goto out
 	}
 
-	if Buildmode == BuildmodeShared {
+	if Buildmode == BuildmodeShared || Buildmode == BuildmodePlugin || ctxt.Syms.ROLookup("plugin.Open", 0) != nil {
 		before := f.Offset()
 		pkgdefBytes := make([]byte, atolwhex(arhdr.size))
 		if _, err := io.ReadFull(f, pkgdefBytes); err != nil {
@@ -1134,21 +1134,16 @@ func (l *Link) hostlink() {
 		}
 	}
 
-	sanitizers := *flagRace
-
-	for _, flag := range ldflag {
-		if strings.HasPrefix(flag, "-fsanitize=") {
-			sanitizers = true
-		}
-	}
-
 	argv = append(argv, ldflag...)
 
-	if sanitizers {
-		// On a system where the toolchain creates position independent
-		// executables by default, tsan/msan/asan/etc initialization can
-		// fail. So we pass -no-pie here, but support for that flag is quite
-		// new and we test for its support first.
+	// When building a program with the default -buildmode=exe the
+	// gc compiler generates code requires DT_TEXTREL in a
+	// position independent executable (PIE). On systems where the
+	// toolchain creates PIEs by default, and where DT_TEXTREL
+	// does not work, the resulting programs will not run. See
+	// issue #17847. To avoid this problem pass -no-pie to the
+	// toolchain if it is supported.
+	if Buildmode == BuildmodeExe {
 		src := filepath.Join(*flagTmpdir, "trivial.c")
 		if err := ioutil.WriteFile(src, []byte{}, 0666); err != nil {
 			Errorf(nil, "WriteFile trivial.c failed: %v", err)
@@ -1890,13 +1885,11 @@ func genasmsym(ctxt *Link, put func(*Link, *Symbol, string, SymbolType, int64, *
 			obj.STYPE,
 			obj.SSTRING,
 			obj.SGOSTRING,
-			obj.SGOSTRINGHDR,
 			obj.SGOFUNC,
 			obj.SGCBITS,
 			obj.STYPERELRO,
 			obj.SSTRINGRELRO,
 			obj.SGOSTRINGRELRO,
-			obj.SGOSTRINGHDRRELRO,
 			obj.SGOFUNCRELRO,
 			obj.SGCBITSRELRO,
 			obj.SRODATARELRO,
@@ -2040,7 +2033,7 @@ func undefsym(ctxt *Link, s *Symbol) {
 		if r.Sym.Type == obj.Sxxx || r.Sym.Type == obj.SXREF {
 			Errorf(s, "undefined: %q", r.Sym.Name)
 		}
-		if !r.Sym.Attr.Reachable() {
+		if !r.Sym.Attr.Reachable() && r.Type != obj.R_WEAKADDROFF {
 			Errorf(s, "relocation target %q", r.Sym.Name)
 		}
 	}

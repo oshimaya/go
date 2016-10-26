@@ -39,21 +39,40 @@ const (
 // is either not present in the request or not a file field.
 var ErrMissingFile = errors.New("http: no such file")
 
-// HTTP request parsing errors.
+// ProtocolError represents an HTTP protocol error.
+//
+// Deprecated: Not all errors in the http package related to protocol errors
+// are of type ProtocolError.
 type ProtocolError struct {
 	ErrorString string
 }
 
-func (err *ProtocolError) Error() string { return err.ErrorString }
+func (pe *ProtocolError) Error() string { return pe.ErrorString }
 
 var (
-	ErrHeaderTooLong        = &ProtocolError{"header too long"}
-	ErrShortBody            = &ProtocolError{"entity body too short"}
-	ErrNotSupported         = &ProtocolError{"feature not supported"}
-	ErrUnexpectedTrailer    = &ProtocolError{"trailer header without chunked transfer encoding"}
+	// ErrNotSupported is returned by the Push method of Pusher
+	// implementations to indicate that HTTP/2 Push support is not
+	// available.
+	ErrNotSupported = &ProtocolError{"feature not supported"}
+
+	// ErrUnexpectedTrailer is returned by the Transport when a server
+	// replies with a Trailer header, but without a chunked reply.
+	ErrUnexpectedTrailer = &ProtocolError{"trailer header without chunked transfer encoding"}
+
+	// ErrMissingBoundary is returned by Request.MultipartReader when the
+	// request's Content-Type does not include a "boundary" parameter.
+	ErrMissingBoundary = &ProtocolError{"no multipart boundary param in Content-Type"}
+
+	// ErrNotMultipart is returned by Request.MultipartReader when the
+	// request's Content-Type is not multipart/form-data.
+	ErrNotMultipart = &ProtocolError{"request Content-Type isn't multipart/form-data"}
+
+	// Deprecated: ErrHeaderTooLong is not used.
+	ErrHeaderTooLong = &ProtocolError{"header too long"}
+	// Deprecated: ErrShortBody is not used.
+	ErrShortBody = &ProtocolError{"entity body too short"}
+	// Deprecated: ErrMissingContentLength is not used.
 	ErrMissingContentLength = &ProtocolError{"missing ContentLength in HEAD response"}
-	ErrNotMultipart         = &ProtocolError{"request Content-Type isn't multipart/form-data"}
-	ErrMissingBoundary      = &ProtocolError{"no multipart boundary param in Content-Type"}
 )
 
 type badStringError struct {
@@ -294,8 +313,8 @@ type Request struct {
 // For outgoing client requests, the context controls cancelation.
 //
 // For incoming server requests, the context is canceled when the
-// ServeHTTP method returns. For its associated values, see
-// ServerContextKey and LocalAddrContextKey.
+// client's connection closes, the request is canceled (with HTTP/2),
+// or when the ServeHTTP method returns.
 func (r *Request) Context() context.Context {
 	if r.ctx != nil {
 		return r.ctx
@@ -707,11 +726,11 @@ func validMethod(method string) bool {
 // methods Do, Post, and PostForm, and Transport.RoundTrip.
 //
 // NewRequest returns a Request suitable for use with Client.Do or
-// Transport.RoundTrip.
-// To create a request for use with testing a Server Handler use either
-// ReadRequest or manually update the Request fields. See the Request
-// type's documentation for the difference between inbound and outbound
-// request fields.
+// Transport.RoundTrip. To create a request for use with testing a
+// Server Handler, either use the NewRequest function in the
+// net/http/httptest package, use ReadRequest, or manually update the
+// Request fields. See the Request type's documentation for the
+// difference between inbound and outbound request fields.
 func NewRequest(method, urlStr string, body io.Reader) (*Request, error) {
 	if method == "" {
 		// We document that "" means "GET" for Request.Method, and people have
@@ -766,15 +785,23 @@ func NewRequest(method, urlStr string, body io.Reader) (*Request, error) {
 				return ioutil.NopCloser(&r), nil
 			}
 		default:
-			req.ContentLength = -1 // unknown
+			// This is where we'd set it to -1 (at least
+			// if body != NoBody) to mean unknown, but
+			// that broke people during the Go 1.8 testing
+			// period. People depend on it being 0 I
+			// guess. Maybe retry later. See Issue 18117.
 		}
 		// For client requests, Request.ContentLength of 0
 		// means either actually 0, or unknown. The only way
 		// to explicitly say that the ContentLength is zero is
-		// to set the Body to nil.
-		if req.ContentLength == 0 {
-			req.Body = nil
-			req.GetBody = nil
+		// to set the Body to nil. But turns out too much code
+		// depends on NewRequest returning a non-nil Body,
+		// so we use a well-known ReadCloser variable instead
+		// and have the http package also treat that sentinel
+		// variable to mean explicitly zero.
+		if req.GetBody != nil && req.ContentLength == 0 {
+			req.Body = NoBody
+			req.GetBody = func() (io.ReadCloser, error) { return NoBody, nil }
 		}
 	}
 
@@ -1074,18 +1101,24 @@ func parsePostForm(r *Request) (vs url.Values, err error) {
 	return
 }
 
-// ParseForm parses the raw query from the URL and updates r.Form.
+// ParseForm populates r.Form and r.PostForm.
 //
-// For POST or PUT requests, it also parses the request body as a form and
-// put the results into both r.PostForm and r.Form.
-// POST and PUT body parameters take precedence over URL query string values
-// in r.Form.
+// For all requests, ParseForm parses the raw query from the URL and updates
+// r.Form.
+//
+// For POST, PUT, and PATCH requests, it also parses the request body as a form
+// and puts the results into both r.PostForm and r.Form. Request body parameters
+// take precedence over URL query string values in r.Form.
+//
+// For other HTTP methods, or when the Content-Type is not
+// application/x-www-form-urlencoded, the request Body is not read, and
+// r.PostForm is initialized to a non-nil, empty value.
 //
 // If the request Body's size has not already been limited by MaxBytesReader,
 // the size is capped at 10MB.
 //
 // ParseMultipartForm calls ParseForm automatically.
-// It is idempotent.
+// ParseForm is idempotent.
 func (r *Request) ParseForm() error {
 	var err error
 	if r.PostForm == nil {
@@ -1252,7 +1285,7 @@ func (r *Request) isReplayable() bool {
 // outgoingLength reports the Content-Length of this outgoing (Client) request.
 // It maps 0 into -1 (unknown) when the Body is non-nil.
 func (r *Request) outgoingLength() int64 {
-	if r.Body == nil {
+	if r.Body == nil || r.Body == NoBody {
 		return 0
 	}
 	if r.ContentLength != 0 {

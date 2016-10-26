@@ -216,6 +216,13 @@ by making copies of the data.  In pseudo-Go definitions:
 	// C data with explicit length to Go []byte
 	func C.GoBytes(unsafe.Pointer, C.int) []byte
 
+As a special case, C.malloc does not call the C library malloc directly
+but instead calls a Go helper function that wraps the C library malloc
+but guarantees never to return nil. If C's malloc indicates out of memory,
+the helper function crashes the program, like when Go itself runs out
+of memory. Because C.malloc cannot fail, it has no two-result form
+that returns errno.
+
 C references to Go
 
 Go functions can be exported for use by C code in the following way:
@@ -319,6 +326,9 @@ The following options are available when running cgo directly:
 		Write out input file in Go syntax replacing C package
 		names with real values. Used to generate files in the
 		syscall package when bootstrapping a new target.
+	-srcdir directory
+		Find the Go input files, listed on the command line,
+		in directory.
 	-objdir directory
 		Put all generated files in directory.
 	-importpath string

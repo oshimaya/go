@@ -14,7 +14,8 @@ type Node interface {
 }
 
 type node struct {
-	doc  *Comment // nil means no comment(s) attached
+	// commented out for now since not yet used
+	// doc  *Comment // nil means no comment(s) attached
 	pos  uint32
 	line uint32
 }
@@ -25,15 +26,9 @@ func (n *node) Line() uint32 {
 	return n.line
 }
 
-// TODO(gri) clean up init/initFrom once we have a good file pos story
 func (n *node) init(p *parser) {
 	n.pos = uint32(p.pos)
 	n.line = uint32(p.line)
-}
-
-func (n *node) initFrom(a *node) {
-	n.pos = a.pos
-	n.line = a.line
 }
 
 // ----------------------------------------------------------------------------
@@ -65,15 +60,6 @@ type (
 		decl
 	}
 
-	// Name => Orig
-	AliasDecl struct {
-		Tok   token // Const, Type, Var, or Func
-		Name  *Name
-		Orig  Expr
-		Group *Group // nil means not part of a group
-		decl
-	}
-
 	// NameList
 	// NameList      = Values
 	// NameList Type = Values
@@ -89,7 +75,6 @@ type (
 	TypeDecl struct {
 		Name   *Name
 		Type   Expr
-		Alias  bool
 		Group  *Group // nil means not part of a group
 		Pragma Pragma
 		decl

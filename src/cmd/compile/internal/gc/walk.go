@@ -128,8 +128,8 @@ func adjustargs(n *Node, adjust int) {
 			continue
 		}
 
-		if lhs.Op != OINDREG {
-			yyerror("call argument store does not use OINDREG")
+		if lhs.Op != OINDREGSP {
+			yyerror("call argument store does not use OINDREGSP")
 		}
 
 		// can't really check this in machine-indep code.
@@ -410,16 +410,14 @@ func walkexprlistcheap(s []*Node, init *Nodes) {
 	}
 }
 
-// Build name of function: convI2E etc.
+// Build name of function for interface conversion.
 // Not all names are possible
-// (e.g., we'll never generate convE2E or convE2I).
+// (e.g., we'll never generate convE2E or convE2I or convI2E).
 func convFuncName(from, to *Type) string {
 	tkind := to.iet()
 	switch from.iet() {
 	case 'I':
 		switch tkind {
-		case 'E':
-			return "convI2E"
 		case 'I':
 			return "convI2I"
 		}
@@ -432,38 +430,6 @@ func convFuncName(from, to *Type) string {
 		}
 	}
 	Fatalf("unknown conv func %c2%c", from.iet(), to.iet())
-	panic("unreachable")
-}
-
-// Build name of function: assertI2E etc.
-// If with2suffix is true, the form ending in "2" is returned".
-func assertFuncName(from, to *Type, with2suffix bool) string {
-	l := len("assertX2X2")
-	if !with2suffix {
-		l--
-	}
-	tkind := to.iet()
-	switch from.iet() {
-	case 'E':
-		switch tkind {
-		case 'I':
-			return "assertE2I2"[:l]
-		case 'E':
-			return "assertE2E2"[:l]
-		case 'T':
-			return "assertE2T2"[:l]
-		}
-	case 'I':
-		switch tkind {
-		case 'I':
-			return "assertI2I2"[:l]
-		case 'E':
-			return "assertI2E2"[:l]
-		case 'T':
-			return "assertI2T2"[:l]
-		}
-	}
-	Fatalf("unknown assert func %c2%c", from.iet(), to.iet())
 	panic("unreachable")
 }
 
@@ -512,7 +478,7 @@ opswitch:
 
 	case OTYPE,
 		ONONAME,
-		OINDREG,
+		OINDREGSP,
 		OEMPTY,
 		OGETG:
 
@@ -688,7 +654,7 @@ opswitch:
 
 		if n.Left.Op == ONAME && n.Left.Sym.Name == "Sqrt" &&
 			(n.Left.Sym.Pkg.Path == "math" || n.Left.Sym.Pkg == localpkg && myimportpath == "math") {
-			if Thearch.LinkArch.InFamily(sys.AMD64, sys.ARM, sys.ARM64, sys.PPC64, sys.S390X) {
+			if Thearch.LinkArch.InFamily(sys.AMD64, sys.ARM, sys.ARM64, sys.MIPS, sys.PPC64, sys.S390X) {
 				n.Op = OSQRT
 				n.Left = n.List.First()
 				n.List.Set(nil)
@@ -723,41 +689,14 @@ opswitch:
 			break
 		}
 
-		if n.Right == nil || iszero(n.Right) && !instrumenting {
+		if n.Right == nil {
+			// TODO(austin): Check all "implicit zeroing"
 			break
 		}
 
 		switch n.Right.Op {
 		default:
 			n.Right = walkexpr(n.Right, init)
-
-		case ODOTTYPE:
-			// TODO(rsc): The isfat is for consistency with componentgen and orderexpr.
-			// It needs to be removed in all three places.
-			// That would allow inlining x.(struct{*int}) the same as x.(*int).
-			if isdirectiface(n.Right.Type) && !isfat(n.Right.Type) && !instrumenting {
-				// handled directly during cgen
-				n.Right = walkexpr(n.Right, init)
-				break
-			}
-
-			// x = i.(T); n.Left is x, n.Right.Left is i.
-			// orderstmt made sure x is addressable.
-			n.Right.Left = walkexpr(n.Right.Left, init)
-
-			n1 := nod(OADDR, n.Left, nil)
-			r := n.Right // i.(T)
-
-			if Debug_typeassert > 0 {
-				Warn("type assertion not inlined")
-			}
-
-			fn := syslook(assertFuncName(r.Left.Type, r.Type, false))
-			fn = substArgTypes(fn, r.Left.Type, r.Type)
-
-			n = mkcall1(fn, nil, init, typename(r.Type), r.Left, n1)
-			n = walkexpr(n, init)
-			break opswitch
 
 		case ORECV:
 			// x = <-c; n.Left is x, n.Right.Left is c.
@@ -821,12 +760,13 @@ opswitch:
 			n.Rlist.Set1(r)
 			break
 		}
+		init.Append(r)
 
-		ll := ascompatet(n.Op, n.List, r.Type, 0, init)
+		ll := ascompatet(n.Op, n.List, r.Type)
 		for i, n := range ll {
 			ll[i] = applywritebarrier(n)
 		}
-		n = liststmt(append([]*Node{r}, ll...))
+		n = liststmt(ll)
 
 	// x, y = <-c
 	// orderstmt made sure x is addressable.
@@ -935,112 +875,11 @@ opswitch:
 		n = mkcall1(mapfndel("mapdelete", t), nil, init, typename(t), map_, key)
 
 	case OAS2DOTTYPE:
-		e := n.Rlist.First() // i.(T)
-
-		// TODO(rsc): The isfat is for consistency with componentgen and orderexpr.
-		// It needs to be removed in all three places.
-		// That would allow inlining x.(struct{*int}) the same as x.(*int).
-		if isdirectiface(e.Type) && !isfat(e.Type) && !instrumenting {
-			// handled directly during gen.
-			walkexprlistsafe(n.List.Slice(), init)
-			e.Left = walkexpr(e.Left, init)
-			break
-		}
-
-		// res, ok = i.(T)
-		// orderstmt made sure a is addressable.
-		init.AppendNodes(&n.Ninit)
-
 		walkexprlistsafe(n.List.Slice(), init)
+		e := n.Rlist.First() // i.(T)
 		e.Left = walkexpr(e.Left, init)
-		t := e.Type    // T
-		from := e.Left // i
-
-		oktype := Types[TBOOL]
-		ok := n.List.Second()
-		if !isblank(ok) {
-			oktype = ok.Type
-		}
-		if !oktype.IsBoolean() {
-			Fatalf("orderstmt broken: got %L, want boolean", oktype)
-		}
-
-		fromKind := from.Type.iet()
-		toKind := t.iet()
-
-		res := n.List.First()
-		scalar := !haspointers(res.Type)
-
-		// Avoid runtime calls in a few cases of the form _, ok := i.(T).
-		// This is faster and shorter and allows the corresponding assertX2X2
-		// routines to skip nil checks on their last argument.
-		// Also avoid runtime calls for converting interfaces to scalar concrete types.
-		if isblank(res) || (scalar && toKind == 'T') {
-			var fast *Node
-			switch toKind {
-			case 'T':
-				tab := nod(OITAB, from, nil)
-				if fromKind == 'E' {
-					typ := nod(OCONVNOP, typename(t), nil)
-					typ.Type = ptrto(Types[TUINTPTR])
-					fast = nod(OEQ, tab, typ)
-					break
-				}
-				fast = nod(OANDAND,
-					nod(ONE, nodnil(), tab),
-					nod(OEQ, itabType(tab), typename(t)),
-				)
-			case 'E':
-				tab := nod(OITAB, from, nil)
-				fast = nod(ONE, nodnil(), tab)
-			}
-			if fast != nil {
-				if isblank(res) {
-					if Debug_typeassert > 0 {
-						Warn("type assertion (ok only) inlined")
-					}
-					n = nod(OAS, ok, fast)
-					n = typecheck(n, Etop)
-				} else {
-					if Debug_typeassert > 0 {
-						Warn("type assertion (scalar result) inlined")
-					}
-					n = nod(OIF, ok, nil)
-					n.Likely = 1
-					if isblank(ok) {
-						n.Left = fast
-					} else {
-						n.Ninit.Set1(nod(OAS, ok, fast))
-					}
-					n.Nbody.Set1(nod(OAS, res, ifaceData(from, res.Type)))
-					n.Rlist.Set1(nod(OAS, res, nil))
-					n = typecheck(n, Etop)
-				}
-				break
-			}
-		}
-
-		var resptr *Node // &res
-		if isblank(res) {
-			resptr = nodnil()
-		} else {
-			resptr = nod(OADDR, res, nil)
-		}
-		resptr.Etype = 1 // addr does not escape
-
-		if Debug_typeassert > 0 {
-			Warn("type assertion not inlined")
-		}
-		fn := syslook(assertFuncName(from.Type, t, true))
-		fn = substArgTypes(fn, from.Type, t)
-		call := mkcall1(fn, oktype, init, typename(t), from, resptr)
-		n = nod(OAS, ok, call)
-		n = typecheck(n, Etop)
 
 	case ODOTTYPE, ODOTTYPE2:
-		if !isdirectiface(n.Type) || isfat(n.Type) {
-			Fatalf("walkexpr ODOTTYPE") // should see inside OAS only
-		}
 		n.Left = walkexpr(n.Left, init)
 
 	case OCONVIFACE:
@@ -1077,6 +916,34 @@ opswitch:
 			l.Type = n.Type
 			l.Typecheck = n.Typecheck
 			n = l
+			break
+		}
+
+		// Implement interface to empty interface conversion.
+		// tmp = i.itab
+		// if tmp != nil {
+		//    tmp = tmp.type
+		// }
+		// e = iface{tmp, i.data}
+		if n.Type.IsEmptyInterface() && n.Left.Type.IsInterface() && !n.Left.Type.IsEmptyInterface() {
+			// Evaluate the input interface.
+			c := temp(n.Left.Type)
+			init.Append(nod(OAS, c, n.Left))
+
+			// Get the itab out of the interface.
+			tmp := temp(ptrto(Types[TUINT8]))
+			init.Append(nod(OAS, tmp, typecheck(nod(OITAB, c, nil), Erv)))
+
+			// Get the type out of the itab.
+			nif := nod(OIF, typecheck(nod(ONE, tmp, nodnil()), Erv), nil)
+			nif.Nbody.Set1(nod(OAS, tmp, itabType(tmp)))
+			init.Append(nif)
+
+			// Build the result.
+			e := nod(OEFACE, tmp, ifaceData(c, ptrto(Types[TUINT8])))
+			e.Type = n.Type // assign type manually, typecheck doesn't understand OEFACE.
+			e.Typecheck = 1
+			n = e
 			break
 		}
 
@@ -1119,7 +986,7 @@ opswitch:
 		n = walkexpr(n, init)
 
 	case OCONV, OCONVNOP:
-		if Thearch.LinkArch.Family == sys.ARM {
+		if Thearch.LinkArch.Family == sys.ARM || Thearch.LinkArch.Family == sys.MIPS {
 			if n.Left.Type.IsFloat() {
 				if n.Type.Etype == TINT64 {
 					n = mkcall("float64toint64", n.Type, init, conv(n.Left, Types[TFLOAT64]))
@@ -1633,9 +1500,15 @@ opswitch:
 
 		n = mkcall("stringtoslicebyte", n.Type, init, a, conv(n.Left, Types[TSTRING]))
 
-		// stringtoslicebytetmp(string) []byte;
 	case OSTRARRAYBYTETMP:
-		n = mkcall("stringtoslicebytetmp", n.Type, init, conv(n.Left, Types[TSTRING]))
+		// []byte(string) conversion that creates a slice
+		// referring to the actual string bytes.
+		// This conversion is handled later by the backend and
+		// is only for use by internal compiler optimizations
+		// that know that the slice won't be mutated.
+		// The only such case today is:
+		// for i, c := range []byte(string)
+		n.Left = walkexpr(n.Left, init)
 
 		// stringtoslicerune(*[32]rune, string) []rune
 	case OSTRARRAYRUNE:
@@ -1822,10 +1695,10 @@ func fncall(l *Node, rt *Type) bool {
 // check assign type list to
 // a expression list. called in
 //	expr-list = func()
-func ascompatet(op Op, nl Nodes, nr *Type, fp int, init *Nodes) []*Node {
+func ascompatet(op Op, nl Nodes, nr *Type) []*Node {
 	r, saver := iterFields(nr)
 
-	var nn, mm []*Node
+	var nn, mm Nodes
 	var ullmanOverflow bool
 	var i int
 	for i = 0; i < nl.Len(); i++ {
@@ -1845,20 +1718,20 @@ func ascompatet(op Op, nl Nodes, nr *Type, fp int, init *Nodes) []*Node {
 			tmp := temp(r.Type)
 			tmp = typecheck(tmp, Erv)
 			a := nod(OAS, l, tmp)
-			a = convas(a, init)
-			mm = append(mm, a)
+			a = convas(a, &mm)
+			mm.Append(a)
 			l = tmp
 		}
 
-		a := nod(OAS, l, nodarg(r, fp))
-		a = convas(a, init)
+		a := nod(OAS, l, nodarg(r, 0))
+		a = convas(a, &nn)
 		ullmancalc(a)
 		if a.Ullman >= UINF {
 			Dump("ascompatet ucount", a)
 			ullmanOverflow = true
 		}
 
-		nn = append(nn, a)
+		nn.Append(a)
 		r = saver.Next()
 	}
 
@@ -1869,7 +1742,7 @@ func ascompatet(op Op, nl Nodes, nr *Type, fp int, init *Nodes) []*Node {
 	if ullmanOverflow {
 		Fatalf("ascompatet: too many function calls evaluating parameters")
 	}
-	return append(nn, mm...)
+	return append(nn.Slice(), mm.Slice()...)
 }
 
 // package all the arguments that match a ... T parameter into a []T.
@@ -1880,7 +1753,6 @@ func mkdotargslice(lr0, nn []*Node, l *Field, fp int, init *Nodes, ddd *Node) []
 	}
 
 	tslice := typSlice(l.Type.Elem())
-	tslice.Noalg = true
 
 	var n *Node
 	if len(lr0) == 0 {
@@ -2166,7 +2038,7 @@ func callnew(t *Type) *Node {
 
 func iscallret(n *Node) bool {
 	n = outervalue(n)
-	return n.Op == OINDREG && n.Reg == int16(Thearch.REGSP)
+	return n.Op == OINDREGSP
 }
 
 func isstack(n *Node) bool {
@@ -2174,7 +2046,7 @@ func isstack(n *Node) bool {
 
 	// If n is *autotmp and autotmp = &foo, replace n with foo.
 	// We introduce such temps when initializing struct literals.
-	if n.Op == OIND && n.Left.Op == ONAME && strings.HasPrefix(n.Left.Sym.Name, "autotmp_") {
+	if n.Op == OIND && n.Left.Op == ONAME && n.Left.IsAutoTmp() {
 		defn := n.Left.Name.Defn
 		if defn != nil && defn.Op == OAS && defn.Right.Op == OADDR {
 			n = defn.Right.Left
@@ -2182,8 +2054,8 @@ func isstack(n *Node) bool {
 	}
 
 	switch n.Op {
-	case OINDREG:
-		return n.Reg == int16(Thearch.REGSP)
+	case OINDREGSP:
+		return true
 
 	case ONAME:
 		switch n.Class {
@@ -2193,11 +2065,6 @@ func isstack(n *Node) bool {
 	}
 
 	return false
-}
-
-func (n *Node) isGlobal() bool {
-	n = outervalue(n)
-	return n.Op == ONAME && n.Class == PEXTERN
 }
 
 // Do we need a write barrier for the assignment l = r?
@@ -2222,15 +2089,18 @@ func needwritebarrier(l *Node, r *Node) bool {
 		return false
 	}
 
-	// No write barrier for implicit zeroing.
-	if r == nil {
-		return false
-	}
-
 	// No write barrier if this is a pointer to a go:notinheap
 	// type, since the write barrier's inheap(ptr) check will fail.
 	if l.Type.IsPtr() && l.Type.Elem().NotInHeap {
 		return false
+	}
+
+	// Implicit zeroing is still zeroing, so it needs write
+	// barriers. In practice, these are all to stack variables
+	// (even if isstack isn't smart enough to figure that out), so
+	// they'll be eliminated by the backend.
+	if r == nil {
+		return true
 	}
 
 	// Ignore no-op conversions when making decision.
@@ -2240,31 +2110,17 @@ func needwritebarrier(l *Node, r *Node) bool {
 		r = r.Left
 	}
 
-	// No write barrier for zeroing or initialization to constant.
-	if iszero(r) || r.Op == OLITERAL {
-		return false
-	}
-
-	// No write barrier for storing static (read-only) data.
-	if r.Op == ONAME && strings.HasPrefix(r.Sym.Name, "statictmp_") {
-		return false
-	}
+	// TODO: We can eliminate write barriers if we know *both* the
+	// current and new content of the slot must already be shaded.
+	// We know a pointer is shaded if it's nil, or points to
+	// static data, a global (variable or function), or the stack.
+	// The nil optimization could be particularly useful for
+	// writes to just-allocated objects. Unfortunately, knowing
+	// the "current" value of the slot requires flow analysis.
 
 	// No write barrier for storing address of stack values,
 	// which are guaranteed only to be written to the stack.
 	if r.Op == OADDR && isstack(r.Left) {
-		return false
-	}
-
-	// No write barrier for storing address of global, which
-	// is live no matter what.
-	if r.Op == OADDR && r.Left.isGlobal() {
-		return false
-	}
-
-	// No write barrier for storing global function, which is live
-	// no matter what.
-	if r.Op == ONAME && r.Class == PFUNC {
 		return false
 	}
 
@@ -3384,7 +3240,7 @@ func samecheap(a *Node, b *Node) bool {
 // The result of walkrotate MUST be assigned back to n, e.g.
 // 	n.Left = walkrotate(n.Left)
 func walkrotate(n *Node) *Node {
-	if Thearch.LinkArch.InFamily(sys.MIPS64, sys.PPC64) {
+	if Thearch.LinkArch.InFamily(sys.MIPS, sys.MIPS64, sys.PPC64) {
 		return n
 	}
 
@@ -3561,7 +3417,10 @@ func walkinrange(n *Node, init *Nodes) *Node {
 	cmp.Lineno = n.Lineno
 	cmp = addinit(cmp, l.Ninit.Slice())
 	cmp = addinit(cmp, r.Ninit.Slice())
+	// Typecheck the AST rooted at cmp...
 	cmp = typecheck(cmp, Erv)
+	// ...but then reset cmp's type to match n's type.
+	cmp.Type = n.Type
 	cmp = walkexpr(cmp, init)
 	return cmp
 }

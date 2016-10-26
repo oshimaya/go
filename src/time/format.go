@@ -42,6 +42,13 @@ import "errors"
 //	Z07:00 Z or ±hh:mm
 //	Z07    Z or ±hh
 //
+// The recognized day of week formats are "Mon" and "Monday".
+// The recognized month formats are "Jan" and "January".
+//
+// Text in the format string that is not recognized as part of the reference
+// time is echoed verbatim during Format and expected to appear verbatim
+// in the input to Parse.
+//
 // The executable example for time.Format demonstrates the working
 // of the layout string in detail and is a good reference.
 //
@@ -1005,7 +1012,7 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 	}
 
 	// Validate the day of the month.
-	if day > daysIn(Month(month), year) {
+	if day < 1 || day > daysIn(Month(month), year) {
 		return Time{}, &ParseError{alayout, avalue, "", value, ": day out of range"}
 	}
 

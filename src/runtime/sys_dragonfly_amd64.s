@@ -150,7 +150,7 @@ TEXT runtime·setitimer(SB), NOSPLIT, $-8
 
 // func now() (sec int64, nsec int32)
 TEXT time·now(SB), NOSPLIT, $32
-	MOVL	$232, AX
+	MOVL	$232, AX // clock_gettime
 	MOVQ	$0, DI  	// CLOCK_REALTIME
 	LEAQ	8(SP), SI
 	SYSCALL
@@ -188,11 +188,16 @@ TEXT runtime·sigaction(SB),NOSPLIT,$-8
 	RET
 
 TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
-	MOVL	sig+8(FP), DI
+	MOVQ	fn+0(FP),    AX
+	MOVL	sig+8(FP),   DI
 	MOVQ	info+16(FP), SI
-	MOVQ	ctx+24(FP), DX
-	MOVQ	fn+0(FP), AX
+	MOVQ	ctx+24(FP),  DX
+	PUSHQ	BP
+	MOVQ	SP, BP
+	ANDQ	$~15, SP     // alignment for x86_64 ABI
 	CALL	AX
+	MOVQ	BP, SP
+	POPQ	BP
 	RET
 
 TEXT runtime·sigtramp(SB),NOSPLIT,$24

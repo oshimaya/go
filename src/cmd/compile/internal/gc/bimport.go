@@ -86,10 +86,10 @@ func Import(in *bufio.Reader) {
 
 	// read version specific flags - extend as necessary
 	switch p.version {
-	// case 3:
+	// case 4:
 	// 	...
 	//	fallthrough
-	case 2, 1:
+	case 3, 2, 1:
 		p.debugFormat = p.rawStringln(p.rawByte()) == "debug"
 		p.trackAllTypes = p.bool()
 		p.posInfoFormat = p.bool()
@@ -354,6 +354,17 @@ func (p *importer) obj(tag int) {
 			}
 		}
 
+	case aliasTag:
+		p.pos()
+		alias := importpkg.Lookup(p.string())
+		orig := p.qualifiedName()
+
+		// Although the protocol allows the alias to precede the original,
+		// this never happens in files produced by gc.
+		alias.Flags |= SymAlias
+		alias.Def = orig.Def
+		importsym(alias, orig.Def.Op)
+
 	default:
 		formatErrorf("unexpected object (tag = %d)", tag)
 	}
@@ -425,16 +436,13 @@ func (p *importer) typ() *Type {
 	var t *Type
 	switch i {
 	case namedTag:
-		// parser.go:hidden_importsym
 		p.pos()
 		tsym := p.qualifiedName()
 
-		// parser.go:hidden_pkgtype
 		t = pkgtype(tsym)
 		p.typList = append(p.typList, t)
 
 		// read underlying type
-		// parser.go:hidden_type
 		t0 := p.typ()
 		p.importtype(t, t0)
 
@@ -450,8 +458,6 @@ func (p *importer) typ() *Type {
 
 		// read associated methods
 		for i := p.int(); i > 0; i-- {
-			// parser.go:hidden_fndcl
-
 			p.pos()
 			sym := p.fieldSym()
 
@@ -563,7 +569,6 @@ func (p *importer) qualifiedName() *Sym {
 	return pkg.Lookup(name)
 }
 
-// parser.go:hidden_structdcl_list
 func (p *importer) fieldList() (fields []*Field) {
 	if n := p.int(); n > 0 {
 		fields = make([]*Field, n)
@@ -574,7 +579,6 @@ func (p *importer) fieldList() (fields []*Field) {
 	return
 }
 
-// parser.go:hidden_structdcl
 func (p *importer) field() *Field {
 	p.pos()
 	sym := p.fieldName()
@@ -600,7 +604,6 @@ func (p *importer) field() *Field {
 	return f
 }
 
-// parser.go:hidden_interfacedcl_list
 func (p *importer) methodList() (methods []*Field) {
 	if n := p.int(); n > 0 {
 		methods = make([]*Field, n)
@@ -611,7 +614,6 @@ func (p *importer) methodList() (methods []*Field) {
 	return
 }
 
-// parser.go:hidden_interfacedcl
 func (p *importer) method() *Field {
 	p.pos()
 	sym := p.fieldName()
@@ -625,7 +627,6 @@ func (p *importer) method() *Field {
 	return f
 }
 
-// parser.go:sym,hidden_importsym
 func (p *importer) fieldName() *Sym {
 	name := p.string()
 	if p.version == 0 && name == "_" {
@@ -643,7 +644,6 @@ func (p *importer) fieldName() *Sym {
 	return pkg.Lookup(name)
 }
 
-// parser.go:ohidden_funarg_list
 func (p *importer) paramList() []*Field {
 	i := p.int()
 	if i == 0 {
@@ -663,7 +663,6 @@ func (p *importer) paramList() []*Field {
 	return fs
 }
 
-// parser.go:hidden_funarg
 func (p *importer) param(named bool) *Field {
 	f := newField()
 	f.Type = p.typ()
@@ -835,9 +834,6 @@ func (p *importer) node() *Node {
 	// 	unreachable - unpacked by exporter
 
 	// case ODDDARG:
-	//	unimplemented
-
-	// case OREGISTER:
 	//	unimplemented
 
 	case OLITERAL:

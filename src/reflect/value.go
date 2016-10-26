@@ -440,14 +440,16 @@ func (v Value) call(op string, in []Value) []Value {
 
 	var ret []Value
 	if nout == 0 {
-		memclr(args, frametype.size)
+		// This is untyped because the frame is really a
+		// stack, even though it's a heap object.
+		memclrNoHeapPointers(args, frametype.size)
 		framePool.Put(args)
 	} else {
 		// Zero the now unused input area of args,
 		// because the Values returned by this function contain pointers to the args object,
 		// and will thus keep the args object alive indefinitely.
-		memclr(args, retOffset)
-		// Copy return values out of args.
+		memclrNoHeapPointers(args, retOffset)
+		// Wrap Values around return values in args.
 		ret = make([]Value, nout)
 		off = retOffset
 		for i := 0; i < nout; i++ {
@@ -644,7 +646,9 @@ func callMethod(ctxt *methodValue, frame unsafe.Pointer) {
 		retOffset,
 		frametype.size-retOffset)
 
-	memclr(args, frametype.size)
+	// This is untyped because the frame is really a stack, even
+	// though it's a heap object.
+	memclrNoHeapPointers(args, frametype.size)
 	framePool.Put(args)
 }
 
@@ -2508,7 +2512,7 @@ func typedmemmovepartial(t *rtype, dst, src unsafe.Pointer, off, size uintptr)
 func typedslicecopy(elemType *rtype, dst, src sliceHeader) int
 
 //go:noescape
-func memclr(ptr unsafe.Pointer, n uintptr)
+func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
 
 // Dummy annotation marking that the value x escapes,
 // for use in cases where the reflect code is so clever that

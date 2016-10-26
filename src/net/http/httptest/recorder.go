@@ -15,10 +15,26 @@ import (
 // ResponseRecorder is an implementation of http.ResponseWriter that
 // records its mutations for later inspection in tests.
 type ResponseRecorder struct {
-	Code      int           // the HTTP response code from WriteHeader
-	HeaderMap http.Header   // the HTTP response headers
-	Body      *bytes.Buffer // if non-nil, the bytes.Buffer to append written data to
-	Flushed   bool
+	// Code is the HTTP response code set by WriteHeader.
+	//
+	// Note that if a Handler never calls WriteHeader or Write,
+	// this might end up being 0, rather than the implicit
+	// http.StatusOK. To get the implicit value, use the Result
+	// method.
+	Code int
+
+	// HeaderMap contains the headers explicitly set by the Handler.
+	//
+	// To get the implicit headers set by the server (such as
+	// automatic Content-Type), use the Result method.
+	HeaderMap http.Header
+
+	// Body is the buffer to which the Handler's Write calls are sent.
+	// If nil, the Writes are silently discarded.
+	Body *bytes.Buffer
+
+	// Flushed is whether the Handler called Flush.
+	Flushed bool
 
 	result      *http.Response // cache of Result's return value
 	snapHeader  http.Header    // snapshot of HeaderMap at first Write
@@ -185,6 +201,17 @@ func (rw *ResponseRecorder) Result() *http.Response {
 			vv2 := make([]string, len(vv))
 			copy(vv2, vv)
 			res.Trailer[k] = vv2
+		}
+	}
+	for k, vv := range rw.HeaderMap {
+		if !strings.HasPrefix(k, http.TrailerPrefix) {
+			continue
+		}
+		if res.Trailer == nil {
+			res.Trailer = make(http.Header)
+		}
+		for _, v := range vv {
+			res.Trailer.Add(strings.TrimPrefix(k, http.TrailerPrefix), v)
 		}
 	}
 	return res

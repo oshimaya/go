@@ -13,11 +13,11 @@ var _ unsafe.Pointer
 // Do the interface allocations only once for common
 // Errno values.
 const (
-	errnoWSAEINPROGRESS = 10036
+	errnoERROR_IO_PENDING = 997
 )
 
 var (
-	errWSAEINPROGRESS error = syscall.Errno(errnoWSAEINPROGRESS)
+	errERROR_IO_PENDING error = syscall.Errno(errnoERROR_IO_PENDING)
 )
 
 // errnoErr returns common boxed Errno values, to prevent
@@ -26,8 +26,8 @@ func errnoErr(e syscall.Errno) error {
 	switch e {
 	case 0:
 		return nil
-	case errnoWSAEINPROGRESS:
-		return errWSAEINPROGRESS
+	case errnoERROR_IO_PENDING:
+		return errERROR_IO_PENDING
 	}
 	// TODO: add more here, after collecting data on the common
 	// error values see on Windows. (perhaps when running
@@ -44,6 +44,7 @@ var (
 	procGetAdaptersAddresses  = modiphlpapi.NewProc("GetAdaptersAddresses")
 	procGetComputerNameExW    = modkernel32.NewProc("GetComputerNameExW")
 	procMoveFileExW           = modkernel32.NewProc("MoveFileExW")
+	procGetModuleFileNameW    = modkernel32.NewProc("GetModuleFileNameW")
 	procGetACP                = modkernel32.NewProc("GetACP")
 	procGetConsoleCP          = modkernel32.NewProc("GetConsoleCP")
 	procMultiByteToWideChar   = modkernel32.NewProc("MultiByteToWideChar")
@@ -80,6 +81,19 @@ func GetComputerNameEx(nameformat uint32, buf *uint16, n *uint32) (err error) {
 func MoveFileEx(from *uint16, to *uint16, flags uint32) (err error) {
 	r1, _, e1 := syscall.Syscall(procMoveFileExW.Addr(), 3, uintptr(unsafe.Pointer(from)), uintptr(unsafe.Pointer(to)), uintptr(flags))
 	if r1 == 0 {
+		if e1 != 0 {
+			err = errnoErr(e1)
+		} else {
+			err = syscall.EINVAL
+		}
+	}
+	return
+}
+
+func GetModuleFileName(module syscall.Handle, fn *uint16, len uint32) (n uint32, err error) {
+	r0, _, e1 := syscall.Syscall(procGetModuleFileNameW.Addr(), 3, uintptr(module), uintptr(unsafe.Pointer(fn)), uintptr(len))
+	n = uint32(r0)
+	if n == 0 {
 		if e1 != 0 {
 			err = errnoErr(e1)
 		} else {

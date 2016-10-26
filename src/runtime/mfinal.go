@@ -19,7 +19,7 @@ import (
 type finblock struct {
 	alllink *finblock
 	next    *finblock
-	cnt     int32
+	cnt     uint32
 	_       int32
 	fin     [(_FinBlockSize - 2*sys.PtrSize - 2*4) / unsafe.Sizeof(finalizer{})]finalizer
 }
@@ -72,7 +72,7 @@ var finalizer1 = [...]byte{
 
 func queuefinalizer(p unsafe.Pointer, fn *funcval, nret uintptr, fint *_type, ot *ptrtype) {
 	lock(&finlock)
-	if finq == nil || finq.cnt == int32(len(finq.fin)) {
+	if finq == nil || finq.cnt == uint32(len(finq.fin)) {
 		if finc == nil {
 			finc = (*finblock)(persistentalloc(_FinBlockSize, 0, &memstats.gc_sys))
 			finc.alllink = allfin
@@ -99,7 +99,7 @@ func queuefinalizer(p unsafe.Pointer, fn *funcval, nret uintptr, fint *_type, ot
 		finq = block
 	}
 	f := &finq.fin[finq.cnt]
-	finq.cnt++
+	atomic.Xadd(&finq.cnt, +1) // Sync with markroots
 	f.fn = fn
 	f.nret = nret
 	f.fint = fint
@@ -112,7 +112,7 @@ func queuefinalizer(p unsafe.Pointer, fn *funcval, nret uintptr, fint *_type, ot
 //go:nowritebarrier
 func iterate_finq(callback func(*funcval, unsafe.Pointer, uintptr, *_type, *ptrtype)) {
 	for fb := allfin; fb != nil; fb = fb.alllink {
-		for i := int32(0); i < fb.cnt; i++ {
+		for i := uint32(0); i < fb.cnt; i++ {
 			f := &fb.fin[i]
 			callback(f.fn, f.arg, f.nret, f.fint, f.ot)
 		}
@@ -182,6 +182,11 @@ func runfinq() {
 				if f.fint == nil {
 					throw("missing type in runfinq")
 				}
+				// frame is effectively uninitialized
+				// memory. That means we have to clear
+				// it before writing to it to avoid
+				// confusing the write barrier.
+				*(*[2]uintptr)(frame) = [2]uintptr{}
 				switch f.fint.kind & kindMask {
 				case kindPtr:
 					// direct use of pointer
@@ -194,7 +199,7 @@ func runfinq() {
 					if len(ityp.mhdr) != 0 {
 						// convert to interface with methods
 						// this conversion is guaranteed to succeed - we checked in SetFinalizer
-						assertE2I(ityp, *(*eface)(frame), (*iface)(frame))
+						*(*iface)(frame) = assertE2I(ityp, *(*eface)(frame))
 					}
 				default:
 					throw("bad kind in runfinq")
@@ -203,11 +208,14 @@ func runfinq() {
 				reflectcall(nil, unsafe.Pointer(f.fn), frame, uint32(framesz), uint32(framesz))
 				fingRunning = false
 
-				// drop finalizer queue references to finalized object
+				// Drop finalizer queue heap references
+				// before hiding them from markroot.
+				// This also ensures these will be
+				// clear if we reuse the finalizer.
 				f.fn = nil
 				f.arg = nil
 				f.ot = nil
-				fb.cnt = i - 1
+				atomic.Store(&fb.cnt, i-1)
 			}
 			next := fb.next
 			lock(&finlock)
@@ -376,7 +384,7 @@ func SetFinalizer(obj interface{}, finalizer interface{}) {
 			// ok - satisfies empty interface
 			goto okarg
 		}
-		if assertE2I2(ityp, *efaceOf(&obj), nil) {
+		if _, ok := assertE2I2(ityp, *efaceOf(&obj)); ok {
 			goto okarg
 		}
 	}
@@ -420,7 +428,7 @@ func findObject(v unsafe.Pointer) (s *mspan, x unsafe.Pointer, n uintptr) {
 	}
 	p := uintptr(v) >> pageShift
 	q := p - arena_start>>pageShift
-	s = *(**mspan)(add(unsafe.Pointer(mheap_.spans), q*sys.PtrSize))
+	s = mheap_.spans[q]
 	if s == nil {
 		return
 	}

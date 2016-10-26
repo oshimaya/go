@@ -15,6 +15,11 @@ if test -x "$(type -p clang)"; then
 fi
 export CC
 
+if [ "$(sysctl -n vm.overcommit_memory)" = 2 ]; then
+  echo "skipping msan/tsan tests: vm.overcommit_memory=2" >&2
+  exit 0
+fi
+
 msan=yes
 
 TMPDIR=${TMPDIR:-/tmp}
@@ -139,6 +144,7 @@ if test "$tsan" = "yes"; then
     testtsan tsan2.go
     testtsan tsan3.go
     testtsan tsan4.go
+    testtsan tsan8.go
 
     # These tests are only reliable using clang or GCC version 7 or later.
     # Otherwise runtime/cgo/libcgo.h can't tell whether TSAN is in use.

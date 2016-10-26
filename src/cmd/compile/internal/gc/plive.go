@@ -109,13 +109,22 @@ func newblock(prog *obj.Prog) *BasicBlock {
 	if prog == nil {
 		Fatalf("newblock: prog cannot be nil")
 	}
-	result := new(BasicBlock)
+	// type block allows us to allocate a BasicBlock
+	// and its pred/succ slice together.
+	type block struct {
+		result BasicBlock
+		pred   [2]*BasicBlock
+		succ   [2]*BasicBlock
+	}
+	b := new(block)
+
+	result := &b.result
 	result.rpo = -1
 	result.mark = UNVISITED
 	result.first = prog
 	result.last = prog
-	result.pred = make([]*BasicBlock, 0, 2)
-	result.succ = make([]*BasicBlock, 0, 2)
+	result.pred = b.pred[:0]
+	result.succ = b.succ[:0]
 	return result
 }
 
@@ -1684,7 +1693,7 @@ func onebitwritesymbol(arr []bvec, sym *Sym) {
 	duint32(sym, 0, uint32(i)) // number of bitmaps
 	ls := Linksym(sym)
 	ls.Name = fmt.Sprintf("gclocals·%x", md5.Sum(ls.P))
-	ls.Dupok = true
+	ls.Set(obj.AttrDuplicateOK, true)
 	sv := obj.SymVer{Name: ls.Name, Version: 0}
 	ls2, ok := Ctxt.Hash[sv]
 	if ok {

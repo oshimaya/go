@@ -160,7 +160,6 @@ type Addr struct {
 	Class  int8
 	Offset int64
 	Sym    *LSym
-	Gotype *LSym
 
 	// argument value:
 	//	for TYPE_SCONST, a string
@@ -312,7 +311,7 @@ const (
 	ABaseAMD64
 	ABasePPC64
 	ABaseARM64
-	ABaseMIPS64
+	ABaseMIPS
 	ABaseS390X
 
 	AllowedOpCodes = 1 << 10            // The number of opcodes available for any given architecture.
@@ -321,31 +320,10 @@ const (
 
 // An LSym is the sort of symbol that is written to an object file.
 type LSym struct {
-	Name      string
-	Type      SymKind
-	Version   int16
-	Dupok     bool
-	Cfunc     bool
-	Nosplit   bool
-	Leaf      bool
-	Seenglobl bool
-	Onlist    bool
-
-	// ReflectMethod means the function may call reflect.Type.Method or
-	// reflect.Type.MethodByName. Matching is imprecise (as reflect.Type
-	// can be used through a custom interface), so ReflectMethod may be
-	// set in some cases when the reflect package is not called.
-	//
-	// Used by the linker to determine what methods can be pruned.
-	ReflectMethod bool
-
-	// Local means make the symbol local even when compiling Go code to reference Go
-	// symbols in other shared libraries, as in this mode symbols are global by
-	// default. "local" here means in the sense of the dynamic linker, i.e. not
-	// visible outside of the module (shared library or executable) that contains its
-	// definition. (When not compiling to support Go shared libraries, all symbols are
-	// local in this sense unless there is a cgo_export_* directive).
-	Local bool
+	Name    string
+	Type    SymKind
+	Version int16
+	Attribute
 
 	RefIdx int // Index of this symbol in the symbol reference list.
 	Args   int32
@@ -357,6 +335,55 @@ type LSym struct {
 	Pcln   *Pcln
 	P      []byte
 	R      []Reloc
+}
+
+// Attribute is a set of symbol attributes.
+type Attribute int16
+
+const (
+	AttrDuplicateOK Attribute = 1 << iota
+	AttrCFunc
+	AttrNoSplit
+	AttrLeaf
+	AttrSeenGlobl
+	AttrOnList
+
+	// MakeTypelink means that the type should have an entry in the typelink table.
+	AttrMakeTypelink
+
+	// ReflectMethod means the function may call reflect.Type.Method or
+	// reflect.Type.MethodByName. Matching is imprecise (as reflect.Type
+	// can be used through a custom interface), so ReflectMethod may be
+	// set in some cases when the reflect package is not called.
+	//
+	// Used by the linker to determine what methods can be pruned.
+	AttrReflectMethod
+
+	// Local means make the symbol local even when compiling Go code to reference Go
+	// symbols in other shared libraries, as in this mode symbols are global by
+	// default. "local" here means in the sense of the dynamic linker, i.e. not
+	// visible outside of the module (shared library or executable) that contains its
+	// definition. (When not compiling to support Go shared libraries, all symbols are
+	// local in this sense unless there is a cgo_export_* directive).
+	AttrLocal
+)
+
+func (a Attribute) DuplicateOK() bool   { return a&AttrDuplicateOK != 0 }
+func (a Attribute) MakeTypelink() bool  { return a&AttrMakeTypelink != 0 }
+func (a Attribute) CFunc() bool         { return a&AttrCFunc != 0 }
+func (a Attribute) NoSplit() bool       { return a&AttrNoSplit != 0 }
+func (a Attribute) Leaf() bool          { return a&AttrLeaf != 0 }
+func (a Attribute) SeenGlobl() bool     { return a&AttrSeenGlobl != 0 }
+func (a Attribute) OnList() bool        { return a&AttrOnList != 0 }
+func (a Attribute) ReflectMethod() bool { return a&AttrReflectMethod != 0 }
+func (a Attribute) Local() bool         { return a&AttrLocal != 0 }
+
+func (a *Attribute) Set(flag Attribute, value bool) {
+	if value {
+		*a |= flag
+	} else {
+		*a &^= flag
+	}
 }
 
 // The compiler needs LSym to satisfy fmt.Stringer, because it stores
@@ -394,7 +421,6 @@ const (
 	STYPE
 	SSTRING
 	SGOSTRING
-	SGOSTRINGHDR
 	SGOFUNC
 	SGCBITS
 	SRODATA
@@ -418,7 +444,6 @@ const (
 	STYPERELRO
 	SSTRINGRELRO
 	SGOSTRINGRELRO
-	SGOSTRINGHDRRELRO
 	SGOFUNCRELRO
 	SGCBITSRELRO
 	SRODATARELRO
@@ -467,7 +492,6 @@ var ReadOnly = []SymKind{
 	STYPE,
 	SSTRING,
 	SGOSTRING,
-	SGOSTRINGHDR,
 	SGOFUNC,
 	SGCBITS,
 	SRODATA,
@@ -477,14 +501,13 @@ var ReadOnly = []SymKind{
 // RelROMap describes the transformation of read-only symbols to rel-ro
 // symbols.
 var RelROMap = map[SymKind]SymKind{
-	STYPE:        STYPERELRO,
-	SSTRING:      SSTRINGRELRO,
-	SGOSTRING:    SGOSTRINGRELRO,
-	SGOSTRINGHDR: SGOSTRINGHDRRELRO,
-	SGOFUNC:      SGOFUNCRELRO,
-	SGCBITS:      SGCBITSRELRO,
-	SRODATA:      SRODATARELRO,
-	SFUNCTAB:     SFUNCTABRELRO,
+	STYPE:     STYPERELRO,
+	SSTRING:   SSTRINGRELRO,
+	SGOSTRING: SGOSTRINGRELRO,
+	SGOFUNC:   SGOFUNCRELRO,
+	SGCBITS:   SGCBITSRELRO,
+	SRODATA:   SRODATARELRO,
+	SFUNCTAB:  SFUNCTABRELRO,
 }
 
 type Reloc struct {
@@ -509,12 +532,17 @@ const (
 	// R_ADDRARM64 relocates an adrp, add pair to compute the address of the
 	// referenced symbol.
 	R_ADDRARM64
-	// R_ADDRMIPS (only used on mips64) resolves to the low 16 bits of an external
+	// R_ADDRMIPS (only used on mips/mips64) resolves to the low 16 bits of an external
 	// address, by encoding it into the instruction.
 	R_ADDRMIPS
 	// R_ADDROFF resolves to a 32-bit offset from the beginning of the section
 	// holding the data being relocated to the referenced symbol.
 	R_ADDROFF
+	// R_WEAKADDROFF resolves just like R_ADDROFF but is a weak relocation.
+	// A weak relocation does not make the symbol it refers to reachable,
+	// and is only honored by the linker if the symbol is in some other way
+	// reachable.
+	R_WEAKADDROFF
 	R_SIZE
 	R_CALL
 	R_CALLARM
@@ -637,7 +665,7 @@ const (
 	// TODO(mundaym): remove once variants can be serialized - see issue 14218.
 	R_PCRELDBL
 
-	// R_ADDRMIPSU (only used on mips64) resolves to the sign-adjusted "upper" 16
+	// R_ADDRMIPSU (only used on mips/mips64) resolves to the sign-adjusted "upper" 16
 	// bits (bit 16-31) of an external address, by encoding it into the instruction.
 	R_ADDRMIPSU
 	// R_ADDRMIPSTLS (only used on mips64) resolves to the low 16 bits of a TLS

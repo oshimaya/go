@@ -184,7 +184,10 @@ const (
 	_AT_PAGESZ = 6  // System physical page size
 	_AT_HWCAP  = 16 // hardware capability bit vector
 	_AT_RANDOM = 25 // introduced in 2.6.29
+	_AT_HWCAP2 = 26 // hardware capability bit vector 2
 )
+
+var procAuxv = []byte("/proc/self/auxv\x00")
 
 func sysargs(argc int32, argv **byte) {
 	n := argc + 1
@@ -199,7 +202,30 @@ func sysargs(argc int32, argv **byte) {
 
 	// now argv+n is auxv
 	auxv := (*[1 << 28]uintptr)(add(unsafe.Pointer(argv), uintptr(n)*sys.PtrSize))
-	for i := 0; auxv[i] != _AT_NULL; i += 2 {
+	if sysauxv(auxv[:]) == 0 {
+		// In some situations we don't get a loader-provided
+		// auxv, such as when loaded as a library on Android.
+		// Fall back to /proc/self/auxv.
+		fd := open(&procAuxv[0], 0 /* O_RDONLY */, 0)
+		if fd < 0 {
+			return
+		}
+		var buf [128]uintptr
+		n := read(fd, noescape(unsafe.Pointer(&buf[0])), int32(unsafe.Sizeof(buf)))
+		closefd(fd)
+		if n < 0 {
+			return
+		}
+		// Make sure buf is terminated, even if we didn't read
+		// the whole file.
+		buf[len(buf)-2] = _AT_NULL
+		sysauxv(buf[:])
+	}
+}
+
+func sysauxv(auxv []uintptr) int {
+	var i int
+	for ; auxv[i] != _AT_NULL; i += 2 {
 		tag, val := auxv[i], auxv[i+1]
 		switch tag {
 		case _AT_RANDOM:
@@ -213,6 +239,7 @@ func sysargs(argc int32, argv **byte) {
 
 		archauxv(tag, val)
 	}
+	return i / 2
 }
 
 func osinit() {
@@ -309,9 +336,6 @@ func memlimit() uintptr {
 func sigreturn()
 func sigtramp(sig uint32, info *siginfo, ctx unsafe.Pointer)
 func cgoSigtramp()
-
-//go:noescape
-func rt_sigaction(sig uintptr, new, old *sigactiont, size uintptr) int32
 
 //go:noescape
 func sigaltstack(new, old *stackt)

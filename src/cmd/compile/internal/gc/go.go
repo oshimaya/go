@@ -47,14 +47,10 @@ type Sym struct {
 	Block      int32  // blocknumber to catch redeclaration
 	Lastlineno int32  // last declaration for diagnostic
 
-	Label   *Label // corresponding label (ephemeral)
-	Origpkg *Pkg   // original package for . import
+	Label   *Node // corresponding label (ephemeral)
+	Origpkg *Pkg  // original package for . import
 	Lsym    *obj.LSym
 	Fsym    *Sym // funcsym
-}
-
-type Label struct {
-	Def *Node
 }
 
 type SymFlags uint8
@@ -67,6 +63,7 @@ const (
 	SymSiggen
 	SymAsm
 	SymAlgGen
+	SymAlias // alias, original is Sym.Def.Sym
 )
 
 // The Class of a variable/function describes the "storage class"
@@ -122,8 +119,12 @@ var linkobj string
 
 var bout *bio.Writer
 
+// nerrors is the number of compiler errors reported
+// since the last call to saveerrors.
 var nerrors int
 
+// nsavederrors is the total number of compiler errors
+// reported before the last call to saveerrors.
 var nsavederrors int
 
 var nsyntaxerrors int
@@ -220,7 +221,7 @@ var dclcontext Class // PEXTERN/PAUTO
 
 var statuniqgen int // name generator for static temps
 
-var iota_ int32
+var iota_ int64
 
 var lastconst []*Node
 
@@ -366,21 +367,18 @@ var pcloc int32
 
 var Thearch Arch
 
-var Newproc *Node
-
-var Deferproc *Node
-
-var Deferreturn *Node
-
-var panicindex *Node
-
-var panicslice *Node
-
-var panicdivide *Node
-
-var growslice *Node
-
-var writebarrierptr *Node
-var typedmemmove *Node
-
-var panicdottype *Node
+var (
+	Newproc,
+	Deferproc,
+	Deferreturn,
+	panicindex,
+	panicslice,
+	panicdivide,
+	growslice,
+	panicdottype,
+	panicnildottype,
+	assertE2I,
+	assertE2I2,
+	assertI2I,
+	assertI2I2 *Node
+)

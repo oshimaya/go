@@ -106,6 +106,7 @@
 package ssa
 
 import (
+	"cmd/internal/obj"
 	"fmt"
 	"unsafe"
 )
@@ -527,6 +528,12 @@ func (s *regAllocState) init(f *Func) {
 			// Leaf functions don't save/restore the link register.
 			s.allocatable &^= 1 << uint(s.f.Config.LinkReg)
 		}
+		if s.f.Config.arch == "arm" && obj.GOARM == 5 {
+			// On ARMv5 we insert softfloat calls at each FP instruction.
+			// This clobbers LR almost everywhere. Disable allocating LR
+			// on ARMv5.
+			s.allocatable &^= 1 << uint(s.f.Config.LinkReg)
+		}
 	}
 	if s.f.Config.ctxt.Flag_dynlink {
 		switch s.f.Config.arch {
@@ -862,7 +869,6 @@ func (s *regAllocState) regalloc(f *Func) {
 				m := s.values[a.ID].regs &^ phiUsed & s.allocatable
 				if m != 0 {
 					r := pickReg(m)
-					s.freeReg(r)
 					phiUsed |= regMask(1) << r
 					phiRegs = append(phiRegs, r)
 				} else {
@@ -871,7 +877,7 @@ func (s *regAllocState) regalloc(f *Func) {
 			}
 
 			// Second pass - deallocate any phi inputs which are now dead.
-			for _, v := range phis {
+			for i, v := range phis {
 				if !s.values[v.ID].needReg {
 					continue
 				}
@@ -880,6 +886,31 @@ func (s *regAllocState) regalloc(f *Func) {
 					// Input is dead beyond the phi, deallocate
 					// anywhere else it might live.
 					s.freeRegs(s.values[a.ID].regs)
+				} else {
+					// Input is still live.
+					// Try to move it around before kicking out, if there is a free register.
+					// We generate a Copy in the predecessor block and record it. It will be
+					// deleted if never used.
+					r := phiRegs[i]
+					if r == noRegister {
+						continue
+					}
+					// Pick a free register. At this point some registers used in the predecessor
+					// block may have been deallocated. Those are the ones used for Phis. Exclude
+					// them (and they are not going to be helpful anyway).
+					m := s.compatRegs(a.Type) &^ s.used &^ phiUsed
+					if m != 0 && !s.values[a.ID].rematerializeable && countRegs(s.values[a.ID].regs) == 1 {
+						r2 := pickReg(m)
+						c := p.NewValue1(a.Line, OpCopy, a.Type, s.regs[r].c)
+						s.copies[c] = false
+						if s.f.pass.debug > regDebug {
+							fmt.Printf("copy %s to %s : %s\n", a, c, s.registers[r2].Name())
+						}
+						s.setOrig(c, a)
+						s.assignReg(r2, a, c)
+						s.endRegs[p.ID] = append(s.endRegs[p.ID], endReg{r2, a, c})
+					}
+					s.freeReg(r)
 				}
 			}
 

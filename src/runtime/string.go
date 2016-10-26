@@ -147,18 +147,6 @@ func stringtoslicebyte(buf *tmpBuf, s string) []byte {
 	return b
 }
 
-func stringtoslicebytetmp(s string) []byte {
-	// Return a slice referring to the actual string bytes.
-	// This is only for use by internal compiler optimizations
-	// that know that the slice won't be mutated.
-	// The only such case today is:
-	// for i, c := range []byte(str)
-
-	str := stringStructOf(&s)
-	ret := slice{array: str.str, len: str.len, cap: str.len}
-	return *(*[]byte)(unsafe.Pointer(&ret))
-}
-
 func stringtoslicerune(buf *[tmpStringBufSize]rune, s string) []rune {
 	// two passes.
 	// unlike slicerunetostring, no race because strings are immutable.
@@ -261,7 +249,7 @@ func rawbyteslice(size int) (b []byte) {
 	cap := roundupsize(uintptr(size))
 	p := mallocgc(cap, nil, false)
 	if cap != uintptr(size) {
-		memclr(add(p, uintptr(size)), cap-uintptr(size))
+		memclrNoHeapPointers(add(p, uintptr(size)), cap-uintptr(size))
 	}
 
 	*(*slice)(unsafe.Pointer(&b)) = slice{p, size, int(cap)}
@@ -276,7 +264,7 @@ func rawruneslice(size int) (b []rune) {
 	mem := roundupsize(uintptr(size) * 4)
 	p := mallocgc(mem, nil, false)
 	if mem != uintptr(size)*4 {
-		memclr(add(p, uintptr(size)*4), mem-uintptr(size)*4)
+		memclrNoHeapPointers(add(p, uintptr(size)*4), mem-uintptr(size)*4)
 	}
 
 	*(*slice)(unsafe.Pointer(&b)) = slice{p, size, int(mem / 4)}
@@ -332,13 +320,66 @@ func hasprefix(s, t string) bool {
 	return len(s) >= len(t) && s[:len(t)] == t
 }
 
-func atoi(s string) int {
-	n := 0
-	for len(s) > 0 && '0' <= s[0] && s[0] <= '9' {
-		n = n*10 + int(s[0]) - '0'
+const (
+	maxUint = ^uint(0)
+	maxInt  = int(maxUint >> 1)
+)
+
+// atoi parses an int from a string s.
+// The bool result reports whether s is a number
+// representable by a value of type int.
+func atoi(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+
+	neg := false
+	if s[0] == '-' {
+		neg = true
 		s = s[1:]
 	}
-	return n
+
+	un := uint(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		if un > maxUint/10 {
+			// overflow
+			return 0, false
+		}
+		un *= 10
+		un1 := un + uint(c) - '0'
+		if un1 < un {
+			// overflow
+			return 0, false
+		}
+		un = un1
+	}
+
+	if !neg && un > uint(maxInt) {
+		return 0, false
+	}
+	if neg && un > uint(maxInt)+1 {
+		return 0, false
+	}
+
+	n := int(un)
+	if neg {
+		n = -n
+	}
+
+	return n, true
+}
+
+// atoi32 is like atoi but for integers
+// that fit into an int32.
+func atoi32(s string) (int32, bool) {
+	if n, ok := atoi(s); n == int(int32(n)) {
+		return int32(n), ok
+	}
+	return 0, false
 }
 
 //go:nosplit

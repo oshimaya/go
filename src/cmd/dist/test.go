@@ -152,8 +152,11 @@ func (t *tester) run() {
 	}
 
 	t.timeoutScale = 1
-	if t.goarch == "arm" || t.goos == "windows" {
+	switch t.goarch {
+	case "arm", "windows":
 		t.timeoutScale = 2
+	case "mips", "mipsle", "mips64", "mips64le":
+		t.timeoutScale = 4
 	}
 	if s := os.Getenv("GO_TEST_TIMEOUT_SCALE"); s != "" {
 		t.timeoutScale, err = strconv.Atoi(s)
@@ -367,7 +370,7 @@ func (t *tester) registerTests() {
 		if !t.race {
 			cmd.Args = append(cmd.Args, "cmd")
 		}
-		all, err := cmd.CombinedOutput()
+		all, err := cmd.Output()
 		if err != nil {
 			log.Fatalf("Error running go list std cmd: %v, %s", err, all)
 		}
@@ -746,6 +749,14 @@ func (t *tester) supportedBuildmode(mode string) bool {
 		}
 		return false
 	case "plugin":
+		if os.Getenv("GO_BUILDER_NAME") == "linux-amd64-noopt" {
+			// Skip the plugin tests on noopt. They're
+			// causing build failures potentially
+			// obscuring other issues. This is hopefully a
+			// temporary workaround. See golang.org/issue/17937.
+			return false
+		}
+
 		// linux-arm64 is missing because it causes the external linker
 		// to crash, see https://golang.org/issue/17138
 		switch pair {
@@ -809,7 +820,7 @@ func (t *tester) cgoTest(dt *distTest) error {
 	case "android-arm",
 		"dragonfly-386", "dragonfly-amd64",
 		"freebsd-386", "freebsd-amd64", "freebsd-arm",
-		"linux-386", "linux-amd64", "linux-arm", "linux-s390x",
+		"linux-386", "linux-amd64", "linux-arm", "linux-ppc64le", "linux-s390x",
 		"netbsd-386", "netbsd-amd64":
 
 		cmd := t.addCmd(dt, "misc/cgo/test", "go", "test", "-ldflags", "-linkmode=external")
@@ -1055,21 +1066,20 @@ func (t *tester) runFlag(rx string) string {
 func (t *tester) raceTest(dt *distTest) error {
 	t.addCmd(dt, "src", "go", "test", "-race", "-i", "runtime/race", "flag", "os/exec")
 	t.addCmd(dt, "src", "go", "test", "-race", t.runFlag("Output"), "runtime/race")
-	t.addCmd(dt, "src", "go", "test", "-race", "-short", t.runFlag("TestParse|TestEcho"), "flag", "os/exec")
+	t.addCmd(dt, "src", "go", "test", "-race", "-short", t.runFlag("TestParse|TestEcho|TestStdinCloseRace"), "flag", "os/exec")
 	// We don't want the following line, because it
 	// slows down all.bash (by 10 seconds on my laptop).
 	// The race builder should catch any error here, but doesn't.
 	// TODO(iant): Figure out how to catch this.
 	// t.addCmd(dt, "src", "go", "test", "-race", "-run=TestParallelTest", "cmd/go")
-	// TODO: Remove t.goos != "darwin" when issue 17065 is fixed.
-	if t.cgoEnabled && t.goos != "darwin" {
+	if t.cgoEnabled {
 		env := mergeEnvLists([]string{"GOTRACEBACK=2"}, os.Environ())
 		cmd := t.addCmd(dt, "misc/cgo/test", "go", "test", "-race", "-short", t.runFlag(""))
 		cmd.Env = env
 	}
 	if t.extLink() {
 		// Test with external linking; see issue 9133.
-		t.addCmd(dt, "src", "go", "test", "-race", "-short", "-ldflags=-linkmode=external", t.runFlag("TestParse|TestEcho"), "flag", "os/exec")
+		t.addCmd(dt, "src", "go", "test", "-race", "-short", "-ldflags=-linkmode=external", t.runFlag("TestParse|TestEcho|TestStdinCloseRace"), "flag", "os/exec")
 	}
 	return nil
 }

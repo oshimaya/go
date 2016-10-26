@@ -88,7 +88,7 @@
 (Com32 x) -> (NOTW x)
 (Com16 x) -> (NOTW x)
 (Com8  x) -> (NOTW x)
-(NOT x) && true -> (XORconst [-1] x)
+(NOT x) && true -> (XOR (MOVDconst [-1]) x)
 (NOTW x) && true -> (XORWconst [-1] x)
 
 // Lowering boolean ops
@@ -110,6 +110,32 @@
 
 (Sqrt x) -> (FSQRT x)
 
+// Atomic loads.
+(AtomicLoad32 ptr mem) -> (MOVWZatomicload ptr mem)
+(AtomicLoad64 ptr mem) -> (MOVDatomicload ptr mem)
+(AtomicLoadPtr ptr mem) -> (MOVDatomicload ptr mem)
+
+// Atomic stores.
+(AtomicStore32 ptr val mem) -> (MOVWatomicstore ptr val mem)
+(AtomicStore64 ptr val mem) -> (MOVDatomicstore ptr val mem)
+(AtomicStorePtrNoWB ptr val mem) -> (MOVDatomicstore ptr val mem)
+
+// Atomic adds.
+(AtomicAdd32 ptr val mem) -> (AddTupleFirst32 (LAA ptr val mem) val)
+(AtomicAdd64 ptr val mem) -> (AddTupleFirst64 (LAAG ptr val mem) val)
+(Select0 <t> (AddTupleFirst32 tuple val)) -> (ADDW val (Select0 <t> tuple))
+(Select1     (AddTupleFirst32 tuple _  )) -> (Select1 tuple)
+(Select0 <t> (AddTupleFirst64 tuple val)) -> (ADD val (Select0 <t> tuple))
+(Select1     (AddTupleFirst64 tuple _  )) -> (Select1 tuple)
+
+// Atomic exchanges.
+(AtomicExchange32 ptr val mem) -> (LoweredAtomicExchange32 ptr val mem)
+(AtomicExchange64 ptr val mem) -> (LoweredAtomicExchange64 ptr val mem)
+
+// Atomic compare and swap.
+(AtomicCompareAndSwap32 ptr old new_ mem) -> (LoweredAtomicCas32 ptr old new_ mem)
+(AtomicCompareAndSwap64 ptr old new_ mem) -> (LoweredAtomicCas64 ptr old new_ mem)
+
 // Lowering extension
 // Note: we always extend to 64 bits even though some ops don't need that many result bits.
 (SignExt8to16  x) -> (MOVBreg x)
@@ -125,6 +151,8 @@
 (ZeroExt16to32 x) -> (MOVHZreg x)
 (ZeroExt16to64 x) -> (MOVHZreg x)
 (ZeroExt32to64 x) -> (MOVWZreg x)
+
+(Slicemask <t> x) -> (XOR (MOVDconst [-1]) (SRADconst <t> (SUBconst <t> x [1]) [63]))
 
 // Lowering truncation
 // Because we ignore high parts of registers, truncates are just copies.
@@ -454,21 +482,25 @@
 (MULLW x (MOVDconst [c])) -> (MULLWconst [c] x)
 (MULLW (MOVDconst [c]) x) -> (MULLWconst [c] x)
 
-(AND x (MOVDconst [c])) && is32Bit(c) -> (ANDconst [c] x)
-(AND (MOVDconst [c]) x) && is32Bit(c) -> (ANDconst [c] x)
+// NILF instructions leave the high 32 bits unchanged which is
+// equivalent to the leftmost 32 bits being set.
+// TODO(mundaym): modify the assembler to accept 64-bit values
+// and use isU32Bit(^c).
+(AND x (MOVDconst [c])) && is32Bit(c) && c < 0 -> (ANDconst [c] x)
+(AND (MOVDconst [c]) x) && is32Bit(c) && c < 0 -> (ANDconst [c] x)
 (ANDW x (MOVDconst [c])) -> (ANDWconst [c] x)
 (ANDW (MOVDconst [c]) x) -> (ANDWconst [c] x)
 
 (ANDWconst [c] (ANDWconst [d] x)) -> (ANDWconst [c & d] x)
 (ANDconst [c] (ANDconst [d] x)) -> (ANDconst [c & d] x)
 
-(OR x (MOVDconst [c])) && is32Bit(c) -> (ORconst [c] x)
-(OR (MOVDconst [c]) x) && is32Bit(c) -> (ORconst [c] x)
+(OR x (MOVDconst [c])) && isU32Bit(c) -> (ORconst [c] x)
+(OR (MOVDconst [c]) x) && isU32Bit(c) -> (ORconst [c] x)
 (ORW x (MOVDconst [c])) -> (ORWconst [c] x)
 (ORW (MOVDconst [c]) x) -> (ORWconst [c] x)
 
-(XOR x (MOVDconst [c])) && is32Bit(c) -> (XORconst [c] x)
-(XOR (MOVDconst [c]) x) && is32Bit(c) -> (XORconst [c] x)
+(XOR x (MOVDconst [c])) && isU32Bit(c) -> (XORconst [c] x)
+(XOR (MOVDconst [c]) x) && isU32Bit(c) -> (XORconst [c] x)
 (XORW x (MOVDconst [c])) -> (XORWconst [c] x)
 (XORW (MOVDconst [c]) x) -> (XORWconst [c] x)
 
@@ -495,10 +527,15 @@
 (CMPWU x (MOVDconst [c])) -> (CMPWUconst x [int64(uint32(c))])
 (CMPWU (MOVDconst [c]) x) -> (InvertFlags (CMPWUconst x [int64(uint32(c))]))
 
-// Using MOVBZreg instead of AND is cheaper.
-(ANDconst [0xFF] x) -> (MOVBZreg x)
-(ANDconst [0xFFFF] x) -> (MOVHZreg x)
-(ANDconst [0xFFFFFFFF] x) -> (MOVWZreg x)
+// Using MOV{W,H,B}Zreg instead of AND is cheaper.
+(AND (MOVDconst [0xFF]) x) -> (MOVBZreg x)
+(AND x (MOVDconst [0xFF])) -> (MOVBZreg x)
+(AND (MOVDconst [0xFFFF]) x) -> (MOVHZreg x)
+(AND x (MOVDconst [0xFFFF])) -> (MOVHZreg x)
+(AND (MOVDconst [0xFFFFFFFF]) x) -> (MOVWZreg x)
+(AND x (MOVDconst [0xFFFFFFFF])) -> (MOVWZreg x)
+(ANDWconst [0xFF] x) -> (MOVBZreg x)
+(ANDWconst [0xFFFF] x) -> (MOVHZreg x)
 
 // strength reduction
 (MULLDconst [-1] x) -> (NEG x)
@@ -516,18 +553,15 @@
 (MULLWconst [c] x) && isPowerOfTwo(c-1) && c >= 17 -> (ADDW (SLWconst <v.Type> [log2(c-1)] x) x)
 
 // Fold ADD into MOVDaddr. Odd offsets from SB shouldn't be folded (LARL can't handle them).
-(ADDconst [c] (MOVDaddr [d] {s} x)) && ((c+d)&1 == 0) && is32Bit(c+d) -> (MOVDaddr [c+d] {s} x)
-(MOVDaddr [c] {s} (ADDconst [d] x)) && ((c+d)&1 == 0) && is32Bit(c+d) -> (MOVDaddr [c+d] {s} x)
-(ADDconst [c] (MOVDaddr [d] {s} x)) && x.Op != OpSB && is32Bit(c+d) -> (MOVDaddr [c+d] {s} x)
-(MOVDaddr [c] {s} (ADDconst [d] x)) && x.Op != OpSB && is32Bit(c+d) -> (MOVDaddr [c+d] {s} x)
-(MOVDaddr [c] {s} (ADD x y)) && x.Op != OpSB && y.Op != OpSB -> (MOVDaddridx [c] {s} x y)
+(ADDconst [c] (MOVDaddr [d] {s} x:(SB))) && ((c+d)&1 == 0) && is32Bit(c+d) -> (MOVDaddr [c+d] {s} x)
+(ADDconst [c] (MOVDaddr [d] {s} x)) && x.Op != OpSB && is20Bit(c+d) -> (MOVDaddr [c+d] {s} x)
 (ADD x (MOVDaddr [c] {s} y)) && x.Op != OpSB && y.Op != OpSB -> (MOVDaddridx [c] {s} x y)
 (ADD (MOVDaddr [c] {s} x) y) && x.Op != OpSB && y.Op != OpSB -> (MOVDaddridx [c] {s} x y)
 
 // fold ADDconst into MOVDaddrx
-(ADDconst [c] (MOVDaddridx [d] {s} x y)) && is32Bit(c+d) -> (MOVDaddridx [c+d] {s} x y)
-(MOVDaddridx [c] {s} (ADDconst [d] x) y) && is32Bit(c+d)   && x.Op != OpSB -> (MOVDaddridx [c+d] {s} x y)
-(MOVDaddridx [c] {s} x (ADDconst [d] y)) && is32Bit(c+d)   && y.Op != OpSB -> (MOVDaddridx [c+d] {s} x y)
+(ADDconst [c] (MOVDaddridx [d] {s} x y)) && is20Bit(c+d) -> (MOVDaddridx [c+d] {s} x y)
+(MOVDaddridx [c] {s} (ADDconst [d] x) y) && is20Bit(c+d) && x.Op != OpSB -> (MOVDaddridx [c+d] {s} x y)
+(MOVDaddridx [c] {s} x (ADDconst [d] y)) && is20Bit(c+d) && y.Op != OpSB -> (MOVDaddridx [c+d] {s} x y)
 
 // reverse ordering of compare instruction
 (MOVDLT x y (InvertFlags cmp)) -> (MOVDGT x y cmp)
@@ -612,21 +646,6 @@
 (MOVWZload [off] {sym} ptr (MOVWstore [off2] {sym2} ptr2 x _)) && sym == sym2 && off == off2 && isSamePtr(ptr, ptr2) -> x
 (MOVDload [off] {sym} ptr (MOVDstore [off2] {sym2} ptr2 x _)) && sym == sym2 && off == off2 && isSamePtr(ptr, ptr2) -> x
 
-// Fold extensions and ANDs together.
-(MOVBZreg (ANDWconst [c] x)) -> (ANDconst [c & 0xff] x)
-(MOVHZreg (ANDWconst [c] x)) -> (ANDconst [c & 0xffff] x)
-(MOVWZreg (ANDWconst [c] x)) -> (ANDconst [c & 0xffffffff] x)
-(MOVBreg (ANDWconst [c] x)) && c & 0x80 == 0 -> (ANDconst [c & 0x7f] x)
-(MOVHreg (ANDWconst [c] x)) && c & 0x8000 == 0 -> (ANDconst [c & 0x7fff] x)
-(MOVWreg (ANDWconst [c] x)) && c & 0x80000000 == 0 -> (ANDconst [c & 0x7fffffff] x)
-
-(MOVBZreg (ANDconst [c] x)) -> (ANDconst [c & 0xff] x)
-(MOVHZreg (ANDconst [c] x)) -> (ANDconst [c & 0xffff] x)
-(MOVWZreg (ANDconst [c] x)) -> (ANDconst [c & 0xffffffff] x)
-(MOVBreg (ANDconst [c] x)) && c & 0x80 == 0 -> (ANDconst [c & 0x7f] x)
-(MOVHreg (ANDconst [c] x)) && c & 0x8000 == 0 -> (ANDconst [c & 0x7fff] x)
-(MOVWreg (ANDconst [c] x)) && c & 0x80000000 == 0 -> (ANDconst [c & 0x7fffffff] x)
-
 // Don't extend before storing
 (MOVWstore [off] {sym} ptr (MOVWreg x) mem) -> (MOVWstore [off] {sym} ptr x mem)
 (MOVHstore [off] {sym} ptr (MOVHreg x) mem) -> (MOVHstore [off] {sym} ptr x mem)
@@ -640,19 +659,22 @@
 // the ADDconst get eliminated, we still have to compute the ADDconst and we now
 // have potentially two live values (ptr and (ADDconst [off] ptr)) instead of one.
 // Nevertheless, let's do it!
-(MOVDload  [off1] {sym} (ADDconst [off2] ptr) mem) && is32Bit(off1+off2) -> (MOVDload  [off1+off2] {sym} ptr mem)
-(MOVWZload  [off1] {sym} (ADDconst [off2] ptr) mem) && is32Bit(off1+off2) -> (MOVWZload  [off1+off2] {sym} ptr mem)
-(MOVHZload  [off1] {sym} (ADDconst [off2] ptr) mem) && is32Bit(off1+off2) -> (MOVHZload  [off1+off2] {sym} ptr mem)
-(MOVBZload  [off1] {sym} (ADDconst [off2] ptr) mem) && is32Bit(off1+off2) -> (MOVBZload  [off1+off2] {sym} ptr mem)
-(FMOVSload [off1] {sym} (ADDconst [off2] ptr) mem) && is32Bit(off1+off2) -> (FMOVSload [off1+off2] {sym} ptr mem)
-(FMOVDload [off1] {sym} (ADDconst [off2] ptr) mem) && is32Bit(off1+off2) -> (FMOVDload [off1+off2] {sym} ptr mem)
+(MOVDload   [off1] {sym} (ADDconst [off2] ptr) mem) && is20Bit(off1+off2) -> (MOVDload  [off1+off2] {sym} ptr mem)
+(MOVWload   [off1] {sym} (ADDconst [off2] ptr) mem) && is20Bit(off1+off2) -> (MOVWload  [off1+off2] {sym} ptr mem)
+(MOVHload   [off1] {sym} (ADDconst [off2] ptr) mem) && is20Bit(off1+off2) -> (MOVHload  [off1+off2] {sym} ptr mem)
+(MOVBload   [off1] {sym} (ADDconst [off2] ptr) mem) && is20Bit(off1+off2) -> (MOVBload  [off1+off2] {sym} ptr mem)
+(MOVWZload  [off1] {sym} (ADDconst [off2] ptr) mem) && is20Bit(off1+off2) -> (MOVWZload [off1+off2] {sym} ptr mem)
+(MOVHZload  [off1] {sym} (ADDconst [off2] ptr) mem) && is20Bit(off1+off2) -> (MOVHZload [off1+off2] {sym} ptr mem)
+(MOVBZload  [off1] {sym} (ADDconst [off2] ptr) mem) && is20Bit(off1+off2) -> (MOVBZload [off1+off2] {sym} ptr mem)
+(FMOVSload  [off1] {sym} (ADDconst [off2] ptr) mem) && is20Bit(off1+off2) -> (FMOVSload [off1+off2] {sym} ptr mem)
+(FMOVDload  [off1] {sym} (ADDconst [off2] ptr) mem) && is20Bit(off1+off2) -> (FMOVDload [off1+off2] {sym} ptr mem)
 
-(MOVDstore  [off1] {sym} (ADDconst [off2] ptr) val mem) && is32Bit(off1+off2) -> (MOVDstore  [off1+off2] {sym} ptr val mem)
-(MOVWstore  [off1] {sym} (ADDconst [off2] ptr) val mem) && is32Bit(off1+off2) -> (MOVWstore  [off1+off2] {sym} ptr val mem)
-(MOVHstore  [off1] {sym} (ADDconst [off2] ptr) val mem) && is32Bit(off1+off2) -> (MOVHstore  [off1+off2] {sym} ptr val mem)
-(MOVBstore  [off1] {sym} (ADDconst [off2] ptr) val mem) && is32Bit(off1+off2) -> (MOVBstore  [off1+off2] {sym} ptr val mem)
-(FMOVSstore [off1] {sym} (ADDconst [off2] ptr) val mem) && is32Bit(off1+off2) -> (FMOVSstore [off1+off2] {sym} ptr val mem)
-(FMOVDstore [off1] {sym} (ADDconst [off2] ptr) val mem) && is32Bit(off1+off2) -> (FMOVDstore [off1+off2] {sym} ptr val mem)
+(MOVDstore  [off1] {sym} (ADDconst [off2] ptr) val mem) && is20Bit(off1+off2) -> (MOVDstore  [off1+off2] {sym} ptr val mem)
+(MOVWstore  [off1] {sym} (ADDconst [off2] ptr) val mem) && is20Bit(off1+off2) -> (MOVWstore  [off1+off2] {sym} ptr val mem)
+(MOVHstore  [off1] {sym} (ADDconst [off2] ptr) val mem) && is20Bit(off1+off2) -> (MOVHstore  [off1+off2] {sym} ptr val mem)
+(MOVBstore  [off1] {sym} (ADDconst [off2] ptr) val mem) && is20Bit(off1+off2) -> (MOVBstore  [off1+off2] {sym} ptr val mem)
+(FMOVSstore [off1] {sym} (ADDconst [off2] ptr) val mem) && is20Bit(off1+off2) -> (FMOVSstore [off1+off2] {sym} ptr val mem)
+(FMOVDstore [off1] {sym} (ADDconst [off2] ptr) val mem) && is20Bit(off1+off2) -> (FMOVDstore [off1+off2] {sym} ptr val mem)
 
 // Fold constants into stores.
 (MOVDstore [off] {sym} ptr (MOVDconst [c]) mem) && validValAndOff(c,off) && int64(int16(c)) == c && ptr.Op != OpSB ->
@@ -787,18 +809,10 @@
 (FMOVSstoreidx [c] {sym} ptr (ADDconst [d] idx) val mem) -> (FMOVSstoreidx [c+d] {sym} ptr idx val mem)
 (FMOVDstoreidx [c] {sym} ptr (ADDconst [d] idx) val mem) -> (FMOVDstoreidx [c+d] {sym} ptr idx val mem)
 
-// fold MOVDaddrs together
-(MOVDaddr [off1] {sym1} (MOVDaddr [off2] {sym2} x)) && is32Bit(off1+off2) && canMergeSym(sym1, sym2) ->
-      (MOVDaddr [off1+off2] {mergeSym(sym1,sym2)} x)
-
 // MOVDaddr into MOVDaddridx
 (MOVDaddridx [off1] {sym1} (MOVDaddr [off2] {sym2} x) y) && is32Bit(off1+off2) && canMergeSym(sym1, sym2) && x.Op != OpSB ->
        (MOVDaddridx [off1+off2] {mergeSym(sym1,sym2)} x y)
 (MOVDaddridx [off1] {sym1} x (MOVDaddr [off2] {sym2} y)) && is32Bit(off1+off2) && canMergeSym(sym1, sym2) && y.Op != OpSB ->
-       (MOVDaddridx [off1+off2] {mergeSym(sym1,sym2)} x y)
-
-// MOVDaddridx into MOVDaddr
-(MOVDaddr [off1] {sym1} (MOVDaddridx [off2] {sym2} x y)) && is32Bit(off1+off2) && canMergeSym(sym1, sym2) ->
        (MOVDaddridx [off1+off2] {mergeSym(sym1,sym2)} x y)
 
 // Absorb InvertFlags into branches.
@@ -925,14 +939,15 @@
 (NEGW (MOVDconst [c])) -> (MOVDconst [int64(int32(-c))])
 (MULLDconst [c] (MOVDconst [d])) -> (MOVDconst [c*d])
 (MULLWconst [c] (MOVDconst [d])) -> (MOVDconst [int64(int32(c*d))])
+(AND (MOVDconst [c]) (MOVDconst [d])) -> (MOVDconst [c&d])
 (ANDconst [c] (MOVDconst [d])) -> (MOVDconst [c&d])
 (ANDWconst [c] (MOVDconst [d])) -> (MOVDconst [c&d])
+(OR (MOVDconst [c]) (MOVDconst [d])) -> (MOVDconst [c|d])
 (ORconst [c] (MOVDconst [d])) -> (MOVDconst [c|d])
 (ORWconst [c] (MOVDconst [d])) -> (MOVDconst [c|d])
+(XOR (MOVDconst [c]) (MOVDconst [d])) -> (MOVDconst [c^d])
 (XORconst [c] (MOVDconst [d])) -> (MOVDconst [c^d])
 (XORWconst [c] (MOVDconst [d])) -> (MOVDconst [c^d])
-(NOT (MOVDconst [c])) -> (MOVDconst [^c])
-(NOTW (MOVDconst [c])) -> (MOVDconst [^c])
 
 // generic simplifications
 // TODO: more of this

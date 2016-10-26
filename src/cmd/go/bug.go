@@ -39,9 +39,16 @@ func runBug(cmd *Command, args []string) {
 	fmt.Fprint(&buf, "#### System details\n\n")
 	fmt.Fprintln(&buf, "```")
 	fmt.Fprintf(&buf, "go version %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	for _, e := range mkEnv() {
-		fmt.Fprintf(&buf, "%s=\"%s\"\n", e.name, e.value)
+	env := newEnv
+	env = append(env, extraEnvVars()...)
+	for _, e := range env {
+		// Hide the TERM environment variable from "go bug".
+		// See issue #18128
+		if e.name != "TERM" {
+			fmt.Fprintf(&buf, "%s=\"%s\"\n", e.name, e.value)
+		}
 	}
+	printGoDetails(&buf)
 	printOSDetails(&buf)
 	printCDetails(&buf)
 	fmt.Fprintln(&buf, "```")
@@ -69,6 +76,11 @@ A link on play.golang.org is best.
 
 
 `
+
+func printGoDetails(w io.Writer) {
+	printCmdOut(w, "GOROOT/bin/go version: ", filepath.Join(runtime.GOROOT(), "bin/go"), "version")
+	printCmdOut(w, "GOROOT/bin/go tool compile -V: ", filepath.Join(runtime.GOROOT(), "bin/go"), "tool", "compile", "-V")
+}
 
 func printOSDetails(w io.Writer) {
 	switch runtime.GOOS {

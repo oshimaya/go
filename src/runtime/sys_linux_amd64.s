@@ -208,7 +208,7 @@ TEXT runtime·rtsigprocmask(SB),NOSPLIT,$0-28
 	MOVL	$0xf1, 0xf1  // crash
 	RET
 
-TEXT runtime·rt_sigaction(SB),NOSPLIT,$0-36
+TEXT runtime·sysSigaction(SB),NOSPLIT,$0-36
 	MOVQ	sig+0(FP), DI
 	MOVQ	new+8(FP), SI
 	MOVQ	old+16(FP), DX
@@ -218,12 +218,30 @@ TEXT runtime·rt_sigaction(SB),NOSPLIT,$0-36
 	MOVL	AX, ret+32(FP)
 	RET
 
-TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
-	MOVL	sig+8(FP), DI
-	MOVQ	info+16(FP), SI
-	MOVQ	ctx+24(FP), DX
-	MOVQ	fn+0(FP), AX
+// Call the function stored in _cgo_sigaction using the GCC calling convention.
+TEXT runtime·callCgoSigaction(SB),NOSPLIT,$16
+	MOVQ	sig+0(FP), DI
+	MOVQ	new+8(FP), SI
+	MOVQ	old+16(FP), DX
+	MOVQ	_cgo_sigaction(SB), AX
+	MOVQ	SP, BX	// callee-saved
+	ANDQ	$~15, SP	// alignment as per amd64 psABI
 	CALL	AX
+	MOVQ	BX, SP
+	MOVL	AX, ret+24(FP)
+	RET
+
+TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
+	MOVQ	fn+0(FP),    AX
+	MOVL	sig+8(FP),   DI
+	MOVQ	info+16(FP), SI
+	MOVQ	ctx+24(FP),  DX
+	PUSHQ	BP
+	MOVQ	SP, BP
+	ANDQ	$~15, SP     // alignment for x86_64 ABI
+	CALL	AX
+	MOVQ	BP, SP
+	POPQ	BP
 	RET
 
 TEXT runtime·sigtramp(SB),NOSPLIT,$24

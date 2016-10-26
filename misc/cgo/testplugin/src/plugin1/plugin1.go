@@ -9,15 +9,25 @@ import "C"
 
 import "common"
 
+func F() int { return 3 }
+
 func ReadCommonX() int {
 	return common.X
 }
 
 var Seven int
 
+func call(fn func()) {
+	fn()
+}
+
+func g() {
+	common.X *= Seven
+}
+
 func init() {
 	Seven = 7
-	common.X *= Seven
+	call(g)
 }
 
 func main() {

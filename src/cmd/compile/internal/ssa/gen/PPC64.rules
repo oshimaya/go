@@ -267,6 +267,9 @@
 (OrB x y) -> (OR x y)
 (Not x) -> (XORconst [1] x)
 
+// Use ANDN for AND x NOT y
+(AND x (XORconst [-1] y)) -> (ANDN x y)
+
 // Lowering comparisons
 (EqB x y)  -> (ANDconst [1] (EQV x y))
 // Sign extension dependence on operand sign sets up for sign/zero-extension elision later
@@ -786,6 +789,8 @@
 (Trunc64to8  x) -> (MOVBreg x)
 (Trunc64to16 x) -> (MOVHreg x)
 (Trunc64to32 x) -> (MOVWreg x)
+
+(Slicemask <t> x) -> (XORconst [-1] (SRADconst <t> (ADDconst <t> x [-1]) [63]))
 
 // Note that MOV??reg returns a 64-bit int, x is not necessarily that wide
 // This may interact with other patterns in the future. (Compare with arm64)

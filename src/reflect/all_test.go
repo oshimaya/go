@@ -648,6 +648,20 @@ var (
 
 type self struct{}
 
+type Loop *Loop
+type Loopy interface{}
+
+var loop1, loop2 Loop
+var loopy1, loopy2 Loopy
+
+func init() {
+	loop1 = &loop2
+	loop2 = &loop1
+
+	loopy1 = &loopy2
+	loopy2 = &loopy1
+}
+
 var deepEqualTests = []DeepEqualTest{
 	// Equalities
 	{nil, nil, true},
@@ -706,6 +720,12 @@ var deepEqualTests = []DeepEqualTest{
 	{&[3]interface{}{1, 2, 4}, &[3]interface{}{1, 2, "s"}, false},
 	{Basic{1, 0.5}, NotBasic{1, 0.5}, false},
 	{map[uint]string{1: "one", 2: "two"}, map[int]string{2: "two", 1: "one"}, false},
+
+	// Possible loops.
+	{&loop1, &loop1, true},
+	{&loop1, &loop2, true},
+	{&loopy1, &loopy1, true},
+	{&loopy1, &loopy2, true},
 }
 
 func TestDeepEqual(t *testing.T) {
@@ -2305,25 +2325,39 @@ func TestFieldPkgPath(t *testing.T) {
 		unexported string
 		OtherPkgFields
 	}{})
-	for _, test := range []struct {
+
+	type pkgpathTest struct {
 		index     []int
 		pkgPath   string
 		anonymous bool
-	}{
+	}
+
+	checkPkgPath := func(name string, s []pkgpathTest) {
+		for _, test := range s {
+			f := typ.FieldByIndex(test.index)
+			if got, want := f.PkgPath, test.pkgPath; got != want {
+				t.Errorf("%s: Field(%d).PkgPath = %q, want %q", name, test.index, got, want)
+			}
+			if got, want := f.Anonymous, test.anonymous; got != want {
+				t.Errorf("%s: Field(%d).Anonymous = %v, want %v", name, test.index, got, want)
+			}
+		}
+	}
+
+	checkPkgPath("testStruct", []pkgpathTest{
 		{[]int{0}, "", false},             // Exported
 		{[]int{1}, "reflect_test", false}, // unexported
 		{[]int{2}, "", true},              // OtherPkgFields
 		{[]int{2, 0}, "", false},          // OtherExported
 		{[]int{2, 1}, "reflect", false},   // otherUnexported
-	} {
-		f := typ.FieldByIndex(test.index)
-		if got, want := f.PkgPath, test.pkgPath; got != want {
-			t.Errorf("Field(%d).PkgPath = %q, want %q", test.index, got, want)
-		}
-		if got, want := f.Anonymous, test.anonymous; got != want {
-			t.Errorf("Field(%d).Anonymous = %v, want %v", test.index, got, want)
-		}
-	}
+	})
+
+	type localOtherPkgFields OtherPkgFields
+	typ = TypeOf(localOtherPkgFields{})
+	checkPkgPath("localOtherPkgFields", []pkgpathTest{
+		{[]int{0}, "", false},        // OtherExported
+		{[]int{1}, "reflect", false}, // otherUnexported
+	})
 }
 
 func TestVariadicType(t *testing.T) {
@@ -3099,7 +3133,7 @@ func ReadWriterV(x io.ReadWriter) Value {
 
 type Empty struct{}
 type MyStruct struct {
-	x int "tag"
+	x int `some:"tag"`
 }
 type MyString string
 type MyBytes []byte
@@ -3414,31 +3448,31 @@ var convertTests = []struct {
 
 	// structs with different tags
 	{V(struct {
-		x int "foo"
+		x int `some:"foo"`
 	}{}), V(struct {
-		x int "bar"
+		x int `some:"bar"`
 	}{})},
 
 	{V(struct {
-		x int "bar"
+		x int `some:"bar"`
 	}{}), V(struct {
-		x int "foo"
+		x int `some:"foo"`
 	}{})},
 
 	{V(MyStruct{}), V(struct {
-		x int "foo"
+		x int `some:"foo"`
 	}{})},
 
 	{V(struct {
-		x int "foo"
+		x int `some:"foo"`
 	}{}), V(MyStruct{})},
 
 	{V(MyStruct{}), V(struct {
-		x int "bar"
+		x int `some:"bar"`
 	}{})},
 
 	{V(struct {
-		x int "bar"
+		x int `some:"bar"`
 	}{}), V(MyStruct{})},
 
 	// can convert *byte and *MyByte
@@ -4022,6 +4056,38 @@ func TestStructOf(t *testing.T) {
 		o2 := stt.Field(i).Offset
 		if o1 != o2 {
 			t.Errorf("constructed struct field %v offset = %v, want %v", i, o1, o2)
+		}
+	}
+
+	// Check size and alignment with a trailing zero-sized field.
+	st = StructOf([]StructField{
+		{
+			Name: "F1",
+			Type: TypeOf(byte(0)),
+		},
+		{
+			Name: "F2",
+			Type: TypeOf([0]*byte{}),
+		},
+	})
+	stt = TypeOf(struct {
+		G1 byte
+		G2 [0]*byte
+	}{})
+	if st.Size() != stt.Size() {
+		t.Errorf("constructed zero-padded struct size = %v, want %v", st.Size(), stt.Size())
+	}
+	if st.Align() != stt.Align() {
+		t.Errorf("constructed zero-padded struct align = %v, want %v", st.Align(), stt.Align())
+	}
+	if st.FieldAlign() != stt.FieldAlign() {
+		t.Errorf("constructed zero-padded struct field align = %v, want %v", st.FieldAlign(), stt.FieldAlign())
+	}
+	for i := 0; i < st.NumField(); i++ {
+		o1 := st.Field(i).Offset
+		o2 := stt.Field(i).Offset
+		if o1 != o2 {
+			t.Errorf("constructed zero-padded struct field %v offset = %v, want %v", i, o1, o2)
 		}
 	}
 
@@ -5892,4 +5958,21 @@ func TestSwapper(t *testing.T) {
 			t.Errorf("%d. swapping %v and %v of %v = %v; want %v", i, tt.i, tt.j, inStr, tt.in, tt.want)
 		}
 	}
+}
+
+// TestUnaddressableField tests that the reflect package will not allow
+// a type from another package to be used as a named type with an
+// unexported field.
+//
+// This ensures that unexported fields cannot be modified by other packages.
+func TestUnaddressableField(t *testing.T) {
+	var b Buffer // type defined in reflect, a different package
+	var localBuffer struct {
+		buf []byte
+	}
+	lv := ValueOf(&localBuffer).Elem()
+	rv := ValueOf(b)
+	shouldPanic(func() {
+		lv.Set(rv)
+	})
 }

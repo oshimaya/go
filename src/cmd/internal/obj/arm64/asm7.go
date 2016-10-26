@@ -601,7 +601,7 @@ func span7(ctxt *obj.Link, cursym *obj.LSym) {
 			o = oplook(ctxt, p)
 
 			/* very large branches */
-			if o.type_ == 7 && p.Pcond != nil {
+			if (o.type_ == 7 || o.type_ == 39) && p.Pcond != nil { // 7: BEQ and like, 39: CBZ and like
 				otxt := p.Pcond.Pc - c
 				if otxt <= -(1<<18)+10 || otxt >= (1<<18)-10 {
 					q := ctxt.NewProg()
@@ -2380,13 +2380,15 @@ func asmout(ctxt *obj.Link, p *obj.Prog, o *Optab, out []uint32) {
 		o2 |= uint32(p.To.Reg & 31)
 
 	case 29: /* op Rn, Rd */
-		if (p.As == AFMOVD || p.As == AFMOVS) && (aclass(ctxt, &p.From) == C_REG || aclass(ctxt, &p.To) == C_REG) {
+		fc := aclass(ctxt, &p.From)
+		tc := aclass(ctxt, &p.To)
+		if (p.As == AFMOVD || p.As == AFMOVS) && (fc == C_REG || fc == C_ZCON || tc == C_REG || tc == C_ZCON) {
 			// FMOV Rx, Fy or FMOV Fy, Rx
 			o1 = FPCVTI(0, 0, 0, 0, 6)
 			if p.As == AFMOVD {
 				o1 |= 1<<31 | 1<<22 // 64-bit
 			}
-			if aclass(ctxt, &p.From) == C_REG {
+			if fc == C_REG || fc == C_ZCON {
 				o1 |= 1 << 16 // FMOV Rx, Fy
 			}
 		} else {

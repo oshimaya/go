@@ -494,26 +494,31 @@ func dgopkgpathOffLSym(s *obj.LSym, ot int, pkg *Pkg) int {
 }
 
 // isExportedField reports whether a struct field is exported.
-func isExportedField(ft *Field) bool {
+// It also returns the package to use for PkgPath for an unexported field.
+func isExportedField(ft *Field) (bool, *Pkg) {
 	if ft.Sym != nil && ft.Embedded == 0 {
-		return exportname(ft.Sym.Name)
+		return exportname(ft.Sym.Name), ft.Sym.Pkg
 	} else {
 		if ft.Type.Sym != nil &&
 			(ft.Type.Sym.Pkg == builtinpkg || !exportname(ft.Type.Sym.Name)) {
-			return false
+			return false, ft.Type.Sym.Pkg
 		} else {
-			return true
+			return true, nil
 		}
 	}
 }
 
 // dnameField dumps a reflect.name for a struct field.
-func dnameField(s *Sym, ot int, ft *Field) int {
+func dnameField(s *Sym, ot int, spkg *Pkg, ft *Field) int {
 	var name string
 	if ft.Sym != nil && ft.Embedded == 0 {
 		name = ft.Sym.Name
 	}
-	nsym := dname(name, ft.Note, nil, isExportedField(ft))
+	isExported, fpkg := isExportedField(ft)
+	if isExported || fpkg == spkg {
+		fpkg = nil
+	}
+	nsym := dname(name, ft.Note, fpkg, isExported)
 	return dsymptrLSym(Linksym(s), ot, nsym, 0)
 }
 
@@ -829,9 +834,13 @@ func dcommontype(s *Sym, ot int, t *Type) int {
 		algsym = dalgsym(t)
 	}
 
+	sptrWeak := true
 	var sptr *Sym
-	tptr := ptrto(t)
-	if !t.IsPtr() && (t.Sym != nil || methods(tptr) != nil) {
+	if !t.IsPtr() || t.ptrTo != nil {
+		tptr := ptrto(t)
+		if t.Sym != nil || methods(tptr) != nil {
+			sptrWeak = false
+		}
 		sptr = dtypesym(tptr)
 	}
 
@@ -918,28 +927,33 @@ func dcommontype(s *Sym, ot int, t *Type) int {
 
 	nsym := dname(p, "", nil, exported)
 	ot = dsymptrOffLSym(Linksym(s), ot, nsym, 0) // str
+	// ptrToThis
 	if sptr == nil {
 		ot = duint32(s, ot, 0)
+	} else if sptrWeak {
+		ot = dsymptrWeakOffLSym(Linksym(s), ot, Linksym(sptr))
 	} else {
-		ot = dsymptrOffLSym(Linksym(s), ot, Linksym(sptr), 0) // ptrToThis
+		ot = dsymptrOffLSym(Linksym(s), ot, Linksym(sptr), 0)
 	}
 
 	return ot
 }
 
 func typesym(t *Type) *Sym {
-	return Pkglookup(t.tconv(FmtLeft), typepkg)
+	name := t.tconv(FmtLeft)
+
+	// Use a separate symbol name for Noalg types for #17752.
+	if a, bad := algtype1(t); a == ANOEQ && bad.Noalg {
+		name = "noalg." + name
+	}
+
+	return Pkglookup(name, typepkg)
 }
 
 // tracksym returns the symbol for tracking use of field/method f, assumed
 // to be a member of struct/interface type t.
 func tracksym(t *Type, f *Field) *Sym {
 	return Pkglookup(t.tconv(FmtLeft)+"."+f.Sym.Name, trackpkg)
-}
-
-func typelinkLSym(t *Type) *obj.LSym {
-	name := "go.typelink." + t.tconv(FmtLeft) // complete, unambiguous type name
-	return obj.Linklookup(Ctxt, name, 0)
 }
 
 func typesymprefix(prefix string, t *Type) *Sym {
@@ -984,6 +998,7 @@ func itabname(t, itype *Type) *Node {
 		Fatalf("itabname(%v, %v)", t, itype)
 	}
 	s := Pkglookup(t.tconv(FmtLeft)+","+itype.tconv(FmtLeft), itabpkg)
+	Linksym(s).Set(obj.AttrLocal, true)
 	if s.Def == nil {
 		n := newname(s)
 		n.Type = Types[TUINT8]
@@ -1329,7 +1344,7 @@ ok:
 
 		for _, f := range t.Fields().Slice() {
 			// ../../../../runtime/type.go:/structField
-			ot = dnameField(s, ot, f)
+			ot = dnameField(s, ot, pkg, f)
 			ot = dsymptr(s, ot, dtypesym(f.Type), 0)
 			ot = duintptr(s, ot, uint64(f.Offset))
 		}
@@ -1338,8 +1353,6 @@ ok:
 	ot = dextratypeData(s, ot, t)
 	ggloblsym(s, int32(ot), int16(dupok|obj.RODATA))
 
-	// generate typelink.foo pointing at s = type.foo.
-	//
 	// The linker will leave a table of all the typelinks for
 	// types in the binary, so the runtime can find them.
 	//
@@ -1357,11 +1370,7 @@ ok:
 			keep = true
 		}
 	}
-	if keep {
-		slink := typelinkLSym(t)
-		dsymptrOffLSym(slink, 0, Linksym(s), 0)
-		ggloblLSym(slink, 4, int16(dupok|obj.RODATA))
-	}
+	s.Lsym.Set(obj.AttrMakeTypelink, keep)
 
 	return s
 }
@@ -1406,11 +1415,11 @@ func dumptypestructs() {
 		o += len(imethods(i.itype)) * Widthptr // skip fun method pointers
 		// at runtime the itab will contain pointers to types, other itabs and
 		// method functions. None are allocated on heap, so we can use obj.NOPTR.
-		ggloblsym(i.sym, int32(o), int16(obj.DUPOK|obj.NOPTR))
+		ggloblsym(i.sym, int32(o), int16(obj.DUPOK|obj.NOPTR|obj.LOCAL))
 
 		ilink := Pkglookup(i.t.tconv(FmtLeft)+","+i.itype.tconv(FmtLeft), itablinkpkg)
 		dsymptr(ilink, 0, i.sym, 0)
-		ggloblsym(ilink, int32(Widthptr), int16(obj.DUPOK|obj.RODATA))
+		ggloblsym(ilink, int32(Widthptr), int16(obj.DUPOK|obj.RODATA|obj.LOCAL))
 	}
 
 	// process ptabs
@@ -1426,7 +1435,7 @@ func dumptypestructs() {
 			// }
 			nsym := dname(p.s.Name, "", nil, true)
 			ot = dsymptrOffLSym(s, ot, nsym, 0)
-			ot = dsymptrOffLSym(s, ot, Linksym(typesym(p.t)), 0)
+			ot = dsymptrOffLSym(s, ot, Linksym(dtypesym(p.t)), 0)
 		}
 		ggloblLSym(s, int32(ot), int16(obj.RODATA))
 

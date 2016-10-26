@@ -6,6 +6,7 @@ package gc
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -14,17 +15,21 @@ import (
 )
 
 func parseFile(filename string) {
-	p := noder{baseline: lexlineno}
-	file, err := syntax.ReadFile(filename, p.error, p.pragma, 0)
+	src, err := os.Open(filename)
 	if err != nil {
-		Fatalf("syntax.ReadFile %s: %v", filename, err)
+		fmt.Println(err)
+		errorexit()
 	}
+	defer src.Close()
+
+	p := noder{baseline: lexlineno}
+	file, _ := syntax.Parse(src, p.error, p.pragma, 0) // errors are tracked via p.error
 
 	p.file(file)
 
 	if !imported_unsafe {
 		for _, x := range p.linknames {
-			p.error(0, x, "//go:linkname only allowed in Go files that import \"unsafe\"")
+			p.error(syntax.Error{Line: x, Msg: "//go:linkname only allowed in Go files that import \"unsafe\""})
 		}
 	}
 
@@ -52,16 +57,13 @@ func (p *noder) file(file *syntax.File) {
 func (p *noder) decls(decls []syntax.Decl) (l []*Node) {
 	var lastConstGroup *syntax.Group
 	var lastConstRHS []*Node
-	var iotaVal int32
+	var iotaVal int64
 
 	for _, decl := range decls {
 		p.lineno(decl)
 		switch decl := decl.(type) {
 		case *syntax.ImportDecl:
 			p.importDecl(decl)
-
-		case *syntax.AliasDecl:
-			yyerror("alias declarations not yet implemented")
 
 		case *syntax.VarDecl:
 			l = append(l, p.varDecl(decl)...)
@@ -90,10 +92,6 @@ func (p *noder) decls(decls []syntax.Decl) (l []*Node) {
 			lastConstGroup = decl.Group
 
 		case *syntax.TypeDecl:
-			if decl.Alias {
-				yyerror("alias declarations not yet implemented")
-				break
-			}
 			l = append(l, p.typeDecl(decl))
 
 		case *syntax.FuncDecl:
@@ -496,6 +494,7 @@ func (p *noder) structType(expr *syntax.StructType) *Node {
 		l = append(l, n)
 	}
 
+	p.lineno(expr)
 	n := p.nod(expr, OTSTRUCT, nil, nil)
 	n.List.Set(l)
 	return n
@@ -970,7 +969,12 @@ func (p *noder) wrapname(n syntax.Node, x *Node) *Node {
 	// These nodes do not carry line numbers.
 	// Introduce a wrapper node to give them the correct line.
 	switch x.Op {
-	case ONAME, ONONAME, OTYPE, OPACK, OLITERAL:
+	case OTYPE, OLITERAL:
+		if x.Sym == nil {
+			break
+		}
+		fallthrough
+	case ONAME, ONONAME, OPACK:
 		x = p.nod(n, OPAREN, x, nil)
 		x.Implicit = true
 	}
@@ -1003,24 +1007,33 @@ func (p *noder) lineno(n syntax.Node) {
 	lineno = p.baseline + l - 1
 }
 
-func (p *noder) error(_, line int, msg string) {
-	yyerrorl(p.baseline+int32(line)-1, "%s", msg)
+func (p *noder) error(err error) {
+	line := p.baseline
+	var msg string
+	if err, ok := err.(syntax.Error); ok {
+		line += int32(err.Line) - 1
+		msg = err.Msg
+	} else {
+		msg = err.Error()
+	}
+	yyerrorl(line, "%s", msg)
 }
 
 func (p *noder) pragma(pos, line int, text string) syntax.Pragma {
 	switch {
 	case strings.HasPrefix(text, "line "):
-		i := strings.IndexByte(text, ':')
+		// Want to use LastIndexByte below but it's not defined in Go1.4 and bootstrap fails.
+		i := strings.LastIndex(text, ":") // look from right (Windows filenames may contain ':')
 		if i < 0 {
 			break
 		}
 		n, err := strconv.Atoi(text[i+1:])
 		if err != nil {
-			// todo: make this an error instead? it is almost certainly a bug.
+			// TODO: make this an error instead? it is almost certainly a bug.
 			break
 		}
 		if n > 1e8 {
-			p.error(pos, line, "line number out of range")
+			p.error(syntax.Error{Pos: pos, Line: line, Msg: "line number out of range"})
 			errorexit()
 		}
 		if n <= 0 {
@@ -1036,7 +1049,7 @@ func (p *noder) pragma(pos, line int, text string) syntax.Pragma {
 
 		f := strings.Fields(text)
 		if len(f) != 3 {
-			p.error(pos, line, "usage: //go:linkname localname linkname")
+			p.error(syntax.Error{Pos: pos, Line: line, Msg: "usage: //go:linkname localname linkname"})
 			break
 		}
 		lookup(f[1]).Linkname = f[2]
@@ -1053,4 +1066,19 @@ func (p *noder) pragma(pos, line int, text string) syntax.Pragma {
 	}
 
 	return 0
+}
+
+func mkname(sym *Sym) *Node {
+	n := oldname(sym)
+	if n.Name != nil && n.Name.Pack != nil {
+		n.Name.Pack.Used = true
+	}
+	return n
+}
+
+func unparen(x *Node) *Node {
+	for x.Op == OPAREN {
+		x = x.Left
+	}
+	return x
 }

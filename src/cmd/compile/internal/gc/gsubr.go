@@ -30,10 +30,7 @@
 
 package gc
 
-import (
-	"cmd/internal/obj"
-	"fmt"
-)
+import "cmd/internal/obj"
 
 func Prog(as obj.As) *obj.Prog {
 	var p *obj.Prog
@@ -94,7 +91,7 @@ func ggloblsym(s *Sym, width int32, flags int16) {
 
 func ggloblLSym(s *obj.LSym, width int32, flags int16) {
 	if flags&obj.LOCAL != 0 {
-		s.Local = true
+		s.Set(obj.AttrLocal, true)
 		flags &^= obj.LOCAL
 	}
 	Ctxt.Globl(s, int64(width), int(flags))
@@ -138,9 +135,6 @@ func Naddr(a *obj.Addr, n *Node) {
 
 	if s == nil {
 		Fatalf("naddr: nil sym %v", n)
-	}
-	if n.Name.Method && n.Type != nil && n.Type.Sym != nil && n.Type.Sym.Pkg != nil {
-		Fatalf("naddr: weird method %v", n)
 	}
 
 	a.Type = obj.TYPE_MEM
@@ -279,8 +273,7 @@ func nodarg(t interface{}, fp int) *Node {
 		Fatalf("bad fp")
 
 	case 0: // preparing arguments for call
-		n.Op = OINDREG
-		n.Reg = int16(Thearch.REGSP)
+		n.Op = OINDREGSP
 		n.Xoffset += Ctxt.FixedFrameSize()
 
 	case 1: // reading arguments inside call
@@ -315,9 +308,5 @@ func Gins(as obj.As, f, t *Node) *obj.Prog {
 	p := Prog(as)
 	Naddr(&p.From, f)
 	Naddr(&p.To, t)
-
-	if Debug['g'] != 0 {
-		fmt.Printf("%v\n", p)
-	}
 	return p
 }

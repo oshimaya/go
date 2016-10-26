@@ -100,6 +100,8 @@ type mstats struct {
 	// must be complete.
 	gc_trigger uint64
 
+	_ uint32 // force 8-byte alignment of heap_live and prevent an alignment check crash on MIPS32.
+
 	// heap_live is the number of bytes considered live by the GC.
 	// That is: retained by the most recent GC plus allocated
 	// since then. heap_live <= heap_alloc, since heap_alloc
@@ -411,6 +413,11 @@ func init() {
 		println(sizeof_C_MStats, unsafe.Sizeof(memStats))
 		throw("MStats vs MemStatsType size mismatch")
 	}
+
+	if unsafe.Offsetof(memstats.heap_live)%8 != 0 {
+		println(unsafe.Offsetof(memstats.heap_live))
+		throw("memstats.heap_live not aligned to 8 bytes")
+	}
 }
 
 // ReadMemStats populates m with memory allocator statistics.
@@ -528,8 +535,7 @@ func updatememstats(stats *gcstats) {
 
 	// Scan all spans and count number of alive objects.
 	lock(&mheap_.lock)
-	for i := uint32(0); i < mheap_.nspan; i++ {
-		s := h_allspans[i]
+	for _, s := range mheap_.allspans {
 		if s.state != mSpanInUse {
 			continue
 		}
@@ -577,19 +583,32 @@ func cachestats() {
 	}
 }
 
+// flushmcache flushes the mcache of allp[i].
+//
+// The world must be stopped.
+//
+//go:nowritebarrier
+func flushmcache(i int) {
+	p := allp[i]
+	if p == nil {
+		return
+	}
+	c := p.mcache
+	if c == nil {
+		return
+	}
+	c.releaseAll()
+	stackcache_clear(c)
+}
+
+// flushallmcaches flushes the mcaches of all Ps.
+//
+// The world must be stopped.
+//
 //go:nowritebarrier
 func flushallmcaches() {
-	for i := 0; ; i++ {
-		p := allp[i]
-		if p == nil {
-			break
-		}
-		c := p.mcache
-		if c == nil {
-			continue
-		}
-		c.releaseAll()
-		stackcache_clear(c)
+	for i := 0; i < int(gomaxprocs); i++ {
+		flushmcache(i)
 	}
 }
 

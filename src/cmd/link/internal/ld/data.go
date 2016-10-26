@@ -325,10 +325,15 @@ func isRuntimeDepPkg(pkg string) bool {
 }
 
 // detect too-far jumps in function s, and add trampolines if necessary
-// (currently only ARM supports trampoline insertion)
+// ARM supports trampoline insertion for internal and external linking
+// PPC64 & PPC64LE support trampoline insertion for internal linking only
 func trampoline(ctxt *Link, s *Symbol) {
 	if Thearch.Trampoline == nil {
 		return // no need or no support of trampolines on this arch
+	}
+
+	if Linkmode == LinkExternal && SysArch.Family == sys.PPC64 {
+		return
 	}
 
 	for ri := range s.R {
@@ -408,7 +413,7 @@ func relocsym(ctxt *Link, s *Symbol) {
 				Errorf(s, "unhandled relocation for %s (type %d rtype %d)", r.Sym.Name, r.Sym.Type, r.Type)
 			}
 		}
-		if r.Sym != nil && r.Sym.Type != obj.STLSBSS && !r.Sym.Attr.Reachable() {
+		if r.Sym != nil && r.Sym.Type != obj.STLSBSS && r.Type != obj.R_WEAKADDROFF && !r.Sym.Attr.Reachable() {
 			Errorf(s, "unreachable sym in relocation: %s", r.Sym.Name)
 		}
 
@@ -583,6 +588,11 @@ func relocsym(ctxt *Link, s *Symbol) {
 			}
 			o = Symaddr(r.Sym) + r.Add - int64(r.Sym.Sect.Vaddr)
 
+		case obj.R_WEAKADDROFF:
+			if !r.Sym.Attr.Reachable() {
+				continue
+			}
+			fallthrough
 		case obj.R_ADDROFF:
 			// The method offset tables using this relocation expect the offset to be relative
 			// to the start of the first text section, even if there are multiple.
@@ -594,7 +604,19 @@ func relocsym(ctxt *Link, s *Symbol) {
 			}
 
 			// r->sym can be null when CALL $(constant) is transformed from absolute PC to relative PC call.
-		case obj.R_CALL, obj.R_GOTPCREL, obj.R_PCREL:
+		case obj.R_GOTPCREL:
+			if ctxt.DynlinkingGo() && Headtype == obj.Hdarwin && r.Sym != nil && r.Sym.Type != obj.SCONST {
+				r.Done = 0
+				r.Xadd = r.Add
+				r.Xadd -= int64(r.Siz) // relative to address after the relocated chunk
+				r.Xsym = r.Sym
+
+				o = r.Xadd
+				o += int64(r.Siz)
+				break
+			}
+			fallthrough
+		case obj.R_CALL, obj.R_PCREL:
 			if Linkmode == LinkExternal && r.Sym != nil && r.Sym.Type != obj.SCONST && (r.Sym.Sect != s.Sect || r.Type == obj.R_GOTPCREL) {
 				r.Done = 0
 
@@ -731,6 +753,9 @@ func dynrelocsym(ctxt *Link, s *Symbol) {
 				continue
 			}
 			if !targ.Attr.Reachable() {
+				if r.Type == obj.R_WEAKADDROFF {
+					continue
+				}
 				Errorf(s, "dynamic relocation to unreachable symbol %s", targ.Name)
 			}
 			if r.Sym.Plt == -2 && r.Sym.Got != -2 { // make dynimport JMP table for PE object files.
@@ -1025,11 +1050,12 @@ func strnputPad(s string, n int, pad []byte) {
 var strdata []*Symbol
 
 func addstrdata1(ctxt *Link, arg string) {
-	i := strings.Index(arg, "=")
-	if i < 0 {
+	eq := strings.Index(arg, "=")
+	dot := strings.LastIndex(arg[:eq+1], ".")
+	if eq < 0 || dot < 0 {
 		Exitf("-X flag requires argument of the form importpath.name=value")
 	}
-	addstrdata(ctxt, arg[:i], arg[i+1:])
+	addstrdata(ctxt, pathtoprefix(arg[:dot])+arg[dot:eq], arg[eq+1:])
 }
 
 func addstrdata(ctxt *Link, name string, value string) {
@@ -1135,7 +1161,7 @@ func symalign(s *Symbol) int32 {
 	} else if s.Align != 0 {
 		return min
 	}
-	if (strings.HasPrefix(s.Name, "go.string.") && !strings.HasPrefix(s.Name, "go.string.hdr.")) || strings.HasPrefix(s.Name, "type..namedata.") {
+	if strings.HasPrefix(s.Name, "go.string.") || strings.HasPrefix(s.Name, "type..namedata.") {
 		// String data is just bytes.
 		// If we align it, we waste a lot of space to padding.
 		return min
@@ -1336,7 +1362,7 @@ func (ctxt *Link) dodata() {
 			for _, s := range data[symnro] {
 				isRelro := len(s.R) > 0
 				switch s.Type {
-				case obj.STYPE, obj.SGOSTRINGHDR, obj.STYPERELRO, obj.SGOSTRINGHDRRELRO, obj.SGOFUNCRELRO:
+				case obj.STYPE, obj.STYPERELRO, obj.SGOFUNCRELRO:
 					// Symbols are not sorted yet, so it is possible
 					// that an Outer symbol has been changed to a
 					// relro Type before it reaches here.
@@ -1717,15 +1743,10 @@ func (ctxt *Link) dodata() {
 	sect.Align = dataMaxAlign[obj.STYPELINK]
 	datsize = Rnd(datsize, int64(sect.Align))
 	sect.Vaddr = uint64(datsize)
-	ctxt.Syms.Lookup("runtime.typelink", 0).Sect = sect
-	ctxt.Syms.Lookup("runtime.etypelink", 0).Sect = sect
-	for _, s := range data[obj.STYPELINK] {
-		datsize = aligndatsize(datsize, s)
-		s.Sect = sect
-		s.Type = obj.SRODATA
-		s.Value = int64(uint64(datsize) - sect.Vaddr)
-		datsize += s.Size
-	}
+	typelink := ctxt.Syms.Lookup("runtime.typelink", 0)
+	typelink.Sect = sect
+	typelink.Type = obj.RODATA
+	datsize += typelink.Size
 	checkdatsize(ctxt, datsize, obj.STYPELINK)
 	sect.Length = uint64(datsize) - sect.Vaddr
 
@@ -1909,10 +1930,6 @@ func dodataSect(ctxt *Link, symn obj.SymKind, syms []*Symbol) (result []*Symbol,
 			// we skip size comparison and fall through to the name
 			// comparison (conveniently, .got sorts before .toc).
 			key.size = 0
-		case obj.STYPELINK:
-			// Sort typelinks by the rtype.string field so the reflect
-			// package can binary search type links.
-			key.name = string(decodetypeStr(s.R[0].Sym))
 		}
 
 		symsSort = append(symsSort, key)
@@ -1959,6 +1976,13 @@ func dodataSect(ctxt *Link, symn obj.SymKind, syms []*Symbol) (result []*Symbol,
 			copy(syms[first+2:], syms[first+1:second])
 			syms[first+0] = rel
 			syms[first+1] = plt
+
+			// Make sure alignment doesn't introduce a gap.
+			// Setting the alignment explicitly prevents
+			// symalign from basing it on the size and
+			// getting it wrong.
+			rel.Align = int32(SysArch.RegSize)
+			plt.Align = int32(SysArch.RegSize)
 		}
 	}
 
@@ -2235,7 +2259,6 @@ func (ctxt *Link) address() {
 	var (
 		text     = Segtext.Sect
 		rodata   = ctxt.Syms.Lookup("runtime.rodata", 0).Sect
-		typelink = ctxt.Syms.Lookup("runtime.typelink", 0).Sect
 		itablink = ctxt.Syms.Lookup("runtime.itablink", 0).Sect
 		symtab   = ctxt.Syms.Lookup("runtime.symtab", 0).Sect
 		pclntab  = ctxt.Syms.Lookup("runtime.pclntab", 0).Sect
@@ -2291,8 +2314,6 @@ func (ctxt *Link) address() {
 	ctxt.xdefine("runtime.erodata", obj.SRODATA, int64(rodata.Vaddr+rodata.Length))
 	ctxt.xdefine("runtime.types", obj.SRODATA, int64(types.Vaddr))
 	ctxt.xdefine("runtime.etypes", obj.SRODATA, int64(types.Vaddr+types.Length))
-	ctxt.xdefine("runtime.typelink", obj.SRODATA, int64(typelink.Vaddr))
-	ctxt.xdefine("runtime.etypelink", obj.SRODATA, int64(typelink.Vaddr+typelink.Length))
 	ctxt.xdefine("runtime.itablink", obj.SRODATA, int64(itablink.Vaddr))
 	ctxt.xdefine("runtime.eitablink", obj.SRODATA, int64(itablink.Vaddr+itablink.Length))
 

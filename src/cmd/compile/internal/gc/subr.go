@@ -58,6 +58,8 @@ func (x byLineno) Len() int           { return len(x) }
 func (x byLineno) Less(i, j int) bool { return x[i].lineno < x[j].lineno }
 func (x byLineno) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
 
+// flusherrors sorts errors seen so far by line number, prints them to stdout,
+// and empties the errors array.
 func flusherrors() {
 	Ctxt.Bso.Flush()
 	if len(errors) == 0 {
@@ -202,10 +204,10 @@ func setlineno(n *Node) int32 {
 	lno := lineno
 	if n != nil {
 		switch n.Op {
-		case ONAME, OTYPE, OPACK:
+		case ONAME, OPACK:
 			break
 
-		case OLITERAL:
+		case OLITERAL, OTYPE:
 			if n.Sym != nil {
 				break
 			}
@@ -361,7 +363,7 @@ func nod(op Op, nleft *Node, nright *Node) *Node {
 	switch op {
 	case OCLOSURE, ODCLFUNC:
 		n.Func = new(Func)
-		n.Func.FCurfn = Curfn
+		n.Func.IsHiddenClosure = Curfn != nil
 	case ONAME:
 		n.Name = new(Name)
 		n.Name.Param = new(Param)
@@ -504,9 +506,7 @@ func treecopy(n *Node, lineno int32) *Node {
 			if lineno != 0 {
 				m.Lineno = lineno
 			}
-			m.Name = new(Name)
-			*m.Name = *n.Name
-			m.Name.Iota = iota_
+			m.SetIota(iota_)
 			return &m
 		}
 		return n
@@ -973,9 +973,10 @@ func assignconvfn(n *Node, t *Type, context func() string) *Node {
 	}
 
 	old := n
-	old.Diag++ // silence errors about n; we'll issue one below
+	od := old.Diag
+	old.Diag = true // silence errors about n; we'll issue one below
 	n = defaultlit(n, t)
-	old.Diag--
+	old.Diag = od
 	if t.Etype == TBLANK {
 		return n
 	}
@@ -1020,20 +1021,17 @@ func (n *Node) IsMethod() bool {
 // SliceBounds returns n's slice bounds: low, high, and max in expr[low:high:max].
 // n must be a slice expression. max is nil if n is a simple slice expression.
 func (n *Node) SliceBounds() (low, high, max *Node) {
+	if n.List.Len() == 0 {
+		return nil, nil, nil
+	}
+
 	switch n.Op {
 	case OSLICE, OSLICEARR, OSLICESTR:
-		if n.Right == nil {
-			return nil, nil, nil
-		}
-		if n.Right.Op != OKEY {
-			Fatalf("SliceBounds right %s", opnames[n.Right.Op])
-		}
-		return n.Right.Left, n.Right.Right, nil
+		s := n.List.Slice()
+		return s[0], s[1], nil
 	case OSLICE3, OSLICE3ARR:
-		if n.Right.Op != OKEY || n.Right.Right.Op != OKEY {
-			Fatalf("SliceBounds right %s %s", opnames[n.Right.Op], opnames[n.Right.Right.Op])
-		}
-		return n.Right.Left, n.Right.Right.Left, n.Right.Right.Right
+		s := n.List.Slice()
+		return s[0], s[1], s[2]
 	}
 	Fatalf("SliceBounds op %v: %v", n.Op, n)
 	return nil, nil, nil
@@ -1047,20 +1045,29 @@ func (n *Node) SetSliceBounds(low, high, max *Node) {
 		if max != nil {
 			Fatalf("SetSliceBounds %v given three bounds", n.Op)
 		}
-		if n.Right == nil {
-			n.Right = nod(OKEY, low, high)
+		s := n.List.Slice()
+		if s == nil {
+			if low == nil && high == nil {
+				return
+			}
+			n.List.Set([]*Node{low, high})
 			return
 		}
-		n.Right.Left = low
-		n.Right.Right = high
+		s[0] = low
+		s[1] = high
 		return
 	case OSLICE3, OSLICE3ARR:
-		if n.Right == nil {
-			n.Right = nod(OKEY, low, nod(OKEY, high, max))
+		s := n.List.Slice()
+		if s == nil {
+			if low == nil && high == nil && max == nil {
+				return
+			}
+			n.List.Set([]*Node{low, high, max})
+			return
 		}
-		n.Right.Left = low
-		n.Right.Right.Left = high
-		n.Right.Right.Right = max
+		s[0] = low
+		s[1] = high
+		s[2] = max
 		return
 	}
 	Fatalf("SetSliceBounds op %v: %v", n.Op, n)
@@ -1160,7 +1167,7 @@ func ullmancalc(n *Node) {
 	}
 
 	switch n.Op {
-	case OREGISTER, OLITERAL, ONAME:
+	case OLITERAL, ONAME:
 		ul = 1
 		if n.Class == PAUTOHEAP {
 			ul++
@@ -1177,6 +1184,12 @@ func ullmancalc(n *Node) {
 			ul = UINF
 			goto out
 		}
+	case OINDEX, OSLICE, OSLICEARR, OSLICE3, OSLICE3ARR, OSLICESTR,
+		OIND, ODOTPTR, ODOTTYPE, ODIV, OMOD:
+		// These ops might panic, make sure they are done
+		// before we start marshaling args for a call. See issue 16760.
+		ul = UINF
+		goto out
 	}
 
 	ul = 1
@@ -1486,7 +1499,9 @@ func dotpath(s *Sym, t *Type, save **Field, ignorecase bool) (path []Dlist, ambi
 // modify the tree with missing type names.
 func adddot(n *Node) *Node {
 	n.Left = typecheck(n.Left, Etype|Erv)
-	n.Diag |= n.Left.Diag
+	if n.Left.Diag {
+		n.Diag = true
+	}
 	t := n.Left.Type
 	if t == nil {
 		return n
@@ -1795,6 +1810,8 @@ func genwrapper(rcvr *Type, method *Field, newnam *Sym, iface int) {
 		n := nod(ORETJMP, nil, nil)
 		n.Left = newname(methodsym(method.Sym, methodrcvr, 0))
 		fn.Nbody.Append(n)
+		// When tail-calling, we can't use a frame pointer.
+		fn.Func.NoFramePointer = true
 	} else {
 		fn.Func.Wrapper = true // ignore frame for panic+recover matching
 		call := nod(OCALL, dot, nil)

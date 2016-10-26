@@ -206,7 +206,8 @@ func TestRenegotiationExtension(t *testing.T) {
 		buf = make([]byte, 1024)
 		n, err := c.Read(buf)
 		if err != nil {
-			t.Fatalf("Server read returned error: %s", err)
+			t.Errorf("Server read returned error: %s", err)
+			return
 		}
 		buf = buf[:n]
 		c.Close()
@@ -660,6 +661,7 @@ func (test *serverTest) run(t *testing.T, write bool) {
 }
 
 func runServerTestForVersion(t *testing.T, template *serverTest, prefix, option string) {
+	setParallel(t)
 	test := *template
 	test.name = prefix + test.name
 	if len(test.command) == 0 {
@@ -1054,6 +1056,7 @@ FMBexFe01MNvja5oHt1vzobhfm6ySD6B5U7ixohLZNz1MLvT/2XMW/TdtWo+PtAd
 -----END EC PRIVATE KEY-----`
 
 func TestClientAuth(t *testing.T) {
+	setParallel(t)
 	var certPath, keyPath, ecdsaCertPath, ecdsaKeyPath string
 
 	if *update {
@@ -1253,18 +1256,18 @@ func TestGetConfigForClient(t *testing.T) {
 
 		if len(test.errorSubstring) == 0 {
 			if serverErr != nil || clientErr != nil {
-				t.Errorf("%#d: expected no error but got serverErr: %q, clientErr: %q", i, serverErr, clientErr)
+				t.Errorf("test[%d]: expected no error but got serverErr: %q, clientErr: %q", i, serverErr, clientErr)
 			}
 			if test.verify != nil {
 				if err := test.verify(configReturned); err != nil {
-					t.Errorf("#%d: verify returned error: %v", i, err)
+					t.Errorf("test[%d]: verify returned error: %v", i, err)
 				}
 			}
 		} else {
 			if serverErr == nil {
-				t.Errorf("%#d: expected error containing %q but got no error", i, test.errorSubstring)
+				t.Errorf("test[%d]: expected error containing %q but got no error", i, test.errorSubstring)
 			} else if !strings.Contains(serverErr.Error(), test.errorSubstring) {
-				t.Errorf("%#d: expected error to contain %q but it was %q", i, test.errorSubstring, serverErr)
+				t.Errorf("test[%d]: expected error to contain %q but it was %q", i, test.errorSubstring, serverErr)
 			}
 		}
 	}

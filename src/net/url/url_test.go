@@ -5,6 +5,10 @@
 package url
 
 import (
+	"bytes"
+	encodingPkg "encoding"
+	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -1381,7 +1385,7 @@ func TestParseFailure(t *testing.T) {
 	}
 }
 
-func TestParseAuthority(t *testing.T) {
+func TestParseErrors(t *testing.T) {
 	tests := []struct {
 		in      string
 		wantErr bool
@@ -1401,9 +1405,13 @@ func TestParseAuthority(t *testing.T) {
 		{"http://%41:8080/", true},        // not allowed: % encoding only for non-ASCII
 		{"mysql://x@y(z:123)/foo", false}, // golang.org/issue/12023
 		{"mysql://x@y(1.2.3.4:123)/foo", false},
-		{"mysql://x@y([2001:db8::1]:123)/foo", false},
+
 		{"http://[]%20%48%54%54%50%2f%31%2e%31%0a%4d%79%48%65%61%64%65%72%3a%20%31%32%33%0a%0a/", true}, // golang.org/issue/11208
 		{"http://a b.com/", true},                                                                       // no space in host name please
+		{"cache_object://foo", true},                                                                    // scheme cannot have _, relative path cannot have : in first segment
+		{"cache_object:foo", true},
+		{"cache_object:foo/bar", true},
+		{"cache_object/:foo/bar", false},
 	}
 	for _, tt := range tests {
 		u, err := Parse(tt.in)
@@ -1622,5 +1630,56 @@ func TestURLPort(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("Port for Host %q = %q; want %q", tt.host, got, tt.want)
 		}
+	}
+}
+
+var _ encodingPkg.BinaryMarshaler = (*URL)(nil)
+var _ encodingPkg.BinaryUnmarshaler = (*URL)(nil)
+
+func TestJSON(t *testing.T) {
+	u, err := Parse("https://www.google.com/x?y=z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, err := json.Marshal(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// If only we could implement TextMarshaler/TextUnmarshaler,
+	// this would work:
+	//
+	// if string(js) != strconv.Quote(u.String()) {
+	// 	t.Errorf("json encoding: %s\nwant: %s\n", js, strconv.Quote(u.String()))
+	// }
+
+	u1 := new(URL)
+	err = json.Unmarshal(js, u1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u1.String() != u.String() {
+		t.Errorf("json decoded to: %s\nwant: %s\n", u1, u)
+	}
+}
+
+func TestGob(t *testing.T) {
+	u, err := Parse("https://www.google.com/x?y=z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w bytes.Buffer
+	err = gob.NewEncoder(&w).Encode(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	u1 := new(URL)
+	err = gob.NewDecoder(&w).Decode(u1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u1.String() != u.String() {
+		t.Errorf("json decoded to: %s\nwant: %s\n", u1, u)
 	}
 }

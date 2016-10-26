@@ -316,7 +316,12 @@ func (conf *resolverConfig) releaseSema() {
 
 func lookup(ctx context.Context, name string, qtype uint16) (cname string, rrs []dnsRR, err error) {
 	if !isDomainName(name) {
-		return "", nil, &DNSError{Err: "invalid domain name", Name: name}
+		// We used to use "invalid domain name" as the error,
+		// but that is a detail of the specific lookup mechanism.
+		// Other lookups might allow broader name syntax
+		// (for example Multicast DNS allows UTF-8; see RFC 6762).
+		// For consistency with libc resolvers, report no such host.
+		return "", nil, &DNSError{Err: errNoSuchHost.Error(), Name: name}
 	}
 	resolvConf.tryUpdate("/etc/resolv.conf")
 	resolvConf.mu.RLock()
@@ -357,14 +362,21 @@ func (conf *dnsConfig) nameList(name string) []string {
 		return nil
 	}
 
+	// Check name length (see isDomainName).
+	l := len(name)
+	rooted := l > 0 && name[l-1] == '.'
+	if l > 254 || l == 254 && rooted {
+		return nil
+	}
+
 	// If name is rooted (trailing dot), try only that name.
-	rooted := len(name) > 0 && name[len(name)-1] == '.'
 	if rooted {
 		return []string{name}
 	}
 
 	hasNdots := count(name, '.') >= conf.ndots
 	name += "."
+	l++
 
 	// Build list of search choices.
 	names := make([]string, 0, 1+len(conf.search))
@@ -372,9 +384,11 @@ func (conf *dnsConfig) nameList(name string) []string {
 	if hasNdots {
 		names = append(names, name)
 	}
-	// Try suffixes.
+	// Try suffixes that are not too long (see isDomainName).
 	for _, suffix := range conf.search {
-		names = append(names, name+suffix)
+		if l+len(suffix) <= 254 {
+			names = append(names, name+suffix)
+		}
 	}
 	// Try unsuffixed, if not tried first above.
 	if !hasNdots {
@@ -469,7 +483,8 @@ func goLookupIPOrder(ctx context.Context, name string, order hostLookupOrder) (a
 		}
 	}
 	if !isDomainName(name) {
-		return nil, &DNSError{Err: "invalid domain name", Name: name}
+		// See comment in func lookup above about use of errNoSuchHost.
+		return nil, &DNSError{Err: errNoSuchHost.Error(), Name: name}
 	}
 	resolvConf.tryUpdate("/etc/resolv.conf")
 	resolvConf.mu.RLock()

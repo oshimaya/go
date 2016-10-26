@@ -5,6 +5,7 @@
 package net
 
 import (
+	"fmt"
 	"internal/testenv"
 	"io"
 	"reflect"
@@ -310,6 +311,16 @@ var resolveTCPAddrTests = []resolveTCPAddrTest{
 	{"tcp", ":12345", &TCPAddr{Port: 12345}, nil},
 
 	{"http", "127.0.0.1:0", nil, UnknownNetworkError("http")},
+
+	{"tcp", "127.0.0.1:http", &TCPAddr{IP: ParseIP("127.0.0.1"), Port: 80}, nil},
+	{"tcp", "[::ffff:127.0.0.1]:http", &TCPAddr{IP: ParseIP("::ffff:127.0.0.1"), Port: 80}, nil},
+	{"tcp", "[2001:db8::1]:http", &TCPAddr{IP: ParseIP("2001:db8::1"), Port: 80}, nil},
+	{"tcp4", "127.0.0.1:http", &TCPAddr{IP: ParseIP("127.0.0.1"), Port: 80}, nil},
+	{"tcp4", "[::ffff:127.0.0.1]:http", &TCPAddr{IP: ParseIP("127.0.0.1"), Port: 80}, nil},
+	{"tcp4", "[2001:db8::1]:http", nil, &AddrError{Err: errNoSuitableAddress.Error(), Addr: "2001:db8::1"}},
+	{"tcp6", "127.0.0.1:http", nil, &AddrError{Err: errNoSuitableAddress.Error(), Addr: "127.0.0.1"}},
+	{"tcp6", "[::ffff:127.0.0.1]:http", nil, &AddrError{Err: errNoSuitableAddress.Error(), Addr: "::ffff:127.0.0.1"}},
+	{"tcp6", "[2001:db8::1]:http", &TCPAddr{IP: ParseIP("2001:db8::1"), Port: 80}, nil},
 }
 
 func TestResolveTCPAddr(t *testing.T) {
@@ -317,21 +328,17 @@ func TestResolveTCPAddr(t *testing.T) {
 	defer func() { testHookLookupIP = origTestHookLookupIP }()
 	testHookLookupIP = lookupLocalhost
 
-	for i, tt := range resolveTCPAddrTests {
+	for _, tt := range resolveTCPAddrTests {
 		addr, err := ResolveTCPAddr(tt.network, tt.litAddrOrName)
-		if err != tt.err {
-			t.Errorf("#%d: %v", i, err)
-		} else if !reflect.DeepEqual(addr, tt.addr) {
-			t.Errorf("#%d: got %#v; want %#v", i, addr, tt.addr)
-		}
-		if err != nil {
+		if !reflect.DeepEqual(addr, tt.addr) || !reflect.DeepEqual(err, tt.err) {
+			t.Errorf("ResolveTCPAddr(%q, %q) = %v, %v, want %v, %v", tt.network, tt.litAddrOrName, addr, err, tt.addr, tt.err)
 			continue
 		}
-		rtaddr, err := ResolveTCPAddr(addr.Network(), addr.String())
-		if err != nil {
-			t.Errorf("#%d: %v", i, err)
-		} else if !reflect.DeepEqual(rtaddr, addr) {
-			t.Errorf("#%d: got %#v; want %#v", i, rtaddr, addr)
+		if err == nil {
+			addr2, err := ResolveTCPAddr(addr.Network(), addr.String())
+			if !reflect.DeepEqual(addr2, tt.addr) || err != tt.err {
+				t.Errorf("(%q, %q): ResolveTCPAddr(%q, %q) = %v, %v, want %v, %v", tt.network, tt.litAddrOrName, addr.Network(), addr.String(), addr2, err, tt.addr, tt.err)
+			}
 		}
 	}
 }
@@ -460,6 +467,11 @@ func TestTCPConcurrentAccept(t *testing.T) {
 
 func TestTCPReadWriteAllocs(t *testing.T) {
 	switch runtime.GOOS {
+	case "plan9":
+		// The implementation of asynchronous cancelable
+		// I/O on Plan 9 allocates memory.
+		// See net/fd_io_plan9.go.
+		t.Skipf("not supported on %s", runtime.GOOS)
 	case "nacl":
 		// NaCl needs to allocate pseudo file descriptor
 		// stuff. See syscall/fd_nacl.go.
@@ -652,5 +664,60 @@ func TestTCPSelfConnect(t *testing.T) {
 			}
 			c.Close()
 		}
+	}
+}
+
+// Test that >32-bit reads work on 64-bit systems.
+// On 32-bit systems this tests that maxint reads work.
+func TestTCPBig(t *testing.T) {
+	if !*testTCPBig {
+		t.Skip("test disabled; use -tcpbig to enable")
+	}
+
+	for _, writev := range []bool{false, true} {
+		t.Run(fmt.Sprintf("writev=%v", writev), func(t *testing.T) {
+			ln, err := newLocalListener("tcp")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+
+			x := int(1 << 30)
+			x = x*5 + 1<<20 // just over 5 GB on 64-bit, just over 1GB on 32-bit
+			done := make(chan int)
+			go func() {
+				defer close(done)
+				c, err := ln.Accept()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				buf := make([]byte, x)
+				var n int
+				if writev {
+					var n64 int64
+					n64, err = (&Buffers{buf}).WriteTo(c)
+					n = int(n64)
+				} else {
+					n, err = c.Write(buf)
+				}
+				if n != len(buf) || err != nil {
+					t.Errorf("Write(buf) = %d, %v, want %d, nil", n, err, x)
+				}
+				c.Close()
+			}()
+
+			c, err := Dial("tcp", ln.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, x)
+			n, err := io.ReadFull(c, buf)
+			if n != len(buf) || err != nil {
+				t.Errorf("Read(buf) = %d, %v, want %d, nil", n, err, x)
+			}
+			c.Close()
+			<-done
+		})
 	}
 }

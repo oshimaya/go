@@ -83,6 +83,7 @@ func cse(f *Func) {
 	// non-equivalent arguments.  Repeat until we can't find any
 	// more splits.
 	var splitPoints []int
+	byArgClass := new(partitionByArgClass) // reuseable partitionByArgClass to reduce allocations
 	for {
 		changed := false
 
@@ -92,7 +93,9 @@ func cse(f *Func) {
 			e := partition[i]
 
 			// Sort by eq class of arguments.
-			sort.Sort(partitionByArgClass{e, valueEqClass})
+			byArgClass.a = e
+			byArgClass.eqClass = valueEqClass
+			sort.Sort(byArgClass)
 
 			// Find split points.
 			splitPoints = append(splitPoints[:0], 0)
@@ -147,8 +150,11 @@ func cse(f *Func) {
 	// Compute substitutions we would like to do. We substitute v for w
 	// if v and w are in the same equivalence class and v dominates w.
 	rewrite := make([]*Value, f.NumValues())
+	byDom := new(partitionByDom) // reusable partitionByDom to reduce allocs
 	for _, e := range partition {
-		sort.Sort(partitionByDom{e, sdom})
+		byDom.a = e
+		byDom.sdom = sdom
+		sort.Sort(byDom)
 		for i := 0; i < len(e)-1; i++ {
 			// e is sorted by domorder, so a maximal dominant element is first in the slice
 			v := e[i]
@@ -182,7 +188,10 @@ func cse(f *Func) {
 	for _, b := range f.Blocks {
 	out:
 		for _, v := range b.Values {
-			if rewrite[v.ID] != nil {
+			// New values are created when selectors are copied to
+			// a new block. We can safely ignore those new values,
+			// since they have already been copied (issue 17918).
+			if int(v.ID) >= len(rewrite) || rewrite[v.ID] != nil {
 				continue
 			}
 			if v.Op != OpSelect0 && v.Op != OpSelect1 {
