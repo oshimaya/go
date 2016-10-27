@@ -771,10 +771,14 @@ func NewRequest(method, urlStr string, body io.Reader) (*Request, error) {
 		// For client requests, Request.ContentLength of 0
 		// means either actually 0, or unknown. The only way
 		// to explicitly say that the ContentLength is zero is
-		// to set the Body to nil.
+		// to set the Body to nil. But turns out too much code
+		// depends on NewRequest returning a non-nil Body,
+		// so we use a well-known ReadCloser variable instead
+		// and have the http package also treat that sentinel
+		// variable to mean explicitly zero.
 		if req.ContentLength == 0 {
-			req.Body = nil
-			req.GetBody = nil
+			req.Body = NoBody
+			req.GetBody = func() (io.ReadCloser, error) { return NoBody, nil }
 		}
 	}
 
@@ -1074,18 +1078,24 @@ func parsePostForm(r *Request) (vs url.Values, err error) {
 	return
 }
 
-// ParseForm parses the raw query from the URL and updates r.Form.
+// ParseForm populates r.Form and r.PostForm.
 //
-// For POST or PUT requests, it also parses the request body as a form and
-// put the results into both r.PostForm and r.Form.
-// POST and PUT body parameters take precedence over URL query string values
-// in r.Form.
+// For all requests, ParseForm parses the raw query from the URL and updates
+// r.Form.
+//
+// For POST, PUT, and PATCH requests, it also parses the request body as a form
+// and puts the results into both r.PostForm and r.Form. Request body parameters
+// take precedence over URL query string values in r.Form.
+//
+// For other HTTP methods, or when the Content-Type is not
+// application/x-www-form-urlencoded, the request Body is not read, and
+// r.PostForm is initialized to a non-nil, empty value.
 //
 // If the request Body's size has not already been limited by MaxBytesReader,
 // the size is capped at 10MB.
 //
 // ParseMultipartForm calls ParseForm automatically.
-// It is idempotent.
+// ParseForm is idempotent.
 func (r *Request) ParseForm() error {
 	var err error
 	if r.PostForm == nil {
@@ -1252,7 +1262,7 @@ func (r *Request) isReplayable() bool {
 // outgoingLength reports the Content-Length of this outgoing (Client) request.
 // It maps 0 into -1 (unknown) when the Body is non-nil.
 func (r *Request) outgoingLength() int64 {
-	if r.Body == nil {
+	if r.Body == nil || r.Body == NoBody {
 		return 0
 	}
 	if r.ContentLength != 0 {

@@ -294,10 +294,10 @@ TEXT runtime·morestack(SB),NOSPLIT,$-4-0
 
 	// Called from f.
 	// Set g->sched to context in f.
-	MOVW	R7, (g_sched+gobuf_ctxt)(g)
 	MOVW	R13, (g_sched+gobuf_sp)(g)
 	MOVW	LR, (g_sched+gobuf_pc)(g)
 	MOVW	R3, (g_sched+gobuf_lr)(g)
+	// newstack will fill gobuf.ctxt.
 
 	// Called from f.
 	// Set m->morebuf to f's caller.
@@ -310,6 +310,9 @@ TEXT runtime·morestack(SB),NOSPLIT,$-4-0
 	MOVW	m_g0(R8), R0
 	BL	setg<>(SB)
 	MOVW	(g_sched+gobuf_sp)(g), R13
+	MOVW	$0, R0
+	MOVW.W	R0, -8(R13)	// create a call frame on g0
+	MOVW	R7, 4(R13)	// ctxt argument
 	BL	runtime·newstack(SB)
 
 	// Not reached, but make sure the return PC from the call to newstack
@@ -403,6 +406,7 @@ TEXT NAME(SB), WRAPPER, $MAXSIZE-20;		\
 	PCDATA  $PCDATA_StackMapIndex, $0;	\
 	BL	(R0);				\
 	/* copy return values back */		\
+	MOVW	argtype+0(FP), R4;		\
 	MOVW	argptr+8(FP), R0;		\
 	MOVW	argsize+12(FP), R2;		\
 	MOVW	retoffset+16(FP), R3;		\
@@ -410,24 +414,19 @@ TEXT NAME(SB), WRAPPER, $MAXSIZE-20;		\
 	ADD	R3, R1;				\
 	ADD	R3, R0;				\
 	SUB	R3, R2;				\
-loop:						\
-	CMP	$0, R2;				\
-	B.EQ	end;				\
-	MOVBU.P	1(R1), R5;			\
-	MOVBU.P R5, 1(R0);			\
-	SUB	$1, R2, R2;			\
-	B	loop;				\
-end:						\
-	/* execute write barrier updates */	\
-	MOVW	argtype+0(FP), R1;		\
-	MOVW	argptr+8(FP), R0;		\
-	MOVW	argsize+12(FP), R2;		\
-	MOVW	retoffset+16(FP), R3;		\
-	MOVW	R1, 4(R13);			\
-	MOVW	R0, 8(R13);			\
-	MOVW	R2, 12(R13);			\
-	MOVW	R3, 16(R13);			\
-	BL	runtime·callwritebarrier(SB);	\
+	BL	callRet<>(SB);			\
+	RET
+
+// callRet copies return values back at the end of call*. This is a
+// separate function so it can allocate stack space for the arguments
+// to reflectcallmove. It does not follow the Go ABI; it expects its
+// arguments in registers.
+TEXT callRet<>(SB), NOSPLIT, $16-0
+	MOVW	R4, 4(R13)
+	MOVW	R0, 8(R13)
+	MOVW	R1, 12(R13)
+	MOVW	R2, 16(R13)
+	BL	runtime·reflectcallmove(SB)
 	RET	
 
 CALLFN(·call16, 16)

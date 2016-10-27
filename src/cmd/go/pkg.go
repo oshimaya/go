@@ -24,6 +24,8 @@ import (
 	"unicode"
 )
 
+var ignoreImports bool // control whether we ignore imports in packages
+
 // A Package describes a single package found in a directory.
 type Package struct {
 	// Note: These fields are part of the go command's public API.
@@ -181,6 +183,11 @@ func (p *Package) copyBuild(pp *build.Package) {
 	p.TestImports = pp.TestImports
 	p.XTestGoFiles = pp.XTestGoFiles
 	p.XTestImports = pp.XTestImports
+	if ignoreImports {
+		p.Imports = nil
+		p.TestImports = nil
+		p.XTestImports = nil
+	}
 }
 
 // isStandardImportPath reports whether $GOROOT/src/path should be considered
@@ -387,7 +394,24 @@ func loadImport(path, srcDir string, parent *Package, stk *importStack, importPo
 		}
 	}
 
+	if origPath != cleanImport(origPath) {
+		p.Error = &PackageError{
+			ImportStack: stk.copy(),
+			Err:         fmt.Sprintf("non-canonical import path: %q should be %q", origPath, pathpkg.Clean(origPath)),
+		}
+		p.Incomplete = true
+	}
+
 	return p
+}
+
+func cleanImport(path string) string {
+	orig := path
+	path = pathpkg.Clean(path)
+	if strings.HasPrefix(orig, "./") && path != ".." && path != "." && !strings.HasPrefix(path, "../") {
+		path = "./" + path
+	}
+	return path
 }
 
 var isDirCache = map[string]bool{}
@@ -415,13 +439,26 @@ func vendoredImportPath(parent *Package, path string) (found string) {
 
 	dir := filepath.Clean(parent.Dir)
 	root := filepath.Join(parent.Root, "src")
-	if !hasFilePathPrefix(dir, root) {
+	if !hasFilePathPrefix(dir, root) || parent.ImportPath != "command-line-arguments" && filepath.Join(root, parent.ImportPath) != dir {
 		// Look for symlinks before reporting error.
 		dir = expandPath(dir)
 		root = expandPath(root)
 	}
-	if !hasFilePathPrefix(dir, root) || len(dir) <= len(root) || dir[len(root)] != filepath.Separator {
-		fatalf("invalid vendoredImportPath: dir=%q root=%q separator=%q", dir, root, string(filepath.Separator))
+
+	if !hasFilePathPrefix(dir, root) || len(dir) <= len(root) || dir[len(root)] != filepath.Separator || parent.ImportPath != "command-line-arguments" && filepath.Join(root, parent.ImportPath) != dir {
+		fatalf("unexpected directory layout:\n"+
+			"	import path: %s\n"+
+			"	root: %s\n"+
+			"	dir: %s\n"+
+			"	expand root: %s\n"+
+			"	expand dir: %s\n"+
+			"	separator: %s",
+			parent.ImportPath,
+			filepath.Join(parent.Root, "src"),
+			filepath.Clean(parent.Dir),
+			root,
+			dir,
+			string(filepath.Separator))
 	}
 
 	vpath := "vendor/" + path
@@ -933,6 +970,15 @@ func (p *Package) load(stk *importStack, bp *build.Package, err error) *Package 
 	// Build list of imported packages and full dependency list.
 	imports := make([]*Package, 0, len(p.Imports))
 	deps := make(map[string]*Package)
+	save := func(path string, p1 *Package) {
+		// The same import path could produce an error or not,
+		// depending on what tries to import it.
+		// Prefer to record entries with errors, so we can report them.
+		if deps[path] == nil || p1.Error != nil {
+			deps[path] = p1
+		}
+	}
+
 	for i, path := range importPaths {
 		if path == "C" {
 			continue
@@ -976,15 +1022,11 @@ func (p *Package) load(stk *importStack, bp *build.Package, err error) *Package 
 		if i < len(p.Imports) {
 			p.Imports[i] = path
 		}
-		deps[path] = p1
+
+		save(path, p1)
 		imports = append(imports, p1)
 		for _, dep := range p1.deps {
-			// The same import path could produce an error or not,
-			// depending on what tries to import it.
-			// Prefer to record entries with errors, so we can report them.
-			if deps[dep.ImportPath] == nil || dep.Error != nil {
-				deps[dep.ImportPath] = dep
-			}
+			save(dep.ImportPath, dep)
 		}
 		if p1.Incomplete {
 			p.Incomplete = true

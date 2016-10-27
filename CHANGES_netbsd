@@ -1,6 +1,10 @@
 # NetBSD specific changes
 ## HEAD
 - all
+  * remove original change  for EABI padding in src/runtime/defs1_netbsd_arm.go
+    and  src/cmd/link/internal/ld/elf.go because thease have been merged in
+    upstream. (20161028)
+
   * Import upstram changes that is pagesize become to variable from constant for all OS and arch, so remove original code  for getting pagesize when netbsd only.
 ## 1.7.1
 - arm

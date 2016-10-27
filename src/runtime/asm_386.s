@@ -381,7 +381,7 @@ TEXT runtime·morestack(SB),NOSPLIT,$0-0
 	MOVL	SI, (g_sched+gobuf_g)(SI)
 	LEAL	4(SP), AX	// f's SP
 	MOVL	AX, (g_sched+gobuf_sp)(SI)
-	MOVL	DX, (g_sched+gobuf_ctxt)(SI)
+	// newstack will fill gobuf.ctxt.
 
 	// Call newstack on m->g0's stack.
 	MOVL	m_g0(BX), BP
@@ -389,8 +389,10 @@ TEXT runtime·morestack(SB),NOSPLIT,$0-0
 	MOVL	(g_sched+gobuf_sp)(BP), AX
 	MOVL	-4(AX), BX	// fault if CALL would, before smashing SP
 	MOVL	AX, SP
+	PUSHL	DX	// ctxt argument
 	CALL	runtime·newstack(SB)
 	MOVL	$0, 0x1003	// crash if newstack returns
+	POPL	DX	// keep balance check happy
 	RET
 
 TEXT runtime·morestack_noctxt(SB),NOSPLIT,$0-0
@@ -475,6 +477,7 @@ TEXT NAME(SB), WRAPPER, $MAXSIZE-20;		\
 	PCDATA  $PCDATA_StackMapIndex, $0;	\
 	CALL	AX;				\
 	/* copy return values back */		\
+	MOVL	argtype+0(FP), DX;		\
 	MOVL	argptr+8(FP), DI;		\
 	MOVL	argsize+12(FP), CX;		\
 	MOVL	retoffset+16(FP), BX;		\
@@ -482,17 +485,19 @@ TEXT NAME(SB), WRAPPER, $MAXSIZE-20;		\
 	ADDL	BX, DI;				\
 	ADDL	BX, SI;				\
 	SUBL	BX, CX;				\
-	REP;MOVSB;				\
-	/* execute write barrier updates */	\
-	MOVL	argtype+0(FP), DX;		\
-	MOVL	argptr+8(FP), DI;		\
-	MOVL	argsize+12(FP), CX;		\
-	MOVL	retoffset+16(FP), BX;		\
-	MOVL	DX, 0(SP);			\
-	MOVL	DI, 4(SP);			\
-	MOVL	CX, 8(SP);			\
-	MOVL	BX, 12(SP);			\
-	CALL	runtime·callwritebarrier(SB);	\
+	CALL	callRet<>(SB);			\
+	RET
+
+// callRet copies return values back at the end of call*. This is a
+// separate function so it can allocate stack space for the arguments
+// to reflectcallmove. It does not follow the Go ABI; it expects its
+// arguments in registers.
+TEXT callRet<>(SB), NOSPLIT, $16-0
+	MOVL	DX, 0(SP)
+	MOVL	DI, 4(SP)
+	MOVL	SI, 8(SP)
+	MOVL	CX, 12(SP)
+	CALL	runtime·reflectcallmove(SB)
 	RET
 
 CALLFN(·call16, 16)

@@ -77,7 +77,13 @@ func gcMarkRootPrepare() {
 		// above invariants for objects that get finalizers
 		// after concurrent mark. In STW GC, this will happen
 		// during mark termination.
-		work.nSpanRoots = (len(work.spans) + rootBlockSpans - 1) / rootBlockSpans
+		//
+		// We're only interested in scanning the in-use spans,
+		// which will all be swept at this point. More spans
+		// may be added to this list during concurrent GC, but
+		// we only care about spans that were allocated before
+		// this mark phase.
+		work.nSpanRoots = mheap_.sweepSpans[mheap_.sweepgen/2%2].numBlocks()
 
 		// On the first markroot, we need to scan all Gs. Gs
 		// may be created after this point, but it's okay that
@@ -215,24 +221,13 @@ func markroot(gcw *gcWork, i uint32) {
 			gp.waitsince = work.tstart
 		}
 
-		if gcphase != _GCmarktermination && gp.startpc == gcBgMarkWorkerPC && readgstatus(gp) != _Gdead {
-			// GC background workers may be
-			// non-preemptible, so we may deadlock if we
-			// try to scan them during a concurrent phase.
-			// They also have tiny stacks, so just ignore
-			// them until mark termination.
-			gp.gcscandone = true
-			queueRescan(gp)
-			break
-		}
-
 		// scang must be done on the system stack in case
 		// we're trying to scan our own stack.
 		systemstack(func() {
 			// If this is a self-scan, put the user G in
 			// _Gwaiting to prevent self-deadlock. It may
-			// already be in _Gwaiting if this is mark
-			// termination.
+			// already be in _Gwaiting if this is a mark
+			// worker or we're in mark termination.
 			userG := getg().m.curg
 			selfScan := gp == userG && readgstatus(userG) == _Grunning
 			if selfScan {
@@ -332,18 +327,14 @@ func markrootSpans(gcw *gcWork, shard int) {
 	}
 
 	sg := mheap_.sweepgen
-	startSpan := shard * rootBlockSpans
-	endSpan := (shard + 1) * rootBlockSpans
-	if endSpan > len(work.spans) {
-		endSpan = len(work.spans)
-	}
+	spans := mheap_.sweepSpans[mheap_.sweepgen/2%2].block(shard)
 	// Note that work.spans may not include spans that were
 	// allocated between entering the scan phase and now. This is
 	// okay because any objects with finalizers in those spans
 	// must have been allocated and given finalizers after we
 	// entered the scan phase, so addfinalizer will have ensured
 	// the above invariants for them.
-	for _, s := range work.spans[startSpan:endSpan] {
+	for _, s := range spans {
 		if s.state != mSpanInUse {
 			continue
 		}
@@ -1292,6 +1283,13 @@ func greyobject(obj, base, off uintptr, hbits heapBits, span *mspan, gcw *gcWork
 			throw("setCheckmarked and isCheckmarked disagree")
 		}
 	} else {
+		if debug.gccheckmark > 0 && span.isFree(objIndex) {
+			print("runtime: marking free object ", hex(obj), " found at *(", hex(base), "+", hex(off), ")\n")
+			gcDumpObject("base", base, off)
+			gcDumpObject("obj", obj, ^uintptr(0))
+			throw("marking free object")
+		}
+
 		// If marked we have nothing to do.
 		if mbits.isMarked() {
 			return
@@ -1327,7 +1325,7 @@ func gcDumpObject(label string, obj, off uintptr) {
 	k := obj >> _PageShift
 	x := k
 	x -= mheap_.arena_start >> _PageShift
-	s := h_spans[x]
+	s := mheap_.spans[x]
 	print(label, "=", hex(obj), " k=", hex(k))
 	if s == nil {
 		print(" s=nil\n")
@@ -1419,7 +1417,7 @@ var useCheckmark = false
 //go:nowritebarrier
 func initCheckmarks() {
 	useCheckmark = true
-	for _, s := range work.spans {
+	for _, s := range mheap_.allspans {
 		if s.state == _MSpanInUse {
 			heapBitsForSpan(s.base()).initCheckmarkSpan(s.layout())
 		}
@@ -1428,7 +1426,7 @@ func initCheckmarks() {
 
 func clearCheckmarks() {
 	useCheckmark = false
-	for _, s := range work.spans {
+	for _, s := range mheap_.allspans {
 		if s.state == _MSpanInUse {
 			heapBitsForSpan(s.base()).clearCheckmarkSpan(s.layout())
 		}

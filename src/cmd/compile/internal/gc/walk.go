@@ -128,8 +128,8 @@ func adjustargs(n *Node, adjust int) {
 			continue
 		}
 
-		if lhs.Op != OINDREG {
-			yyerror("call argument store does not use OINDREG")
+		if lhs.Op != OINDREGSP {
+			yyerror("call argument store does not use OINDREGSP")
 		}
 
 		// can't really check this in machine-indep code.
@@ -410,16 +410,14 @@ func walkexprlistcheap(s []*Node, init *Nodes) {
 	}
 }
 
-// Build name of function: convI2E etc.
+// Build name of function for interface conversion.
 // Not all names are possible
-// (e.g., we'll never generate convE2E or convE2I).
+// (e.g., we'll never generate convE2E or convE2I or convI2E).
 func convFuncName(from, to *Type) string {
 	tkind := to.iet()
 	switch from.iet() {
 	case 'I':
 		switch tkind {
-		case 'E':
-			return "convI2E"
 		case 'I':
 			return "convI2I"
 		}
@@ -512,7 +510,7 @@ opswitch:
 
 	case OTYPE,
 		ONONAME,
-		OINDREG,
+		OINDREGSP,
 		OEMPTY,
 		OGETG:
 
@@ -1077,6 +1075,34 @@ opswitch:
 			l.Type = n.Type
 			l.Typecheck = n.Typecheck
 			n = l
+			break
+		}
+
+		// Implement interface to empty interface conversion.
+		// tmp = i.itab
+		// if tmp != nil {
+		//    tmp = tmp.type
+		// }
+		// e = iface{tmp, i.data}
+		if n.Type.IsEmptyInterface() && n.Left.Type.IsInterface() && !n.Left.Type.IsEmptyInterface() {
+			// Evaluate the input interface.
+			c := temp(n.Left.Type)
+			init.Append(nod(OAS, c, n.Left))
+
+			// Get the itab out of the interface.
+			tmp := temp(ptrto(Types[TUINT8]))
+			init.Append(nod(OAS, tmp, typecheck(nod(OITAB, c, nil), Erv)))
+
+			// Get the type out of the itab.
+			nif := nod(OIF, typecheck(nod(ONE, tmp, nodnil()), Erv), nil)
+			nif.Nbody.Set1(nod(OAS, tmp, itabType(tmp)))
+			init.Append(nif)
+
+			// Build the result.
+			e := nod(OEFACE, tmp, ifaceData(c, ptrto(Types[TUINT8])))
+			e.Type = n.Type // assign type manually, typecheck doesn't understand OEFACE.
+			e.Typecheck = 1
+			n = e
 			break
 		}
 
@@ -2166,7 +2192,7 @@ func callnew(t *Type) *Node {
 
 func iscallret(n *Node) bool {
 	n = outervalue(n)
-	return n.Op == OINDREG && n.Reg == int16(Thearch.REGSP)
+	return n.Op == OINDREGSP
 }
 
 func isstack(n *Node) bool {
@@ -2182,8 +2208,8 @@ func isstack(n *Node) bool {
 	}
 
 	switch n.Op {
-	case OINDREG:
-		return n.Reg == int16(Thearch.REGSP)
+	case OINDREGSP:
+		return true
 
 	case ONAME:
 		switch n.Class {
@@ -3561,7 +3587,10 @@ func walkinrange(n *Node, init *Nodes) *Node {
 	cmp.Lineno = n.Lineno
 	cmp = addinit(cmp, l.Ninit.Slice())
 	cmp = addinit(cmp, r.Ninit.Slice())
+	// Typecheck the AST rooted at cmp...
 	cmp = typecheck(cmp, Erv)
+	// ...but then reset cmp's type to match n's type.
+	cmp.Type = n.Type
 	cmp = walkexpr(cmp, init)
 	return cmp
 }

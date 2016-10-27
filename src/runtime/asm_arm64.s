@@ -269,11 +269,11 @@ TEXT runtime·morestack(SB),NOSPLIT,$-8-0
 
 	// Called from f.
 	// Set g->sched to context in f
-	MOVD	R26, (g_sched+gobuf_ctxt)(g)
 	MOVD	RSP, R0
 	MOVD	R0, (g_sched+gobuf_sp)(g)
 	MOVD	LR, (g_sched+gobuf_pc)(g)
 	MOVD	R3, (g_sched+gobuf_lr)(g)
+	// newstack will fill gobuf.ctxt.
 
 	// Called from f.
 	// Set m->morebuf to f's callers.
@@ -287,6 +287,8 @@ TEXT runtime·morestack(SB),NOSPLIT,$-8-0
 	BL	runtime·save_g(SB)
 	MOVD	(g_sched+gobuf_sp)(g), R0
 	MOVD	R0, RSP
+	MOVD.W	$0, -16(RSP)	// create a call frame on g0
+	MOVD	R26, 8(RSP)	// ctxt argument
 	BL	runtime·newstack(SB)
 
 	// Not reached, but make sure the return PC from the call to newstack
@@ -333,8 +335,6 @@ TEXT reflect·call(SB), NOSPLIT, $0-0
 
 TEXT ·reflectcall(SB), NOSPLIT, $-8-32
 	MOVWU argsize+24(FP), R16
-	// NOTE(rsc): No call16, because CALLFN needs four words
-	// of argument space to invoke callwritebarrier.
 	DISPATCH(runtime·call32, 32)
 	DISPATCH(runtime·call64, 64)
 	DISPATCH(runtime·call128, 128)
@@ -385,33 +385,27 @@ TEXT NAME(SB), WRAPPER, $MAXSIZE-24;		\
 	PCDATA  $PCDATA_StackMapIndex, $0;	\
 	BL	(R0);				\
 	/* copy return values back */		\
-	MOVD	arg+16(FP), R3;			\
-	MOVWU	n+24(FP), R4;			\
-	MOVWU	retoffset+28(FP), R6;		\
-	MOVD	RSP, R5;				\
-	ADD	R6, R5; 			\
-	ADD	R6, R3;				\
-	SUB	R6, R4;				\
-	ADD	$(8-1), R5;			\
-	SUB	$1, R3;				\
-	ADD	R5, R4;				\
-loop:						\
-	CMP	R5, R4;				\
-	BEQ	end;				\
-	MOVBU.W	1(R5), R6;			\
-	MOVBU.W	R6, 1(R3);			\
-	B	loop;				\
-end:						\
-	/* execute write barrier updates */	\
 	MOVD	argtype+0(FP), R7;		\
 	MOVD	arg+16(FP), R3;			\
 	MOVWU	n+24(FP), R4;			\
 	MOVWU	retoffset+28(FP), R6;		\
-	MOVD	R7, 8(RSP);			\
-	MOVD	R3, 16(RSP);			\
-	MOVD	R4, 24(RSP);			\
-	MOVD	R6, 32(RSP);			\
-	BL	runtime·callwritebarrier(SB);	\
+	ADD	$8, RSP, R5;			\
+	ADD	R6, R5; 			\
+	ADD	R6, R3;				\
+	SUB	R6, R4;				\
+	BL	callRet<>(SB);			\
+	RET
+
+// callRet copies return values back at the end of call*. This is a
+// separate function so it can allocate stack space for the arguments
+// to reflectcallmove. It does not follow the Go ABI; it expects its
+// arguments in registers.
+TEXT callRet<>(SB), NOSPLIT, $40-0
+	MOVD	R7, 8(RSP)
+	MOVD	R3, 16(RSP)
+	MOVD	R5, 24(RSP)
+	MOVD	R4, 32(RSP)
+	BL	runtime·reflectcallmove(SB)
 	RET
 
 // These have 8 added to make the overall frame size a multiple of 16,

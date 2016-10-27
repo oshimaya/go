@@ -303,8 +303,6 @@ func compile(fn *Node) {
 		panicslice = Sysfunc("panicslice")
 		panicdivide = Sysfunc("panicdivide")
 		growslice = Sysfunc("growslice")
-		writebarrierptr = Sysfunc("writebarrierptr")
-		typedmemmove = Sysfunc("typedmemmove")
 		panicdottype = Sysfunc("panicdottype")
 	}
 
@@ -387,7 +385,7 @@ func compile(fn *Node) {
 		ptxt.From3.Offset |= obj.REFLECTMETHOD
 	}
 	if fn.Func.Pragma&Systemstack != 0 {
-		ptxt.From.Sym.Cfunc = true
+		ptxt.From.Sym.Set(obj.AttrCFunc, true)
 	}
 
 	// Clumsy but important.
@@ -425,7 +423,10 @@ func compile(fn *Node) {
 			fallthrough
 		case PPARAM, PPARAMOUT:
 			p := Gins(obj.ATYPE, n, nil)
-			p.From.Gotype = Linksym(ngotype(n))
+			p.From.Sym = obj.Linklookup(Ctxt, n.Sym.Name, 0)
+			p.To.Type = obj.TYPE_MEM
+			p.To.Name = obj.NAME_EXTERN
+			p.To.Sym = Linksym(ngotype(n))
 		}
 	}
 

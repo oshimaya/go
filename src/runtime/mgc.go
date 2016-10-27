@@ -815,9 +815,6 @@ var work struct {
 	// mode is the concurrency mode of the current GC cycle.
 	mode gcMode
 
-	// Copy of mheap.allspans for marker or sweeper.
-	spans []*mspan
-
 	// totaltime is the CPU nanoseconds spent in GC since the
 	// program started if debug.gctrace > 0.
 	totaltime int64
@@ -979,7 +976,7 @@ func gcStart(mode gcMode, forceTrigger bool) {
 	systemstack(stopTheWorldWithSema)
 	// Finish sweep before we start concurrent scan.
 	systemstack(func() {
-		finishsweep_m(true)
+		finishsweep_m()
 	})
 	// clearpools before we start the GC. If we wait they memory will not be
 	// reclaimed until the next GC cycle.
@@ -1015,10 +1012,6 @@ func gcStart(mode gcMode, forceTrigger bool) {
 		// happen, we want enable assists as early as
 		// possible.
 		setGCPhase(_GCmark)
-
-		// markrootSpans uses work.spans, so make sure
-		// it is up to date.
-		gcCopySpans()
 
 		gcBgMarkPrepare() // Must happen before assist enable.
 		gcMarkRootPrepare()
@@ -1220,7 +1213,7 @@ func gcMarkTermination() {
 			// they have gcscanvalid==true and gcworkdone==true.
 			// Reset these so that all stacks will be rescanned.
 			gcResetMarkState()
-			finishsweep_m(true)
+			finishsweep_m()
 
 			// Still in STW but gcphase is _GCoff, reset to _GCmarktermination
 			// At this point all objects will be found during the gcMark which
@@ -1468,14 +1461,25 @@ func gcBgMarkWorker(_p_ *p) {
 			throw("work.nwait was > work.nproc")
 		}
 
-		switch _p_.gcMarkWorkerMode {
-		default:
-			throw("gcBgMarkWorker: unexpected gcMarkWorkerMode")
-		case gcMarkWorkerDedicatedMode:
-			gcDrain(&_p_.gcw, gcDrainNoBlock|gcDrainFlushBgCredit)
-		case gcMarkWorkerFractionalMode, gcMarkWorkerIdleMode:
-			gcDrain(&_p_.gcw, gcDrainUntilPreempt|gcDrainFlushBgCredit)
-		}
+		systemstack(func() {
+			// Mark our goroutine preemptible so its stack
+			// can be scanned. This lets two mark workers
+			// scan each other (otherwise, they would
+			// deadlock). We must not modify anything on
+			// the G stack. However, stack shrinking is
+			// disabled for mark workers, so it is safe to
+			// read from the G stack.
+			casgstatus(gp, _Grunning, _Gwaiting)
+			switch _p_.gcMarkWorkerMode {
+			default:
+				throw("gcBgMarkWorker: unexpected gcMarkWorkerMode")
+			case gcMarkWorkerDedicatedMode:
+				gcDrain(&_p_.gcw, gcDrainNoBlock|gcDrainFlushBgCredit)
+			case gcMarkWorkerFractionalMode, gcMarkWorkerIdleMode:
+				gcDrain(&_p_.gcw, gcDrainUntilPreempt|gcDrainFlushBgCredit)
+			}
+			casgstatus(gp, _Gwaiting, _Grunning)
+		})
 
 		// If we are nearing the end of mark, dispose
 		// of the cache promptly. We must do this
@@ -1562,8 +1566,6 @@ func gcMark(start_time int64) {
 		throw("in gcMark expecting to see gcphase as _GCmarktermination")
 	}
 	work.tstart = start_time
-
-	gcCopySpans() // TODO(rlh): should this be hoisted and done only once? Right now it is done for normal marking and also for checkmarking.
 
 	// Queue root marking jobs.
 	gcMarkRootPrepare()
@@ -1677,12 +1679,16 @@ func gcSweep(mode gcMode) {
 	if gcphase != _GCoff {
 		throw("gcSweep being done but phase is not GCoff")
 	}
-	gcCopySpans()
 
 	lock(&mheap_.lock)
 	mheap_.sweepgen += 2
 	mheap_.sweepdone = 0
-	sweep.spanidx = 0
+	if mheap_.sweepSpans[mheap_.sweepgen/2%2].index != 0 {
+		// We should have drained this list during the last
+		// sweep phase. We certainly need to start this phase
+		// with an empty swept list.
+		throw("non-empty swept list")
+	}
 	unlock(&mheap_.lock)
 
 	if !_ConcurrentSweep || mode == gcForceBlockMode {
@@ -1726,25 +1732,6 @@ func gcSweep(mode gcMode) {
 		ready(sweep.g, 0, true)
 	}
 	unlock(&sweep.lock)
-}
-
-func gcCopySpans() {
-	// Cache runtime.mheap_.allspans in work.spans to avoid conflicts with
-	// resizing/freeing allspans.
-	// New spans can be created while GC progresses, but they are not garbage for
-	// this round:
-	//  - new stack spans can be created even while the world is stopped.
-	//  - new malloc spans can be created during the concurrent sweep
-	// Even if this is stop-the-world, a concurrent exitsyscall can allocate a stack from heap.
-	lock(&mheap_.lock)
-	// Free the old cached mark array if necessary.
-	if work.spans != nil && &work.spans[0] != &h_allspans[0] {
-		sysFree(unsafe.Pointer(&work.spans[0]), uintptr(len(work.spans))*unsafe.Sizeof(work.spans[0]), &memstats.other_sys)
-	}
-	// Cache the current array for sweeping.
-	mheap_.gcspans = mheap_.allspans
-	work.spans = h_allspans
-	unlock(&mheap_.lock)
 }
 
 // gcResetMarkState resets global state prior to marking (concurrent

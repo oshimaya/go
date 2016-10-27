@@ -94,7 +94,7 @@ func ggloblsym(s *Sym, width int32, flags int16) {
 
 func ggloblLSym(s *obj.LSym, width int32, flags int16) {
 	if flags&obj.LOCAL != 0 {
-		s.Local = true
+		s.Set(obj.AttrLocal, true)
 		flags &^= obj.LOCAL
 	}
 	Ctxt.Globl(s, int64(width), int(flags))
@@ -279,8 +279,7 @@ func nodarg(t interface{}, fp int) *Node {
 		Fatalf("bad fp")
 
 	case 0: // preparing arguments for call
-		n.Op = OINDREG
-		n.Reg = int16(Thearch.REGSP)
+		n.Op = OINDREGSP
 		n.Xoffset += Ctxt.FixedFrameSize()
 
 	case 1: // reading arguments inside call

@@ -648,6 +648,20 @@ var (
 
 type self struct{}
 
+type Loop *Loop
+type Loopy interface{}
+
+var loop1, loop2 Loop
+var loopy1, loopy2 Loopy
+
+func init() {
+	loop1 = &loop2
+	loop2 = &loop1
+
+	loopy1 = &loopy2
+	loopy2 = &loopy1
+}
+
 var deepEqualTests = []DeepEqualTest{
 	// Equalities
 	{nil, nil, true},
@@ -706,6 +720,12 @@ var deepEqualTests = []DeepEqualTest{
 	{&[3]interface{}{1, 2, 4}, &[3]interface{}{1, 2, "s"}, false},
 	{Basic{1, 0.5}, NotBasic{1, 0.5}, false},
 	{map[uint]string{1: "one", 2: "two"}, map[int]string{2: "two", 1: "one"}, false},
+
+	// Possible loops.
+	{&loop1, &loop1, true},
+	{&loop1, &loop2, true},
+	{&loopy1, &loopy1, true},
+	{&loopy1, &loopy2, true},
 }
 
 func TestDeepEqual(t *testing.T) {
@@ -3099,7 +3119,7 @@ func ReadWriterV(x io.ReadWriter) Value {
 
 type Empty struct{}
 type MyStruct struct {
-	x int "tag"
+	x int `some:"tag"`
 }
 type MyString string
 type MyBytes []byte
@@ -3414,31 +3434,31 @@ var convertTests = []struct {
 
 	// structs with different tags
 	{V(struct {
-		x int "foo"
+		x int `some:"foo"`
 	}{}), V(struct {
-		x int "bar"
+		x int `some:"bar"`
 	}{})},
 
 	{V(struct {
-		x int "bar"
+		x int `some:"bar"`
 	}{}), V(struct {
-		x int "foo"
+		x int `some:"foo"`
 	}{})},
 
 	{V(MyStruct{}), V(struct {
-		x int "foo"
+		x int `some:"foo"`
 	}{})},
 
 	{V(struct {
-		x int "foo"
+		x int `some:"foo"`
 	}{}), V(MyStruct{})},
 
 	{V(MyStruct{}), V(struct {
-		x int "bar"
+		x int `some:"bar"`
 	}{})},
 
 	{V(struct {
-		x int "bar"
+		x int `some:"bar"`
 	}{}), V(MyStruct{})},
 
 	// can convert *byte and *MyByte

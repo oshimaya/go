@@ -254,11 +254,11 @@ TEXT runtime·morestack(SB),NOSPLIT|NOFRAME,$0-0
 
 	// Called from f.
 	// Set g->sched to context in f.
-	MOVD	R12, (g_sched+gobuf_ctxt)(g)
 	MOVD	R15, (g_sched+gobuf_sp)(g)
 	MOVD	LR, R8
 	MOVD	R8, (g_sched+gobuf_pc)(g)
 	MOVD	R5, (g_sched+gobuf_lr)(g)
+	// newstack will fill gobuf.ctxt.
 
 	// Called from f.
 	// Set m->morebuf to f's caller.
@@ -270,6 +270,10 @@ TEXT runtime·morestack(SB),NOSPLIT|NOFRAME,$0-0
 	MOVD	m_g0(R7), g
 	BL	runtime·save_g(SB)
 	MOVD	(g_sched+gobuf_sp)(g), R15
+	// Create a stack frame on g0 to call newstack.
+	MOVD	$0, -16(R15)	// Zero saved LR in frame
+	SUB	$16, R15
+	MOVD	R12, 8(R15)	// ctxt argument
 	BL	runtime·newstack(SB)
 
 	// Not reached, but make sure the return PC from the call to newstack
@@ -316,8 +320,6 @@ TEXT reflect·call(SB), NOSPLIT, $0-0
 
 TEXT ·reflectcall(SB), NOSPLIT, $-8-32
 	MOVWZ argsize+24(FP), R3
-	// NOTE(rsc): No call16, because CALLFN needs four words
-	// of argument space to invoke callwritebarrier.
 	DISPATCH(runtime·call32, 32)
 	DISPATCH(runtime·call64, 64)
 	DISPATCH(runtime·call128, 128)
@@ -373,6 +375,7 @@ callFunction:					\
 	PCDATA  $PCDATA_StackMapIndex, $0;	\
 	BL	(R8);				\
 	/* copy return values back */		\
+	MOVD	argtype+0(FP), R7;		\
 	MOVD	arg+16(FP), R6;			\
 	MOVWZ	n+24(FP), R5;			\
 	MOVD	$stack-MAXSIZE(SP), R4;		\
@@ -380,27 +383,19 @@ callFunction:					\
 	ADD	R1, R4;				\
 	ADD	R1, R6;				\
 	SUB	R1, R5;				\
-loopRets: /* copy 256 bytes at a time */	\
-	CMP	R5, $256;			\
-	BLT	tailRets;			\
-	SUB	$256, R5;			\
-	MVC	$256, 0(R4), 0(R6);		\
-	MOVD	$256(R4), R4;			\
-	MOVD	$256(R6), R6;			\
-	BR	loopRets;			\
-tailRets: /* copy remaining bytes */		\
-	CMP	R5, $0;				\
-	BEQ	writeBarrierUpdates;		\
-	SUB	$1, R5;				\
-	EXRL	$callfnMVC<>(SB), R5;		\
-writeBarrierUpdates:				\
-	/* execute write barrier updates */	\
-	MOVD	argtype+0(FP), R1;		\
-	MOVD	arg+16(FP), R2;			\
-	MOVWZ	n+24(FP), R3;			\
-	MOVWZ	retoffset+28(FP), R4;		\
-	STMG	R1, R4, stack-MAXSIZE(SP);	\
-	BL	runtime·callwritebarrier(SB);	\
+	BL	callRet<>(SB);			\
+	RET
+
+// callRet copies return values back at the end of call*. This is a
+// separate function so it can allocate stack space for the arguments
+// to reflectcallmove. It does not follow the Go ABI; it expects its
+// arguments in registers.
+TEXT callRet<>(SB), NOSPLIT, $32-0
+	MOVD	R7, 8(R15)
+	MOVD	R6, 16(R15)
+	MOVD	R4, 24(R15)
+	MOVD	R5, 32(R15)
+	BL	runtime·reflectcallmove(SB)
 	RET
 
 CALLFN(·call32, 32)
@@ -914,12 +909,14 @@ notfoundr0:
 
 vectorimpl:
 	//if the address is not 16byte aligned, use loop for the header
-	AND	$15, R3, R8
+	MOVD	R3, R8
+	AND	$15, R8
 	CMPBGT	R8, $0, notaligned
 
 aligned:
 	ADD	R6, R4, R8
-	AND	$-16, R8, R7
+	MOVD	R8, R7
+	AND	$-16, R7
 	// replicate c across V17
 	VLVGB	$0, R5, V19
 	VREPB	$0, V19, V17
@@ -940,7 +937,8 @@ vectorloop:
 	RET
 
 notaligned:
-	AND	$-16, R3, R8
+	MOVD	R3, R8
+	AND	$-16, R8
 	ADD     $16, R8
 notalignedloop:
 	CMPBEQ	R3, R8, aligned

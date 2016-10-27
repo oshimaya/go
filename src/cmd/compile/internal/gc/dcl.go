@@ -487,23 +487,6 @@ func colasdefn(left []*Node, defn *Node) {
 	}
 }
 
-func colas(left, right []*Node, lno int32) *Node {
-	n := nod(OAS, nil, nil) // assume common case
-	n.Colas = true
-	n.Lineno = lno     // set before calling colasdefn for correct error line
-	colasdefn(left, n) // modifies left, call before using left[0] in common case
-	if len(left) == 1 && len(right) == 1 {
-		// common case
-		n.Left = left[0]
-		n.Right = right[0]
-	} else {
-		n.Op = OAS2
-		n.List.Set(left)
-		n.Rlist.Set(right)
-	}
-	return n
-}
-
 // declare the arguments in an
 // interface field declaration.
 func ifacedcl(n *Node) {
@@ -526,7 +509,7 @@ func funchdr(n *Node) {
 		Fatalf("funchdr: dclcontext = %d", dclcontext)
 	}
 
-	if importpkg == nil && n.Func.Nname != nil {
+	if Ctxt.Flag_dynlink && importpkg == nil && n.Func.Nname != nil {
 		makefuncsym(n.Func.Nname.Sym)
 	}
 
@@ -1005,34 +988,30 @@ func embedded(s *Sym, pkg *Pkg) *Node {
 	return n
 }
 
+// thisT is the singleton type used for interface method receivers.
+var thisT *Type
+
 func fakethis() *Node {
-	n := nod(ODCLFIELD, nil, typenod(ptrto(typ(TSTRUCT))))
-	return n
+	if thisT == nil {
+		thisT = ptrto(typ(TSTRUCT))
+	}
+	return nod(ODCLFIELD, nil, typenod(thisT))
 }
 
 func fakethisfield() *Field {
+	if thisT == nil {
+		thisT = ptrto(typ(TSTRUCT))
+	}
 	f := newField()
-	f.Type = ptrto(typ(TSTRUCT))
+	f.Type = thisT
 	return f
 }
 
 // Is this field a method on an interface?
-// Those methods have an anonymous *struct{} as the receiver.
+// Those methods have thisT as the receiver.
 // (See fakethis above.)
 func isifacemethod(f *Type) bool {
-	rcvr := f.Recv()
-	if rcvr.Sym != nil {
-		return false
-	}
-	t := rcvr.Type
-	if !t.IsPtr() {
-		return false
-	}
-	t = t.Elem()
-	if t.Sym != nil || !t.IsStruct() || t.NumFields() != 0 {
-		return false
-	}
-	return true
+	return f.Recv().Type == thisT
 }
 
 // turn a parsed function declaration into a type
@@ -1318,6 +1297,11 @@ func funcsym(s *Sym) *Sym {
 	}
 
 	s1 := Pkglookup(s.Name+"·f", s.Pkg)
+	if !Ctxt.Flag_dynlink && s1.Def == nil {
+		s1.Def = newfuncname(s1)
+		s1.Def.Func.Shortname = newname(s)
+		funcsyms = append(funcsyms, s1.Def)
+	}
 	s.Fsym = s1
 	return s1
 }

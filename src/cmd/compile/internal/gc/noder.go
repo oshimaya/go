@@ -61,7 +61,7 @@ func (p *noder) decls(decls []syntax.Decl) (l []*Node) {
 			p.importDecl(decl)
 
 		case *syntax.AliasDecl:
-			yyerror("alias declarations not yet implemented")
+			p.aliasDecl(decl)
 
 		case *syntax.VarDecl:
 			l = append(l, p.varDecl(decl)...)
@@ -90,10 +90,6 @@ func (p *noder) decls(decls []syntax.Decl) (l []*Node) {
 			lastConstGroup = decl.Group
 
 		case *syntax.TypeDecl:
-			if decl.Alias {
-				yyerror("alias declarations not yet implemented")
-				break
-			}
 			l = append(l, p.typeDecl(decl))
 
 		case *syntax.FuncDecl:
@@ -151,6 +147,92 @@ func (p *noder) importDecl(imp *syntax.ImportDecl) {
 	my.Def = pack
 	my.Lastlineno = pack.Lineno
 	my.Block = 1 // at top level
+}
+
+func (p *noder) aliasDecl(decl *syntax.AliasDecl) {
+	// Because alias declarations must refer to imported entities
+	// which are already set up, we can do all checks right here.
+	// We won't know anything about entities that have not been
+	// declared yet, but since they cannot have been imported, we
+	// know there's an error and we don't care about the details.
+
+	// The original entity must be denoted by a qualified identifier.
+	// (The parser doesn't make this restriction to be more error-
+	// tolerant.)
+	qident, ok := decl.Orig.(*syntax.SelectorExpr)
+	if !ok {
+		// TODO(gri) This prints a dot-imported object with qualification
+		//           (confusing error). Fix this.
+		yyerror("invalid alias: %v is not a package-qualified identifier", p.expr(decl.Orig))
+		return
+	}
+
+	pkg := p.expr(qident.X)
+	if pkg.Op != OPACK {
+		yyerror("invalid alias: %v is not a package", pkg)
+		return
+	}
+	pkg.Used = true
+
+	orig := oldname(restrictlookup(qident.Sel.Value, pkg.Name.Pkg))
+
+	// An alias declaration must not refer to package unsafe.
+	if orig.Sym.Pkg == unsafepkg {
+		yyerror("invalid alias: %v refers to package unsafe (%v)", decl.Name.Value, orig)
+		return
+	}
+
+	// The aliased entity must be from a matching constant, type, variable,
+	// or function declaration, respectively.
+	var what string
+	switch decl.Tok {
+	case syntax.Const:
+		if orig.Op != OLITERAL {
+			what = "constant"
+		}
+	case syntax.Type:
+		if orig.Op != OTYPE {
+			what = "type"
+		}
+	case syntax.Var:
+		if orig.Op != ONAME || orig.Class != PEXTERN {
+			what = "variable"
+		}
+	case syntax.Func:
+		if orig.Op != ONAME || orig.Class != PFUNC {
+			what = "function"
+		}
+	default:
+		Fatalf("unexpected token: %s", decl.Tok)
+	}
+	if what != "" {
+		yyerror("invalid alias: %v is not a %s", orig, what)
+		return
+	}
+
+	// don't declare blank aliases
+	if decl.Name.Value == "_" {
+		return
+	}
+
+	// declare alias
+	// (this is similar to handling dot imports)
+	asym := p.name(decl.Name)
+	if asym.Def != nil {
+		redeclare(asym, "in alias declaration")
+		return
+	}
+	asym.Def = orig
+	asym.Block = block
+	asym.Lastlineno = lineno
+
+	if exportname(asym.Name) {
+		yyerror("cannot export alias %v: not yet implemented", asym)
+		// TODO(gri) newname(asym) is only needed to satisfy exportsym
+		// (and indirectly, exportlist). We should be able to just
+		// collect the Syms, eventually.
+		// exportsym(newname(asym))
+	}
 }
 
 func (p *noder) varDecl(decl *syntax.VarDecl) []*Node {
@@ -496,6 +578,7 @@ func (p *noder) structType(expr *syntax.StructType) *Node {
 		l = append(l, n)
 	}
 
+	p.lineno(expr)
 	n := p.nod(expr, OTSTRUCT, nil, nil)
 	n.List.Set(l)
 	return n
@@ -970,7 +1053,12 @@ func (p *noder) wrapname(n syntax.Node, x *Node) *Node {
 	// These nodes do not carry line numbers.
 	// Introduce a wrapper node to give them the correct line.
 	switch x.Op {
-	case ONAME, ONONAME, OTYPE, OPACK, OLITERAL:
+	case OTYPE, OLITERAL:
+		if x.Sym == nil {
+			break
+		}
+		fallthrough
+	case ONAME, ONONAME, OPACK:
 		x = p.nod(n, OPAREN, x, nil)
 		x.Implicit = true
 	}

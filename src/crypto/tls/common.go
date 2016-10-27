@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -238,6 +239,32 @@ type ClientHelloInfo struct {
 	// is being used (see
 	// http://tools.ietf.org/html/rfc4492#section-5.1.2).
 	SupportedPoints []uint8
+
+	// SignatureSchemes lists the signature and hash schemes that the client
+	// is willing to verify. SignatureSchemes is set only if the Signature
+	// Algorithms Extension is being used (see
+	// https://tools.ietf.org/html/rfc5246#section-7.4.1.4.1).
+	SignatureSchemes []uint16
+
+	// SupportedProtos lists the application protocols supported by the client.
+	// SupportedProtos is set only if the Application-Layer Protocol
+	// Negotiation Extension is being used (see
+	// https://tools.ietf.org/html/rfc7301#section-3.1).
+	//
+	// Servers can select a protocol by setting Config.NextProtos in a
+	// GetConfigForClient return value.
+	SupportedProtos []string
+
+	// SupportedVersions lists the TLS versions supported by the client.
+	// For TLS versions less than 1.3, this is extrapolated from the max
+	// version advertised by the client, so values other than the greatest
+	// might be rejected if used.
+	SupportedVersions []uint16
+
+	// Conn is the underlying net.Conn for the connection. Do not read
+	// from, or write to, this connection; that will cause the TLS
+	// connection to fail.
+	Conn net.Conn
 }
 
 // RenegotiationSupport enumerates the different levels of support for TLS
@@ -324,6 +351,18 @@ type Config struct {
 	// config before use. If neither of those cases applies then the key
 	// material from the returned config will be used for session tickets.
 	GetConfigForClient func(*ClientHelloInfo) (*Config, error)
+
+	// VerifyPeerCertificate, if not nil, is called after normal
+	// certificate verification by either a TLS client or server. It
+	// receives the raw ASN.1 certificates provided by the peer and also
+	// any verified chains that normal processing found. If it returns a
+	// non-nil error, the handshake is aborted and that error results.
+	//
+	// If normal verification fails then the handshake will abort before
+	// considering this callback. If normal verification is disabled by
+	// setting InsecureSkipVerify then this callback will be considered but
+	// the verifiedChains argument will always be nil.
+	VerifyPeerCertificate func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 
 	// RootCAs defines the set of root certificate authorities
 	// that clients use when verifying server certificates.
@@ -455,9 +494,13 @@ func ticketKeyFromBytes(b [32]byte) (key ticketKey) {
 	return key
 }
 
-// Clone returns a shallow clone of c.
-// Only the exported fields are copied.
+// Clone returns a shallow clone of c. It is safe to clone a Config that is
+// being used concurrently by a TLS client or server.
 func (c *Config) Clone() *Config {
+	// Running serverInit ensures that it's safe to read
+	// SessionTicketsDisabled.
+	c.serverInitOnce.Do(c.serverInit)
+
 	var sessionTicketKeys []ticketKey
 	c.mutex.RLock()
 	sessionTicketKeys = c.sessionTicketKeys
@@ -470,6 +513,7 @@ func (c *Config) Clone() *Config {
 		NameToCertificate:           c.NameToCertificate,
 		GetCertificate:              c.GetCertificate,
 		GetConfigForClient:          c.GetConfigForClient,
+		VerifyPeerCertificate:       c.VerifyPeerCertificate,
 		RootCAs:                     c.RootCAs,
 		NextProtos:                  c.NextProtos,
 		ServerName:                  c.ServerName,

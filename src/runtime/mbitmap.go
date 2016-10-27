@@ -264,7 +264,11 @@ func (s *mspan) nextFreeIndex() uintptr {
 	return result
 }
 
+// isFree returns whether the index'th object in s is unallocated.
 func (s *mspan) isFree(index uintptr) bool {
+	if index < s.freeindex {
+		return false
+	}
 	whichByte := index / 8
 	whichBit := index % 8
 	byteVal := *addb(s.allocBits, whichByte)
@@ -394,7 +398,7 @@ func heapBitsForObject(p, refBase, refOff uintptr) (base uintptr, hbits heapBits
 	idx := off >> _PageShift
 	// p points into the heap, but possibly to the middle of an object.
 	// Consult the span table to find the block beginning.
-	s = h_spans[idx]
+	s = mheap_.spans[idx]
 	if s == nil || p < s.base() || p >= s.limit || s.state != mSpanInUse {
 		if s == nil || s.state == _MSpanStack {
 			// If s is nil, the virtual address has never been part of the heap.

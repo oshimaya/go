@@ -104,7 +104,7 @@ type stackt struct {
 type timespec struct {
 	tv_sec  int64
 	tv_nsec int32
-	Pad_cgo_0 [4]byte
+	_       [4]byte // EABI
 }
 
 func (ts *timespec) set_sec(x int32) {
@@ -118,7 +118,7 @@ func (ts *timespec) set_nsec(x int32) {
 type timeval struct {
 	tv_sec  int64
 	tv_usec int32
-	Pad_cgo_0 [4]byte
+	_       [4]byte // EABI
 }
 
 func (tv *timeval) set_usec(x int32) {
@@ -131,11 +131,11 @@ type itimerval struct {
 }
 
 type mcontextt struct {
-	__gregs [17]uint32
-	Pad_cgo_0 [4]byte
-	__fpu	[272]byte
+	__gregs     [17]uint32
+	_           [4]byte   // EABI
+	__fpu       [272]byte // EABI
 	_mc_tlsbase uint32
-	Pad_cgo_1 [4]byte
+	_           [4]byte // EABI
 }
 
 type ucontextt struct {
@@ -143,7 +143,7 @@ type ucontextt struct {
 	uc_link     *ucontextt
 	uc_sigmask  sigset
 	uc_stack    stackt
-	Pad_cgo_0 [4]byte
+	_           [4]byte // EABI
 	uc_mcontext mcontextt
 	__uc_pad    [2]int32
 }
@@ -155,7 +155,7 @@ type keventt struct {
 	fflags uint32
 	data   int64
 	udata  *byte
-	Pad_cgo_0 [4]byte
+	_      [4]byte // EABI
 }
 
 // created by cgo -cdefs and then converted to Go

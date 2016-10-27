@@ -35,16 +35,13 @@ type Node struct {
 
 	// Various. Usually an offset into a struct. For example:
 	// - ONAME nodes that refer to local variables use it to identify their stack frame position.
-	// - ODOT, ODOTPTR, and OINDREG use it to indicate offset relative to their base address.
+	// - ODOT, ODOTPTR, and OINDREGSP use it to indicate offset relative to their base address.
 	// - OSTRUCTKEY uses it to store the named field's offset.
 	// - OXCASE and OXFALL use it to validate the use of fallthrough.
 	// Possibly still more uses. If you find any, document them.
 	Xoffset int64
 
 	Lineno int32
-
-	// OREGISTER, OINDREG
-	Reg int16
 
 	Esc uint16 // EscXXX
 
@@ -389,7 +386,6 @@ const (
 	OINDEXMAP  // Left[Right] (index of map)
 	OKEY       // Left:Right (key:value in struct/array/map literal, or slice index pair)
 	OSTRUCTKEY // Sym:Left (key:value in struct literal, after type checking)
-	OIDATA     // data word of an interface value in Left; TODO: move next to OITAB once it is easier to regenerate the binary blob in builtin.go (issues 15835, 15839)
 	OLEN       // len(Left)
 	OMAKE      // make(List) (before type checking converts to one of the following)
 	OMAKECHAN  // make(Type, Left) (type is chan)
@@ -413,11 +409,11 @@ const (
 	OPRINTN    // println(List)
 	OPAREN     // (Left)
 	OSEND      // Left <- Right
-	OSLICE     // Left[Right.Left : Right.Right] (Left is untypechecked or slice; Right.Op==OKEY)
-	OSLICEARR  // Left[Right.Left : Right.Right] (Left is array)
-	OSLICESTR  // Left[Right.Left : Right.Right] (Left is string)
-	OSLICE3    // Left[R.Left : R.R.Left : R.R.R] (R=Right; Left is untypedchecked or slice; R.Op and R.R.Op==OKEY)
-	OSLICE3ARR // Left[R.Left : R.R.Left : R.R.R] (R=Right; Left is array; R.Op and R.R.Op==OKEY)
+	OSLICE     // Left[List[0] : List[1]] (Left is untypechecked or slice)
+	OSLICEARR  // Left[List[0] : List[1]] (Left is array)
+	OSLICESTR  // Left[List[0] : List[1]] (Left is string)
+	OSLICE3    // Left[List[0] : List[1] : List[2]] (Left is untypedchecked or slice)
+	OSLICE3ARR // Left[List[0] : List[1] : List[2]] (Left is array)
 	ORECOVER   // recover()
 	ORECV      // <-Left
 	ORUNESTR   // Type(Left) (Type is string, Left is rune)
@@ -466,16 +462,14 @@ const (
 	OINLCALL    // intermediary representation of an inlined call.
 	OEFACE      // itable and data words of an empty-interface value.
 	OITAB       // itable word of an interface value.
+	OIDATA      // data word of an interface value in Left
 	OSPTR       // base pointer of a slice or string.
 	OCLOSUREVAR // variable reference at beginning of closure function
 	OCFUNC      // reference to c function pointer (not go func value)
 	OCHECKNIL   // emit code to ensure pointer/interface not nil
 	OVARKILL    // variable is dead
 	OVARLIVE    // variable is alive
-
-	// thearch-specific registers
-	OREGISTER // a register, such as AX.
-	OINDREG   // offset plus indirect of a register, such as 8(SP).
+	OINDREGSP   // offset plus indirect of REGSP, such as 8(SP).
 
 	// arch-specific opcodes
 	OCMP    // compare: ACMP.

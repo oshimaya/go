@@ -1180,6 +1180,23 @@ func TestIssue10952(t *testing.T) {
 	tg.run("get", "-d", "-u", importPath)
 }
 
+func TestIssue16471(t *testing.T) {
+	testenv.MustHaveExternalNetwork(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("skipping because git binary not found")
+	}
+
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.parallel()
+	tg.tempDir("src")
+	tg.setenv("GOPATH", tg.path("."))
+	tg.must(os.MkdirAll(tg.path("src/rsc.io/go-get-issue-10952"), 0755))
+	tg.runGit(tg.path("src/rsc.io"), "clone", "https://github.com/zombiezen/go-get-issue-10952")
+	tg.runFail("get", "-u", "rsc.io/go-get-issue-10952")
+	tg.grepStderr("rsc.io/go-get-issue-10952 is a custom import path for https://github.com/rsc/go-get-issue-10952, but .* is checked out from https://github.com/zombiezen/go-get-issue-10952", "did not detect updated import path")
+}
+
 // Test git clone URL that uses SCP-like syntax and custom import path checking.
 func TestIssue11457(t *testing.T) {
 	testenv.MustHaveExternalNetwork(t)
@@ -1272,6 +1289,16 @@ func TestRelativeImportsInCommandLinePackage(t *testing.T) {
 	tg.run(append([]string{"test"}, files...)...)
 }
 
+func TestNonCanonicalImportPaths(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+	tg.runFail("build", "canonical/d")
+	tg.grepStderr("package canonical/d", "did not report canonical/d")
+	tg.grepStderr("imports canonical/b", "did not report canonical/b")
+	tg.grepStderr("imports canonical/a/: non-canonical", "did not report canonical/a/")
+}
+
 func TestVersionControlErrorMessageIncludesCorrectDirectory(t *testing.T) {
 	tg := testgo(t)
 	defer tg.cleanup()
@@ -1317,9 +1344,6 @@ func TestInstallIntoGOPATH(t *testing.T) {
 
 // Issue 12407
 func TestBuildOutputToDevNull(t *testing.T) {
-	if runtime.GOOS == "plan9" {
-		t.Skip("skipping because /dev/null is a regular file on plan9")
-	}
 	tg := testgo(t)
 	defer tg.cleanup()
 	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
@@ -1757,6 +1781,27 @@ func TestSymlinksVendor(t *testing.T) {
 	tg.run("run", "p.go")
 	tg.run("build")
 	tg.run("install")
+}
+
+// Issue 15201.
+func TestSymlinksVendor15201(t *testing.T) {
+	switch runtime.GOOS {
+	case "plan9", "windows":
+		t.Skipf("skipping symlink test on %s", runtime.GOOS)
+	}
+
+	tg := testgo(t)
+	defer tg.cleanup()
+
+	tg.tempDir("gopath/src/x/y/_vendor/src/x")
+	tg.must(os.Symlink("../../..", tg.path("gopath/src/x/y/_vendor/src/x/y")))
+	tg.tempFile("gopath/src/x/y/w/w.go", "package w\nimport \"x/y/z\"\n")
+	tg.must(os.Symlink("../_vendor/src", tg.path("gopath/src/x/y/w/vendor")))
+	tg.tempFile("gopath/src/x/y/z/z.go", "package z\n")
+
+	tg.setenv("GOPATH", tg.path("gopath/src/x/y/_vendor")+string(filepath.ListSeparator)+tg.path("gopath"))
+	tg.cd(tg.path("gopath/src"))
+	tg.run("list", "./...")
 }
 
 func TestSymlinksInternal(t *testing.T) {
@@ -2328,6 +2373,20 @@ func TestGoGenerateEnv(t *testing.T) {
 	}
 }
 
+func TestGoGenerateBadImports(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping because windows has no echo command")
+	}
+
+	// This package has an invalid import causing an import cycle,
+	// but go generate is supposed to still run.
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+	tg.run("generate", "gencycle")
+	tg.grepStdout("hello world", "go generate gencycle did not run generator")
+}
+
 func TestGoGetCustomDomainWildcard(t *testing.T) {
 	testenv.MustHaveExternalNetwork(t)
 
@@ -2853,6 +2912,17 @@ func TestGoGetUpdateAllDoesNotTryToLoadDuplicates(t *testing.T) {
 	tg.grepStderrNot("duplicate loads of", "did not remove old packages from cache")
 }
 
+// Issue 17119 more duplicate load errors
+func TestIssue17119(t *testing.T) {
+	testenv.MustHaveExternalNetwork(t)
+
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+	tg.runFail("build", "dupload")
+	tg.grepBothNot("duplicate load|internal error", "internal error")
+}
+
 func TestFatalInBenchmarkCauseNonZeroExitStatus(t *testing.T) {
 	tg := testgo(t)
 	defer tg.cleanup()
@@ -2928,6 +2998,16 @@ func TestBinaryOnlyPackages(t *testing.T) {
 
 	tg.run("run", tg.path("src/p3/p3.go"))
 	tg.grepStdout("hello from p1", "did not see message from p1")
+
+	tg.tempFile("src/p4/p4.go", `package main`)
+	tg.tempFile("src/p4/p4not.go", `//go:binary-only-package
+
+		// +build asdf
+
+		package main
+	`)
+	tg.run("list", "-f", "{{.BinaryOnly}}", "p4")
+	tg.grepStdout("false", "did not see BinaryOnly=false for p4")
 }
 
 // Issue 16050.
