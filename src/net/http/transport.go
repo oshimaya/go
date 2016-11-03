@@ -175,6 +175,10 @@ type Transport struct {
 	// If TLSNextProto is nil, HTTP/2 support is enabled automatically.
 	TLSNextProto map[string]func(authority string, c *tls.Conn) RoundTripper
 
+	// ProxyConnectHeader optionally specifies headers to send to
+	// proxies during CONNECT requests.
+	ProxyConnectHeader Header
+
 	// MaxResponseHeaderBytes specifies a limit on how many
 	// response bytes are allowed in the server's response
 	// header.
@@ -563,10 +567,18 @@ func (e *envOnce) reset() {
 }
 
 func (t *Transport) connectMethodForRequest(treq *transportRequest) (cm connectMethod, err error) {
+	if port := treq.URL.Port(); !validPort(port) {
+		return cm, fmt.Errorf("invalid URL port %q", port)
+	}
 	cm.targetScheme = treq.URL.Scheme
 	cm.targetAddr = canonicalAddr(treq.URL)
 	if t.Proxy != nil {
 		cm.proxyURL, err = t.Proxy(treq.Request)
+		if err == nil && cm.proxyURL != nil {
+			if port := cm.proxyURL.Port(); !validPort(port) {
+				return cm, fmt.Errorf("invalid proxy URL port %q", port)
+			}
+		}
 	}
 	return cm, err
 }
@@ -991,7 +1003,8 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (*persistCon
 		conn, err := t.dial(ctx, "tcp", cm.addr())
 		if err != nil {
 			if cm.proxyURL != nil {
-				err = fmt.Errorf("http: error connecting to proxy %s: %v", cm.proxyURL, err)
+				// Return a typed error, per Issue 16997:
+				err = &net.OpError{Op: "proxyconnect", Net: "tcp", Err: err}
 			}
 			return nil, err
 		}
@@ -1011,11 +1024,15 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (*persistCon
 		}
 	case cm.targetScheme == "https":
 		conn := pconn.conn
+		hdr := t.ProxyConnectHeader
+		if hdr == nil {
+			hdr = make(Header)
+		}
 		connectReq := &Request{
 			Method: "CONNECT",
 			URL:    &url.URL{Opaque: cm.targetAddr},
 			Host:   cm.targetAddr,
-			Header: make(Header),
+			Header: hdr,
 		}
 		if pa := cm.proxyAuth(); pa != "" {
 			connectReq.Header.Set("Proxy-Authorization", pa)
@@ -2146,4 +2163,16 @@ func (cl *connLRU) remove(pc *persistConn) {
 // len returns the number of items in the cache.
 func (cl *connLRU) len() int {
 	return len(cl.m)
+}
+
+// validPort reports whether p (without the colon) is a valid port in
+// a URL, per RFC 3986 Section 3.2.3, which says the port may be
+// empty, or only contain digits.
+func validPort(p string) bool {
+	for _, r := range []byte(p) {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

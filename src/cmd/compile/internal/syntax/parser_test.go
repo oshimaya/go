@@ -44,9 +44,9 @@ func TestStdLib(t *testing.T) {
 
 	results := make(chan parseResult)
 	go func() {
+		defer close(results)
 		for _, dir := range []string{
 			runtime.GOROOT(),
-			//"/Users/gri/src",
 		} {
 			walkDirs(t, dir, func(filename string) {
 				if debug {
@@ -54,7 +54,8 @@ func TestStdLib(t *testing.T) {
 				}
 				ast, err := ReadFile(filename, nil, nil, 0)
 				if err != nil {
-					t.Fatal(err)
+					t.Error(err)
+					return
 				}
 				if *verify {
 					verifyPrint(filename, ast)
@@ -62,7 +63,6 @@ func TestStdLib(t *testing.T) {
 				results <- parseResult{filename, ast.Lines}
 			})
 		}
-		close(results)
 	}()
 
 	var count, lines int
@@ -99,7 +99,7 @@ func walkDirs(t *testing.T, dir string, action func(string)) {
 			}
 		} else if fi.IsDir() && fi.Name() != "testdata" {
 			path := filepath.Join(dir, fi.Name())
-			if !strings.Contains(path, "go/test") {
+			if !strings.HasSuffix(path, "/test") {
 				dirs = append(dirs, path)
 			}
 		}
@@ -153,5 +153,12 @@ func verifyPrint(filename string, ast1 *File) {
 		fmt.Printf("%s\n", buf2.Bytes())
 		fmt.Println()
 		panic("not equal")
+	}
+}
+
+func TestIssue17697(t *testing.T) {
+	_, err := ReadBytes(nil, nil, nil, 0) // return with parser error, don't panic
+	if err == nil {
+		t.Errorf("no error reported")
 	}
 }

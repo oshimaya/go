@@ -252,8 +252,10 @@ func (d *deadcodepass) init() {
 			// We don't keep the go.plugin.exports symbol,
 			// but we do keep the symbols it refers to.
 			exports := d.ctxt.Syms.ROLookup("go.plugin.exports", 0)
-			for _, r := range exports.R {
-				d.mark(r.Sym, nil)
+			if exports != nil {
+				for _, r := range exports.R {
+					d.mark(r.Sym, nil)
+				}
 			}
 		}
 		for _, name := range markextra {
@@ -288,6 +290,11 @@ func (d *deadcodepass) flood() {
 		}
 
 		if strings.HasPrefix(s.Name, "type.") && s.Name[5] != '.' {
+			if len(s.P) == 0 {
+				// Probably a bug. The undefined symbol check
+				// later will give a better error than deadcode.
+				continue
+			}
 			if decodetypeKind(s)&kindMask == kindInterface {
 				for _, sig := range decodeIfaceMethods(d.ctxt.Arch, s) {
 					if d.ctxt.Debugvlog > 1 {

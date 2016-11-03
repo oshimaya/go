@@ -63,6 +63,7 @@ const (
 	SymSiggen
 	SymAsm
 	SymAlgGen
+	SymAlias // alias, original is Sym.Def.Sym
 )
 
 // The Class of a variable/function describes the "storage class"
@@ -216,7 +217,7 @@ var dclcontext Class // PEXTERN/PAUTO
 
 var statuniqgen int // name generator for static temps
 
-var iota_ int32
+var iota_ int64
 
 var lastconst []*Node
 
@@ -362,18 +363,18 @@ var pcloc int32
 
 var Thearch Arch
 
-var Newproc *Node
-
-var Deferproc *Node
-
-var Deferreturn *Node
-
-var panicindex *Node
-
-var panicslice *Node
-
-var panicdivide *Node
-
-var growslice *Node
-
-var panicdottype *Node
+var (
+	Newproc,
+	Deferproc,
+	Deferreturn,
+	panicindex,
+	panicslice,
+	panicdivide,
+	growslice,
+	panicdottype,
+	panicnildottype,
+	assertE2I,
+	assertE2I2,
+	assertI2I,
+	assertI2I2 *Node
+)

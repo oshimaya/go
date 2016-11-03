@@ -588,8 +588,7 @@ func (ctxt *Link) symtab() {
 	adduint(ctxt, moduledata, uint64(nitablinks))
 	adduint(ctxt, moduledata, uint64(nitablinks))
 	// The ptab slice
-	if Buildmode == BuildmodePlugin {
-		ptab := ctxt.Syms.ROLookup("go.plugin.tabs", 0)
+	if ptab := ctxt.Syms.ROLookup("go.plugin.tabs", 0); ptab != nil {
 		ptab.Attr |= AttrReachable
 		ptab.Attr |= AttrLocal
 		ptab.Type = obj.SRODATA
@@ -600,6 +599,12 @@ func (ctxt *Link) symtab() {
 		adduint(ctxt, moduledata, nentries)
 	} else {
 		adduint(ctxt, moduledata, 0)
+		adduint(ctxt, moduledata, 0)
+		adduint(ctxt, moduledata, 0)
+	}
+	if Buildmode == BuildmodePlugin {
+		addgostring(ctxt, moduledata, "go.link.thispluginpath", *flagPluginPath)
+	} else {
 		adduint(ctxt, moduledata, 0)
 		adduint(ctxt, moduledata, 0)
 	}

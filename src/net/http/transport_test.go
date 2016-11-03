@@ -963,6 +963,48 @@ func TestTransportProxy(t *testing.T) {
 	}
 }
 
+// Issue 16997: test transport dial preserves typed errors
+func TestTransportDialPreservesNetOpProxyError(t *testing.T) {
+	defer afterTest(t)
+
+	var errDial = errors.New("some dial error")
+
+	tr := &Transport{
+		Proxy: func(*Request) (*url.URL, error) {
+			return url.Parse("http://proxy.fake.tld/")
+		},
+		Dial: func(string, string) (net.Conn, error) {
+			return nil, errDial
+		},
+	}
+	defer tr.CloseIdleConnections()
+
+	c := &Client{Transport: tr}
+	req, _ := NewRequest("GET", "http://fake.tld", nil)
+	res, err := c.Do(req)
+	if err == nil {
+		res.Body.Close()
+		t.Fatal("wanted a non-nil error")
+	}
+
+	uerr, ok := err.(*url.Error)
+	if !ok {
+		t.Fatalf("got %T, want *url.Error", err)
+	}
+	oe, ok := uerr.Err.(*net.OpError)
+	if !ok {
+		t.Fatalf("url.Error.Err =  %T; want *net.OpError", uerr.Err)
+	}
+	want := &net.OpError{
+		Op:  "proxyconnect",
+		Net: "tcp",
+		Err: errDial, // original error, unwrapped.
+	}
+	if !reflect.DeepEqual(oe, want) {
+		t.Errorf("Got error %#v; want %#v", oe, want)
+	}
+}
+
 // TestTransportGzipRecursive sends a gzip quine and checks that the
 // client gets the same value back. This is more cute than anything,
 // but checks that we don't recurse forever, and checks that
@@ -3404,6 +3446,24 @@ func TestTransportEventTraceRealDNS(t *testing.T) {
 	}
 }
 
+// Issue 14353: port can only contain digits.
+func TestTransportRejectsAlphaPort(t *testing.T) {
+	res, err := Get("http://dummy.tld:123foo/bar")
+	if err == nil {
+		res.Body.Close()
+		t.Fatal("unexpected sucess")
+	}
+	ue, ok := err.(*url.Error)
+	if !ok {
+		t.Fatalf("got %#v; want *url.Error", err)
+	}
+	got := ue.Err.Error()
+	want := `invalid URL port "123foo"`
+	if got != want {
+		t.Errorf("got error %q; want %q", got, want)
+	}
+}
+
 // Test the httptrace.TLSHandshake{Start,Done} hooks with a https http1
 // connections. The http2 test is done in TestTransportEventTrace_h2
 func TestTLSHandshakeTrace(t *testing.T) {
@@ -3732,6 +3792,52 @@ func testTransportIDNA(t *testing.T, h2 bool) {
 			t.Fatal(err)
 		}
 		t.Errorf("Response body wasn't from Handler. Got:\n%s\n", out)
+	}
+}
+
+// Issue 13290: send User-Agent in proxy CONNECT
+func TestTransportProxyConnectHeader(t *testing.T) {
+	defer afterTest(t)
+	reqc := make(chan *Request, 1)
+	ts := httptest.NewServer(HandlerFunc(func(w ResponseWriter, r *Request) {
+		if r.Method != "CONNECT" {
+			t.Errorf("method = %q; want CONNECT", r.Method)
+		}
+		reqc <- r
+		c, _, err := w.(Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("Hijack: %v", err)
+			return
+		}
+		c.Close()
+	}))
+	defer ts.Close()
+	tr := &Transport{
+		ProxyConnectHeader: Header{
+			"User-Agent": {"foo"},
+			"Other":      {"bar"},
+		},
+		Proxy: func(r *Request) (*url.URL, error) {
+			return url.Parse(ts.URL)
+		},
+	}
+	defer tr.CloseIdleConnections()
+	c := &Client{Transport: tr}
+	res, err := c.Get("https://dummy.tld/") // https to force a CONNECT
+	if err == nil {
+		res.Body.Close()
+		t.Errorf("unexpected success")
+	}
+	select {
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout")
+	case r := <-reqc:
+		if got, want := r.Header.Get("User-Agent"), "foo"; got != want {
+			t.Errorf("CONNECT request User-Agent = %q; want %q", got, want)
+		}
+		if got, want := r.Header.Get("Other"), "bar"; got != want {
+			t.Errorf("CONNECT request Other = %q; want %q", got, want)
+		}
 	}
 }
 

@@ -721,41 +721,14 @@ opswitch:
 			break
 		}
 
-		if n.Right == nil || iszero(n.Right) && !instrumenting {
+		if n.Right == nil {
+			// TODO(austin): Check all "implicit zeroing"
 			break
 		}
 
 		switch n.Right.Op {
 		default:
 			n.Right = walkexpr(n.Right, init)
-
-		case ODOTTYPE:
-			// TODO(rsc): The isfat is for consistency with componentgen and orderexpr.
-			// It needs to be removed in all three places.
-			// That would allow inlining x.(struct{*int}) the same as x.(*int).
-			if isdirectiface(n.Right.Type) && !isfat(n.Right.Type) && !instrumenting {
-				// handled directly during cgen
-				n.Right = walkexpr(n.Right, init)
-				break
-			}
-
-			// x = i.(T); n.Left is x, n.Right.Left is i.
-			// orderstmt made sure x is addressable.
-			n.Right.Left = walkexpr(n.Right.Left, init)
-
-			n1 := nod(OADDR, n.Left, nil)
-			r := n.Right // i.(T)
-
-			if Debug_typeassert > 0 {
-				Warn("type assertion not inlined")
-			}
-
-			fn := syslook(assertFuncName(r.Left.Type, r.Type, false))
-			fn = substArgTypes(fn, r.Left.Type, r.Type)
-
-			n = mkcall1(fn, nil, init, typename(r.Type), r.Left, n1)
-			n = walkexpr(n, init)
-			break opswitch
 
 		case ORECV:
 			// x = <-c; n.Left is x, n.Right.Left is c.
@@ -819,12 +792,13 @@ opswitch:
 			n.Rlist.Set1(r)
 			break
 		}
+		init.Append(r)
 
-		ll := ascompatet(n.Op, n.List, r.Type, 0, init)
+		ll := ascompatet(n.Op, n.List, r.Type)
 		for i, n := range ll {
 			ll[i] = applywritebarrier(n)
 		}
-		n = liststmt(append([]*Node{r}, ll...))
+		n = liststmt(ll)
 
 	// x, y = <-c
 	// orderstmt made sure x is addressable.
@@ -933,112 +907,11 @@ opswitch:
 		n = mkcall1(mapfndel("mapdelete", t), nil, init, typename(t), map_, key)
 
 	case OAS2DOTTYPE:
-		e := n.Rlist.First() // i.(T)
-
-		// TODO(rsc): The isfat is for consistency with componentgen and orderexpr.
-		// It needs to be removed in all three places.
-		// That would allow inlining x.(struct{*int}) the same as x.(*int).
-		if isdirectiface(e.Type) && !isfat(e.Type) && !instrumenting {
-			// handled directly during gen.
-			walkexprlistsafe(n.List.Slice(), init)
-			e.Left = walkexpr(e.Left, init)
-			break
-		}
-
-		// res, ok = i.(T)
-		// orderstmt made sure a is addressable.
-		init.AppendNodes(&n.Ninit)
-
 		walkexprlistsafe(n.List.Slice(), init)
+		e := n.Rlist.First() // i.(T)
 		e.Left = walkexpr(e.Left, init)
-		t := e.Type    // T
-		from := e.Left // i
-
-		oktype := Types[TBOOL]
-		ok := n.List.Second()
-		if !isblank(ok) {
-			oktype = ok.Type
-		}
-		if !oktype.IsBoolean() {
-			Fatalf("orderstmt broken: got %L, want boolean", oktype)
-		}
-
-		fromKind := from.Type.iet()
-		toKind := t.iet()
-
-		res := n.List.First()
-		scalar := !haspointers(res.Type)
-
-		// Avoid runtime calls in a few cases of the form _, ok := i.(T).
-		// This is faster and shorter and allows the corresponding assertX2X2
-		// routines to skip nil checks on their last argument.
-		// Also avoid runtime calls for converting interfaces to scalar concrete types.
-		if isblank(res) || (scalar && toKind == 'T') {
-			var fast *Node
-			switch toKind {
-			case 'T':
-				tab := nod(OITAB, from, nil)
-				if fromKind == 'E' {
-					typ := nod(OCONVNOP, typename(t), nil)
-					typ.Type = ptrto(Types[TUINTPTR])
-					fast = nod(OEQ, tab, typ)
-					break
-				}
-				fast = nod(OANDAND,
-					nod(ONE, nodnil(), tab),
-					nod(OEQ, itabType(tab), typename(t)),
-				)
-			case 'E':
-				tab := nod(OITAB, from, nil)
-				fast = nod(ONE, nodnil(), tab)
-			}
-			if fast != nil {
-				if isblank(res) {
-					if Debug_typeassert > 0 {
-						Warn("type assertion (ok only) inlined")
-					}
-					n = nod(OAS, ok, fast)
-					n = typecheck(n, Etop)
-				} else {
-					if Debug_typeassert > 0 {
-						Warn("type assertion (scalar result) inlined")
-					}
-					n = nod(OIF, ok, nil)
-					n.Likely = 1
-					if isblank(ok) {
-						n.Left = fast
-					} else {
-						n.Ninit.Set1(nod(OAS, ok, fast))
-					}
-					n.Nbody.Set1(nod(OAS, res, ifaceData(from, res.Type)))
-					n.Rlist.Set1(nod(OAS, res, nil))
-					n = typecheck(n, Etop)
-				}
-				break
-			}
-		}
-
-		var resptr *Node // &res
-		if isblank(res) {
-			resptr = nodnil()
-		} else {
-			resptr = nod(OADDR, res, nil)
-		}
-		resptr.Etype = 1 // addr does not escape
-
-		if Debug_typeassert > 0 {
-			Warn("type assertion not inlined")
-		}
-		fn := syslook(assertFuncName(from.Type, t, true))
-		fn = substArgTypes(fn, from.Type, t)
-		call := mkcall1(fn, oktype, init, typename(t), from, resptr)
-		n = nod(OAS, ok, call)
-		n = typecheck(n, Etop)
 
 	case ODOTTYPE, ODOTTYPE2:
-		if !isdirectiface(n.Type) || isfat(n.Type) {
-			Fatalf("walkexpr ODOTTYPE") // should see inside OAS only
-		}
 		n.Left = walkexpr(n.Left, init)
 
 	case OCONVIFACE:
@@ -1659,9 +1532,15 @@ opswitch:
 
 		n = mkcall("stringtoslicebyte", n.Type, init, a, conv(n.Left, Types[TSTRING]))
 
-		// stringtoslicebytetmp(string) []byte;
 	case OSTRARRAYBYTETMP:
-		n = mkcall("stringtoslicebytetmp", n.Type, init, conv(n.Left, Types[TSTRING]))
+		// []byte(string) conversion that creates a slice
+		// referring to the actual string bytes.
+		// This conversion is handled later by the backend and
+		// is only for use by internal compiler optimizations
+		// that know that the slice won't be mutated.
+		// The only such case today is:
+		// for i, c := range []byte(string)
+		n.Left = walkexpr(n.Left, init)
 
 		// stringtoslicerune(*[32]rune, string) []rune
 	case OSTRARRAYRUNE:
@@ -1848,10 +1727,10 @@ func fncall(l *Node, rt *Type) bool {
 // check assign type list to
 // a expression list. called in
 //	expr-list = func()
-func ascompatet(op Op, nl Nodes, nr *Type, fp int, init *Nodes) []*Node {
+func ascompatet(op Op, nl Nodes, nr *Type) []*Node {
 	r, saver := iterFields(nr)
 
-	var nn, mm []*Node
+	var nn, mm Nodes
 	var ullmanOverflow bool
 	var i int
 	for i = 0; i < nl.Len(); i++ {
@@ -1871,20 +1750,20 @@ func ascompatet(op Op, nl Nodes, nr *Type, fp int, init *Nodes) []*Node {
 			tmp := temp(r.Type)
 			tmp = typecheck(tmp, Erv)
 			a := nod(OAS, l, tmp)
-			a = convas(a, init)
-			mm = append(mm, a)
+			a = convas(a, &mm)
+			mm.Append(a)
 			l = tmp
 		}
 
-		a := nod(OAS, l, nodarg(r, fp))
-		a = convas(a, init)
+		a := nod(OAS, l, nodarg(r, 0))
+		a = convas(a, &nn)
 		ullmancalc(a)
 		if a.Ullman >= UINF {
 			Dump("ascompatet ucount", a)
 			ullmanOverflow = true
 		}
 
-		nn = append(nn, a)
+		nn.Append(a)
 		r = saver.Next()
 	}
 
@@ -1895,7 +1774,7 @@ func ascompatet(op Op, nl Nodes, nr *Type, fp int, init *Nodes) []*Node {
 	if ullmanOverflow {
 		Fatalf("ascompatet: too many function calls evaluating parameters")
 	}
-	return append(nn, mm...)
+	return append(nn.Slice(), mm.Slice()...)
 }
 
 // package all the arguments that match a ... T parameter into a []T.
@@ -2200,7 +2079,7 @@ func isstack(n *Node) bool {
 
 	// If n is *autotmp and autotmp = &foo, replace n with foo.
 	// We introduce such temps when initializing struct literals.
-	if n.Op == OIND && n.Left.Op == ONAME && strings.HasPrefix(n.Left.Sym.Name, "autotmp_") {
+	if n.Op == OIND && n.Left.Op == ONAME && n.Left.IsAutoTmp() {
 		defn := n.Left.Name.Defn
 		if defn != nil && defn.Op == OAS && defn.Right.Op == OADDR {
 			n = defn.Right.Left
@@ -2248,15 +2127,18 @@ func needwritebarrier(l *Node, r *Node) bool {
 		return false
 	}
 
-	// No write barrier for implicit zeroing.
-	if r == nil {
-		return false
-	}
-
 	// No write barrier if this is a pointer to a go:notinheap
 	// type, since the write barrier's inheap(ptr) check will fail.
 	if l.Type.IsPtr() && l.Type.Elem().NotInHeap {
 		return false
+	}
+
+	// Implicit zeroing is still zeroing, so it needs write
+	// barriers. In practice, these are all to stack variables
+	// (even if isstack isn't smart enough to figure that out), so
+	// they'll be eliminated by the backend.
+	if r == nil {
+		return true
 	}
 
 	// Ignore no-op conversions when making decision.
@@ -2266,31 +2148,17 @@ func needwritebarrier(l *Node, r *Node) bool {
 		r = r.Left
 	}
 
-	// No write barrier for zeroing or initialization to constant.
-	if iszero(r) || r.Op == OLITERAL {
-		return false
-	}
-
-	// No write barrier for storing static (read-only) data.
-	if r.Op == ONAME && strings.HasPrefix(r.Sym.Name, "statictmp_") {
-		return false
-	}
+	// TODO: We can eliminate write barriers if we know *both* the
+	// current and new content of the slot must already be shaded.
+	// We know a pointer is shaded if it's nil, or points to
+	// static data, a global (variable or function), or the stack.
+	// The nil optimization could be particularly useful for
+	// writes to just-allocated objects. Unfortunately, knowing
+	// the "current" value of the slot requires flow analysis.
 
 	// No write barrier for storing address of stack values,
 	// which are guaranteed only to be written to the stack.
 	if r.Op == OADDR && isstack(r.Left) {
-		return false
-	}
-
-	// No write barrier for storing address of global, which
-	// is live no matter what.
-	if r.Op == OADDR && r.Left.isGlobal() {
-		return false
-	}
-
-	// No write barrier for storing global function, which is live
-	// no matter what.
-	if r.Op == ONAME && r.Class == PFUNC {
 		return false
 	}
 

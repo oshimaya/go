@@ -320,7 +320,7 @@ var genericOps = []opData{
 	{name: "StoreWB", argLength: 3, typ: "Mem", aux: "Int64"},                  // Store arg1 to arg0. arg2=memory, auxint=size.  Returns memory.
 	{name: "MoveWB", argLength: 3, typ: "Mem", aux: "SymSizeAndAlign"},         // arg0=destptr, arg1=srcptr, arg2=mem, auxint=size+alignment, aux=symbol-of-type (for typedmemmove).  Returns memory.
 	{name: "MoveWBVolatile", argLength: 3, typ: "Mem", aux: "SymSizeAndAlign"}, // arg0=destptr, arg1=srcptr, arg2=mem, auxint=size+alignment, aux=symbol-of-type (for typedmemmove).  Returns memory. Src is volatile, i.e. needs to move to a temp space before calling typedmemmove.
-	// maybe we'll need a ZeroWB for the new barrier
+	{name: "ZeroWB", argLength: 2, typ: "Mem", aux: "SymSizeAndAlign"},         // arg0=destptr, arg1=mem, auxint=size+alignment, aux=symbol-of-type. Returns memory.
 
 	// Function calls. Arguments to the call have already been written to the stack.
 	// Return values appear on the stack. The method receiver, if any, is treated
@@ -373,9 +373,8 @@ var genericOps = []opData{
 	{name: "GetClosurePtr"},      // get closure pointer from dedicated register
 
 	// Indexing operations
-	{name: "ArrayIndex", aux: "Int64", argLength: 1}, // arg0=array, auxint=index. Returns a[i]
-	{name: "PtrIndex", argLength: 2},                 // arg0=ptr, arg1=index. Computes ptr+sizeof(*v.type)*index, where index is extended to ptrwidth type
-	{name: "OffPtr", argLength: 1, aux: "Int64"},     // arg0 + auxint (arg0 and result are pointers)
+	{name: "PtrIndex", argLength: 2},             // arg0=ptr, arg1=index. Computes ptr+sizeof(*v.type)*index, where index is extended to ptrwidth type
+	{name: "OffPtr", argLength: 1, aux: "Int64"}, // arg0 + auxint (arg0 and result are pointers)
 
 	// Slices
 	{name: "SliceMake", argLength: 3},                // arg0=ptr, arg1=len, arg2=cap
@@ -405,6 +404,11 @@ var genericOps = []opData{
 	{name: "StructMake3", argLength: 3},                // arg0..2=field0..2.  Returns struct.
 	{name: "StructMake4", argLength: 4},                // arg0..3=field0..3.  Returns struct.
 	{name: "StructSelect", argLength: 1, aux: "Int64"}, // arg0=struct, auxint=field index.  Returns the auxint'th field.
+
+	// Arrays
+	{name: "ArrayMake0"},                              // Returns array with 0 elements
+	{name: "ArrayMake1", argLength: 1},                // Returns array with 1 element
+	{name: "ArraySelect", argLength: 1, aux: "Int64"}, // arg0=array, auxint=index. Returns a[i].
 
 	// Spill&restore ops for the register allocator. These are
 	// semantically identical to OpCopy; they do not take/return
@@ -437,6 +441,7 @@ var genericOps = []opData{
 
 	{name: "Signmask", argLength: 1, typ: "Int32"},  // 0 if arg0 >= 0, -1 if arg0 < 0
 	{name: "Zeromask", argLength: 1, typ: "UInt32"}, // 0 if arg0 == 0, 0xffffffff if arg0 != 0
+	{name: "Slicemask", argLength: 1},               // 0 if arg0 == 0, -1 if arg0 > 0, undef if arg0<0. Type is native int size.
 
 	{name: "Cvt32Uto32F", argLength: 1}, // uint32 -> float32, only used on 32-bit arch
 	{name: "Cvt32Uto64F", argLength: 1}, // uint32 -> float64, only used on 32-bit arch

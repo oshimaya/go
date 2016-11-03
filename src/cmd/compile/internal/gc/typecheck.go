@@ -35,8 +35,8 @@ func resolve(n *Node) *Node {
 		if r != nil {
 			if r.Op != OIOTA {
 				n = r
-			} else if n.Name.Iota >= 0 {
-				n = nodintconst(int64(n.Name.Iota))
+			} else if n.Iota() >= 0 {
+				n = nodintconst(n.Iota())
 			}
 		}
 	}
@@ -345,8 +345,8 @@ OpSwitch:
 			t = typSlice(r.Type)
 		} else if n.Left.Op == ODDD {
 			if top&Ecomplit == 0 {
-				if n.Diag == 0 {
-					n.Diag = 1
+				if !n.Diag {
+					n.Diag = true
 					yyerror("use of [...] array outside of array literal")
 				}
 				n.Type = nil
@@ -1184,7 +1184,10 @@ OpSwitch:
 	// call and call like
 	case OCALL:
 		n.Left = typecheck(n.Left, Erv|Etype|Ecall)
-		n.Diag |= n.Left.Diag
+		if n.Left.Diag {
+			n.Diag = true
+		}
+
 		l := n.Left
 
 		if l.Op == ONAME && l.Etype != 0 {
@@ -1209,7 +1212,7 @@ OpSwitch:
 				if !l.Type.Broke {
 					yyerror("invalid use of ... in type conversion to %v", l.Type)
 				}
-				n.Diag = 1
+				n.Diag = true
 			}
 
 			// pick off before type-checking arguments
@@ -1685,9 +1688,9 @@ OpSwitch:
 		var why string
 		n.Op = convertop(t, n.Type, &why)
 		if n.Op == 0 {
-			if n.Diag == 0 && !n.Type.Broke {
+			if !n.Diag && !n.Type.Broke {
 				yyerror("cannot convert %L to type %v%s", n.Left, n.Type, why)
-				n.Diag = 1
+				n.Diag = true
 			}
 
 			n.Op = OCONV
@@ -1963,7 +1966,7 @@ OpSwitch:
 		typecheckas(n)
 
 		// Code that creates temps does not bother to set defn, so do it here.
-		if n.Left.Op == ONAME && strings.HasPrefix(n.Left.Sym.Name, "autotmp_") {
+		if n.Left.Op == ONAME && n.Left.IsAutoTmp() {
 			n.Left.Name.Defn = n
 		}
 		break OpSwitch
@@ -1992,7 +1995,7 @@ OpSwitch:
 	case ODEFER:
 		ok |= Etop
 		n.Left = typecheck(n.Left, Etop|Erv)
-		if n.Left.Diag == 0 {
+		if !n.Left.Diag {
 			checkdefergo(n)
 		}
 		break OpSwitch
@@ -2142,9 +2145,9 @@ OpSwitch:
 	}
 
 	if (top&Etop != 0) && top&(Ecall|Erv|Etype) == 0 && ok&Etop == 0 {
-		if n.Diag == 0 {
+		if !n.Diag {
 			yyerror("%v evaluated but not used", n)
-			n.Diag = 1
+			n.Diag = true
 		}
 
 		n.Type = nil
@@ -2241,11 +2244,10 @@ func checkdefergo(n *Node) {
 		return
 	}
 
-	if n.Diag == 0 {
+	if !n.Diag {
 		// The syntax made sure it was a call, so this must be
 		// a conversion.
-		n.Diag = 1
-
+		n.Diag = true
 		yyerror("%s requires function call, not conversion", what)
 	}
 }
@@ -2686,21 +2688,21 @@ out:
 	return
 
 notenough:
-	if n == nil || n.Diag == 0 {
+	if n == nil || !n.Diag {
 		if call != nil {
 			// call is the expression being called, not the overall call.
 			// Method expressions have the form T.M, and the compiler has
 			// rewritten those to ONAME nodes but left T in Left.
 			if call.Op == ONAME && call.Left != nil && call.Left.Op == OTYPE {
-				yyerror("not enough arguments in call to method expression %v, got %s want %v", call, nl.retsigerr(), tstruct)
+				yyerror("not enough arguments in call to method expression %v\n\thave %s\n\twant %v", call, nl.retsigerr(isddd), tstruct)
 			} else {
-				yyerror("not enough arguments in call to %v, got %s want %v", call, nl.retsigerr(), tstruct)
+				yyerror("not enough arguments in call to %v\n\thave %s\n\twant %v", call, nl.retsigerr(isddd), tstruct)
 			}
 		} else {
-			yyerror("not enough arguments to %v, got %s want %v", op, nl.retsigerr(), tstruct)
+			yyerror("not enough arguments to %v\n\thave %s\n\twant %v", op, nl.retsigerr(isddd), tstruct)
 		}
 		if n != nil {
-			n.Diag = 1
+			n.Diag = true
 		}
 	}
 
@@ -2708,9 +2710,9 @@ notenough:
 
 toomany:
 	if call != nil {
-		yyerror("too many arguments in call to %v, got %s want %v", call, nl.retsigerr(), tstruct)
+		yyerror("too many arguments in call to %v\n\thave %s\n\twant %v", call, nl.retsigerr(isddd), tstruct)
 	} else {
-		yyerror("too many arguments to %v, got %s want %v", op, nl.retsigerr(), tstruct)
+		yyerror("too many arguments to %v\n\thave %s\n\twant %v", op, nl.retsigerr(isddd), tstruct)
 	}
 	goto out
 }
@@ -2738,17 +2740,27 @@ func (t *Type) sigrepr() string {
 
 // retsigerr returns the signature of the types
 // at the respective return call site of a function.
-func (nl Nodes) retsigerr() string {
+func (nl Nodes) retsigerr(isddd bool) string {
 	if nl.Len() < 1 {
 		return "()"
 	}
 
 	var typeStrings []string
-	for _, n := range nl.Slice() {
-		typeStrings = append(typeStrings, n.Type.sigrepr())
+	if nl.Len() == 1 && nl.First().Type != nil && nl.First().Type.IsFuncArgStruct() {
+		for _, f := range nl.First().Type.Fields().Slice() {
+			typeStrings = append(typeStrings, f.Type.sigrepr())
+		}
+	} else {
+		for _, n := range nl.Slice() {
+			typeStrings = append(typeStrings, n.Type.sigrepr())
+		}
 	}
 
-	return fmt.Sprintf("(%s)", strings.Join(typeStrings, ", "))
+	ddd := ""
+	if isddd {
+		ddd = "..."
+	}
+	return fmt.Sprintf("(%s%s)", strings.Join(typeStrings, ", "), ddd)
 }
 
 // type check composite
@@ -2902,7 +2914,6 @@ func typecheckcomplit(n *Node) *Node {
 		t = t.Elem()
 	}
 
-	var r *Node
 	switch t.Etype {
 	default:
 		yyerror("invalid type for composite literal: %v", t)
@@ -2921,24 +2932,20 @@ func typecheckcomplit(n *Node) *Node {
 
 		var length, i int64
 		checkBounds := t.IsArray() && !t.isDDDArray()
-		for i2, n2 := range n.List.Slice() {
-			l := n2
+		nl := n.List.Slice()
+		for i2, l := range nl {
 			setlineno(l)
-			if l.Op != OKEY {
-				l = nod(OKEY, nodintconst(int64(i)), l)
-				l.Left.Type = Types[TINT]
-				l.Left.Typecheck = 1
-				n.List.SetIndex(i2, l)
-			}
-
-			l.Left = typecheck(l.Left, Erv)
-			evconst(l.Left)
-
-			i = nonnegintconst(l.Left)
-			if i < 0 && l.Left.Diag == 0 {
-				yyerror("index must be non-negative integer constant")
-				l.Left.Diag = 1
-				i = -(1 << 30) // stay negative for a while
+			vp := &nl[i2]
+			if l.Op == OKEY {
+				l.Left = typecheck(l.Left, Erv)
+				evconst(l.Left)
+				i = nonnegintconst(l.Left)
+				if i < 0 && !l.Left.Diag {
+					yyerror("index must be non-negative integer constant")
+					l.Left.Diag = true
+					i = -(1 << 30) // stay negative for a while
+				}
+				vp = &l.Right
 			}
 
 			if i >= 0 && indices != nil {
@@ -2949,6 +2956,12 @@ func typecheckcomplit(n *Node) *Node {
 				}
 			}
 
+			r := *vp
+			pushtype(r, t.Elem())
+			r = typecheck(r, Erv)
+			r = defaultlit(r, t.Elem())
+			*vp = assignconv(r, t.Elem(), "array or slice literal")
+
 			i++
 			if i > length {
 				length = i
@@ -2958,12 +2971,6 @@ func typecheckcomplit(n *Node) *Node {
 					checkBounds = false
 				}
 			}
-
-			r = l.Right
-			pushtype(r, t.Elem())
-			r = typecheck(r, Erv)
-			r = defaultlit(r, t.Elem())
-			l.Right = assignconv(r, t.Elem(), "array or slice literal")
 		}
 
 		if t.isDDDArray() {
@@ -2978,9 +2985,7 @@ func typecheckcomplit(n *Node) *Node {
 
 	case TMAP:
 		hash := make(map[uint32][]*Node)
-		var l *Node
-		for i3, n3 := range n.List.Slice() {
-			l = n3
+		for i3, l := range n.List.Slice() {
 			setlineno(l)
 			if l.Op != OKEY {
 				n.List.SetIndex(i3, typecheck(n.List.Index(i3), Erv))
@@ -2988,7 +2993,7 @@ func typecheckcomplit(n *Node) *Node {
 				continue
 			}
 
-			r = l.Left
+			r := l.Left
 			pushtype(r, t.Key())
 			r = typecheck(r, Erv)
 			r = defaultlit(r, t.Key())
@@ -3015,7 +3020,6 @@ func typecheckcomplit(n *Node) *Node {
 			// simple list of variables
 			f, it := iterFields(t)
 
-			var s *Sym
 			ls := n.List.Slice()
 			for i1, n1 := range ls {
 				setlineno(n1)
@@ -3029,7 +3033,7 @@ func typecheckcomplit(n *Node) *Node {
 					continue
 				}
 
-				s = f.Sym
+				s := f.Sym
 				if s != nil && !exportname(s.Name) && s.Pkg != localpkg {
 					yyerror("implicit assignment of unexported field '%s' in %v literal", s.Name, t)
 				}
@@ -3093,7 +3097,7 @@ func typecheckcomplit(n *Node) *Node {
 
 				f := lookdot1(nil, l.Sym, t, t.Fields(), 0)
 				if f == nil {
-					yyerror("unknown %v field '%v' in struct literal", t, l.Sym)
+					yyerror("unknown field '%v' in struct literal of type %v", l.Sym, t)
 					continue
 				}
 				fielddup(f.Sym.Name, hash)
@@ -3109,7 +3113,6 @@ func typecheckcomplit(n *Node) *Node {
 	}
 
 	if nerr != nerrors {
-		n.Type = nil
 		return n
 	}
 
@@ -3411,6 +3414,12 @@ out:
 
 // type check function definition
 func typecheckfunc(n *Node) {
+	for _, ln := range n.Func.Dcl {
+		if ln.Op == ONAME && (ln.Class == PPARAM || ln.Class == PPARAMOUT) {
+			ln.Name.Decldepth = 1
+		}
+	}
+
 	n.Func.Nname = typecheck(n.Func.Nname, Erv|Easgn)
 	t := n.Func.Nname.Type
 	if t == nil {
@@ -3421,12 +3430,6 @@ func typecheckfunc(n *Node) {
 	rcvr := t.Recv()
 	if rcvr != nil && n.Func.Shortname != nil {
 		addmethod(n.Func.Shortname.Sym, t, true, n.Func.Pragma&Nointerface != 0)
-	}
-
-	for _, ln := range n.Func.Dcl {
-		if ln.Op == ONAME && (ln.Class == PPARAM || ln.Class == PPARAMOUT) {
-			ln.Name.Decldepth = 1
-		}
 	}
 }
 
@@ -3563,13 +3566,13 @@ func typecheckdeftype(n *Node) {
 	n.Name.Param.Ntype = typecheck(n.Name.Param.Ntype, Etype)
 	t := n.Name.Param.Ntype.Type
 	if t == nil {
-		n.Diag = 1
+		n.Diag = true
 		n.Type = nil
 		goto ret
 	}
 
 	if n.Type == nil {
-		n.Diag = 1
+		n.Diag = true
 		goto ret
 	}
 
@@ -3623,8 +3626,8 @@ func typecheckdef(n *Node) *Node {
 	setlineno(n)
 
 	if n.Op == ONONAME {
-		if n.Diag == 0 {
-			n.Diag = 1
+		if !n.Diag {
+			n.Diag = true
 			if n.Lineno != 0 {
 				lineno = n.Lineno
 			}
@@ -3672,7 +3675,7 @@ func typecheckdef(n *Node) *Node {
 			n.Type = n.Name.Param.Ntype.Type
 			n.Name.Param.Ntype = nil
 			if n.Type == nil {
-				n.Diag = 1
+				n.Diag = true
 				goto ret
 			}
 		}
@@ -3692,9 +3695,9 @@ func typecheckdef(n *Node) *Node {
 		}
 
 		if e.Type != nil && e.Op != OLITERAL || !isgoconst(e) {
-			if e.Diag == 0 {
+			if !e.Diag {
 				yyerror("const initializer %v is not a constant", e)
-				e.Diag = 1
+				e.Diag = true
 			}
 
 			goto ret
@@ -3723,7 +3726,7 @@ func typecheckdef(n *Node) *Node {
 			n.Name.Param.Ntype = typecheck(n.Name.Param.Ntype, Etype)
 			n.Type = n.Name.Param.Ntype.Type
 			if n.Type == nil {
-				n.Diag = 1
+				n.Diag = true
 				goto ret
 			}
 		}
@@ -3796,32 +3799,22 @@ func checkmake(t *Type, arg string, n *Node) bool {
 		return false
 	}
 
-	if n.Op == OLITERAL {
-		switch n.Val().Ctype() {
-		case CTINT, CTRUNE, CTFLT, CTCPLX:
-			n.SetVal(toint(n.Val()))
-			if n.Val().U.(*Mpint).CmpInt64(0) < 0 {
-				yyerror("negative %s argument in make(%v)", arg, t)
-				return false
-			}
-
-			if n.Val().U.(*Mpint).Cmp(maxintval[TINT]) > 0 {
-				yyerror("%s argument too large in make(%v)", arg, t)
-				return false
-			}
-
-			// Delay defaultlit until after we've checked range, to avoid
-			// a redundant "constant NNN overflows int" error.
-			n = defaultlit(n, Types[TINT])
-
-			return true
-
-		default:
-			break
+	// Do range checks for constants before defaultlit
+	// to avoid redundant "constant NNN overflows int" errors.
+	switch consttype(n) {
+	case CTINT, CTRUNE, CTFLT, CTCPLX:
+		n.SetVal(toint(n.Val()))
+		if n.Val().U.(*Mpint).CmpInt64(0) < 0 {
+			yyerror("negative %s argument in make(%v)", arg, t)
+			return false
+		}
+		if n.Val().U.(*Mpint).Cmp(maxintval[TINT]) > 0 {
+			yyerror("%s argument too large in make(%v)", arg, t)
+			return false
 		}
 	}
 
-	// Defaultlit still necessary for non-constant: n might be 1<<k.
+	// defaultlit is necessary for non-constants too: n might be 1.1<<k.
 	n = defaultlit(n, Types[TINT])
 
 	return true

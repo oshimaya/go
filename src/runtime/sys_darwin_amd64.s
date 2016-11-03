@@ -158,7 +158,7 @@ systime:
 	MOVQ	SP, DI
 	MOVQ	$0, SI
 	MOVQ	$0, DX  // required as of Sierra; Issue 16570
-	MOVL	$(0x2000000+116), AX
+	MOVL	$(0x2000000+116), AX // gettimeofday
 	SYSCALL
 	CMPQ	AX, $0
 	JNE	inreg
@@ -219,15 +219,16 @@ TEXT runtime·sigaction(SB),NOSPLIT,$0-24
 	RET
 
 TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
-	MOVQ fn+0(FP),    AX
-	MOVL sig+8(FP),   DI
-	MOVQ info+16(FP), SI
-	MOVQ ctx+24(FP),  DX
-	MOVQ SP, BP
-	SUBQ $64, SP
-	ANDQ $~15, SP     // alignment for x86_64 ABI
-	CALL AX
-	MOVQ BP, SP
+	MOVQ	fn+0(FP),    AX
+	MOVL	sig+8(FP),   DI
+	MOVQ	info+16(FP), SI
+	MOVQ	ctx+24(FP),  DX
+	PUSHQ	BP
+	MOVQ	SP, BP
+	ANDQ	$~15, SP     // alignment for x86_64 ABI
+	CALL	AX
+	MOVQ	BP, SP
+	POPQ	BP
 	RET
 
 TEXT runtime·sigtramp(SB),NOSPLIT,$32

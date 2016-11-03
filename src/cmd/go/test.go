@@ -238,6 +238,15 @@ profile the tests during execution::
 	    To profile all memory allocations, use -test.memprofilerate=1
 	    and pass --alloc_space flag to the pprof tool.
 
+	-mutexprofile mutex.out
+	    Write a mutex contention profile to the specified file
+	    when all tests are complete.
+	    Writes test binary as -c would.
+
+	-mutexprofilefraction n
+ 	    Sample 1 in n stack traces of goroutines holding a
+	    contended mutex.
+
 	-outputdir directory
 	    Place output files from profiling in the specified directory,
 	    by default the directory in which "go test" is running.
@@ -385,9 +394,9 @@ var (
 
 var testMainDeps = map[string]bool{
 	// Dependencies for testmain.
-	"testing": true,
-	"regexp":  true,
-	"os":      true,
+	"testing":                   true,
+	"testing/internal/testdeps": true,
+	"os": true,
 }
 
 func runTest(cmd *Command, args []string) {
@@ -1444,8 +1453,8 @@ import (
 {{if not .TestMain}}
 	"os"
 {{end}}
-	"regexp"
 	"testing"
+	"testing/internal/testdeps"
 
 {{if .ImportTest}}
 	{{if .NeedTest}}_test{{else}}_{{end}} {{.Package.ImportPath | printf "%q"}}
@@ -1478,20 +1487,6 @@ var examples = []testing.InternalExample{
 {{range .Examples}}
 	{"{{.Name}}", {{.Package}}.{{.Name}}, {{.Output | printf "%q"}}, {{.Unordered}}},
 {{end}}
-}
-
-var matchPat string
-var matchRe *regexp.Regexp
-
-func matchString(pat, str string) (result bool, err error) {
-	if matchRe == nil || matchPat != pat {
-		matchPat = pat
-		matchRe, err = regexp.Compile(matchPat)
-		if err != nil {
-			return
-		}
-	}
-	return matchRe.MatchString(str), nil
 }
 
 {{if .CoverEnabled}}
@@ -1542,7 +1537,7 @@ func main() {
 		CoveredPackages: {{printf "%q" .Covered}},
 	})
 {{end}}
-	m := testing.MainStart(matchString, tests, benchmarks, examples)
+	m := testing.MainStart(testdeps.TestDeps{}, tests, benchmarks, examples)
 {{with .TestMain}}
 	{{.Package}}.{{.Name}}(m)
 {{else}}

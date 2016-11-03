@@ -18,7 +18,7 @@ import (
 // The algorithm (known as Tarjan's algorithm) for doing that is taken from
 // Sedgewick, Algorithms, Second Edition, p. 482, with two adaptations.
 //
-// First, a hidden closure function (n.Func.FCurfn != nil) cannot be the
+// First, a hidden closure function (n.Func.IsHiddenClosure) cannot be the
 // root of a connected component. Refusing to use it as a root
 // forces it into the component of the function in which it appears.
 // This is more convenient for escape analysis.
@@ -58,7 +58,7 @@ func visitBottomUp(list []*Node, analyze func(list []*Node, recursive bool)) {
 	v.analyze = analyze
 	v.nodeID = make(map[*Node]uint32)
 	for _, n := range list {
-		if n.Op == ODCLFUNC && n.Func.FCurfn == nil {
+		if n.Op == ODCLFUNC && !n.Func.IsHiddenClosure {
 			v.visit(n)
 		}
 	}
@@ -78,7 +78,7 @@ func (v *bottomUpVisitor) visit(n *Node) uint32 {
 
 	v.stack = append(v.stack, n)
 	min = v.visitcodelist(n.Nbody, min)
-	if (min == id || min == id+1) && n.Func.FCurfn == nil {
+	if (min == id || min == id+1) && !n.Func.IsHiddenClosure {
 		// This node is the root of a strongly connected component.
 
 		// The original min passed to visitcodelist was v.nodeID[n]+1.
@@ -899,16 +899,22 @@ func (e *EscState) esc(n *Node, parent *Node) {
 
 	case OARRAYLIT:
 		// Link values to array
-		for _, n5 := range n.List.Slice() {
-			e.escassign(n, n5.Right, e.stepAssignWhere(n, n5.Right, "array literal element", n))
+		for _, n2 := range n.List.Slice() {
+			if n2.Op == OKEY {
+				n2 = n2.Right
+			}
+			e.escassign(n, n2, e.stepAssignWhere(n, n2, "array literal element", n))
 		}
 
 	case OSLICELIT:
 		// Slice is not leaked until proven otherwise
 		e.track(n)
 		// Link values to slice
-		for _, n5 := range n.List.Slice() {
-			e.escassign(n, n5.Right, e.stepAssignWhere(n, n5.Right, "slice literal element", n))
+		for _, n2 := range n.List.Slice() {
+			if n2.Op == OKEY {
+				n2 = n2.Right
+			}
+			e.escassign(n, n2, e.stepAssignWhere(n, n2, "slice literal element", n))
 		}
 
 		// Link values to struct.
@@ -1928,7 +1934,10 @@ func (e *EscState) escwalkBody(level Level, dst *Node, src *Node, step *EscStep,
 
 	case OSLICELIT:
 		for _, n1 := range src.List.Slice() {
-			e.escwalk(level.dec(), dst, n1.Right, e.stepWalk(dst, n1.Right, "slice-literal-element", step))
+			if n1.Op == OKEY {
+				n1 = n1.Right
+			}
+			e.escwalk(level.dec(), dst, n1, e.stepWalk(dst, n1, "slice-literal-element", step))
 		}
 
 		fallthrough

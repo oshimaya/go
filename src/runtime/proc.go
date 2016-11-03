@@ -399,6 +399,11 @@ func badmorestackgsignal() {
 	write(2, sp.str, int32(sp.len))
 }
 
+//go:nosplit
+func badctxt() {
+	throw("ctxt != 0")
+}
+
 func lockedOSThread() bool {
 	gp := getg()
 	return gp.lockedm != nil && gp.m.lockedg != nil
@@ -460,8 +465,9 @@ func schedinit() {
 	mallocinit()
 	mcommoninit(_g_.m)
 	alginit()       // maps must not be used before this call
-	typelinksinit() // uses maps
-	itabsinit()
+	modulesinit()   // provides activeModules
+	typelinksinit() // uses maps, activeModules
+	itabsinit()     // uses activeModules
 
 	msigsave(_g_.m)
 	initSigmask = _g_.m.sigmask
@@ -472,17 +478,14 @@ func schedinit() {
 	gcinit()
 
 	sched.lastpoll = uint64(nanotime())
-	procs := int(ncpu)
+	procs := ncpu
+	if n, ok := atoi32(gogetenv("GOMAXPROCS")); ok && n > 0 {
+		procs = n
+	}
 	if procs > _MaxGomaxprocs {
 		procs = _MaxGomaxprocs
 	}
-	if n := atoi(gogetenv("GOMAXPROCS")); n > 0 {
-		if n > _MaxGomaxprocs {
-			n = _MaxGomaxprocs
-		}
-		procs = n
-	}
-	if procresize(int32(procs)) != nil {
+	if procresize(procs) != nil {
 		throw("unknown runnable goroutine during bootstrap")
 	}
 
@@ -923,7 +926,7 @@ func restartg(gp *g) {
 // in panic or being exited, this may not reliably stop all
 // goroutines.
 func stopTheWorld(reason string) {
-	semacquire(&worldsema, false)
+	semacquire(&worldsema, 0)
 	getg().m.preemptoff = reason
 	systemstack(stopTheWorldWithSema)
 }
@@ -946,7 +949,7 @@ var worldsema uint32 = 1
 // preemption first and then should stopTheWorldWithSema on the system
 // stack:
 //
-//	semacquire(&worldsema, false)
+//	semacquire(&worldsema, 0)
 //	m.preemptoff = "reason"
 //	systemstack(stopTheWorldWithSema)
 //
@@ -2175,8 +2178,8 @@ top:
 func dropg() {
 	_g_ := getg()
 
-	_g_.m.curg.m = nil
-	_g_.m.curg = nil
+	setMNoWB(&_g_.m.curg.m, nil)
+	setGNoWB(&_g_.m.curg, nil)
 }
 
 func parkunlock_c(gp *g, lock unsafe.Pointer) bool {
@@ -2285,6 +2288,12 @@ func goexit0(gp *g) {
 	schedule()
 }
 
+// save updates getg().sched to refer to pc and sp so that a following
+// gogo will restore pc and sp.
+//
+// save must not have write barriers because invoking a write barrier
+// can clobber getg().sched.
+//
 //go:nosplit
 //go:nowritebarrierrec
 func save(pc, sp uintptr) {
@@ -2294,8 +2303,13 @@ func save(pc, sp uintptr) {
 	_g_.sched.sp = sp
 	_g_.sched.lr = 0
 	_g_.sched.ret = 0
-	_g_.sched.ctxt = nil
 	_g_.sched.g = guintptr(unsafe.Pointer(_g_))
+	// We need to ensure ctxt is zero, but can't have a write
+	// barrier here. However, it should always already be zero.
+	// Assert that.
+	if _g_.sched.ctxt != nil {
+		badctxt()
+	}
 }
 
 // The goroutine g is about to enter a system call.
@@ -2806,13 +2820,28 @@ func newproc1(fn *funcval, argp *uint8, narg int32, nret int32, callerpc uintptr
 	spArg := sp
 	if usesLR {
 		// caller's LR
-		*(*unsafe.Pointer)(unsafe.Pointer(sp)) = nil
+		*(*uintptr)(unsafe.Pointer(sp)) = 0
 		prepGoExitFrame(sp)
 		spArg += sys.MinFrameSize
 	}
-	memmove(unsafe.Pointer(spArg), unsafe.Pointer(argp), uintptr(narg))
+	if narg > 0 {
+		memmove(unsafe.Pointer(spArg), unsafe.Pointer(argp), uintptr(narg))
+		// This is a stack-to-stack copy. If write barriers
+		// are enabled and the source stack is grey (the
+		// destination is always black), then perform a
+		// barrier copy. We do this *after* the memmove
+		// because the destination stack may have garbage on
+		// it.
+		if writeBarrier.needed && !_g_.m.curg.gcscandone {
+			f := findfunc(fn.fn)
+			stkmap := (*stackmap)(funcdata(f, _FUNCDATA_ArgsPointerMaps))
+			// We're in the prologue, so it's always stack map index 0.
+			bv := stackmapdata(stkmap, 0)
+			bulkBarrierBitmap(spArg, spArg, uintptr(narg), 0, bv.bytedata)
+		}
+	}
 
-	memclr(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
+	memclrNoHeapPointers(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
 	newg.sched.sp = sp
 	newg.stktopsp = sp
 	newg.sched.pc = funcPC(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function

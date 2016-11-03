@@ -141,19 +141,19 @@ var mheap_ mheap
 type mSpanState uint8
 
 const (
-	_MSpanInUse mSpanState = iota // allocated for garbage collected heap
-	_MSpanStack                   // allocated for use by stack allocator
+	_MSpanDead  mSpanState = iota
+	_MSpanInUse            // allocated for garbage collected heap
+	_MSpanStack            // allocated for use by stack allocator
 	_MSpanFree
-	_MSpanDead
 )
 
 // mSpanStateNames are the names of the span states, indexed by
 // mSpanState.
 var mSpanStateNames = []string{
+	"_MSpanDead",
 	"_MSpanInUse",
 	"_MSpanStack",
 	"_MSpanFree",
-	"_MSpanDead",
 }
 
 // mSpanList heads a linked list of spans.
@@ -234,7 +234,8 @@ type mspan struct {
 	// h->sweepgen is incremented by 2 after every GC
 
 	sweepgen    uint32
-	divMul      uint32     // for divide by elemsize - divMagic.mul
+	divMul      uint16     // for divide by elemsize - divMagic.mul
+	baseMask    uint16     // if non-0, elemsize is a power of 2, & this will get object allocation base
 	allocCount  uint16     // capacity - number of objects in freelist
 	sizeclass   uint8      // size class
 	incache     bool       // being used by an mcache
@@ -248,7 +249,6 @@ type mspan struct {
 	limit       uintptr    // end of data in span
 	speciallock mutex      // guards specials list
 	specials    *special   // linked list of special records sorted by offset.
-	baseMask    uintptr    // if non-0, elemsize is a power of 2, & this will get object allocation base
 }
 
 func (s *mspan) base() uintptr {
@@ -405,6 +405,15 @@ func (h *mheap) init(spansStart, spansBytes uintptr) {
 	h.cachealloc.init(unsafe.Sizeof(mcache{}), nil, nil, &memstats.mcache_sys)
 	h.specialfinalizeralloc.init(unsafe.Sizeof(specialfinalizer{}), nil, nil, &memstats.other_sys)
 	h.specialprofilealloc.init(unsafe.Sizeof(specialprofile{}), nil, nil, &memstats.other_sys)
+
+	// Don't zero mspan allocations. Background sweeping can
+	// inspect a span concurrently with allocating it, so it's
+	// important that the span's sweepgen survive across freeing
+	// and re-allocating a span to prevent background sweeping
+	// from improperly cas'ing it from 0.
+	//
+	// This is safe because mspan contains no heap pointers.
+	h.spanalloc.zero = false
 
 	// h->mapcache needs no init
 	for i := range h.free {
@@ -620,7 +629,7 @@ func (h *mheap) alloc(npage uintptr, sizeclass int32, large bool, needzero bool)
 
 	if s != nil {
 		if needzero && s.needzero != 0 {
-			memclr(unsafe.Pointer(s.base()), s.npages<<_PageShift)
+			memclrNoHeapPointers(unsafe.Pointer(s.base()), s.npages<<_PageShift)
 		}
 		s.needzero = 0
 	}
@@ -1004,6 +1013,7 @@ func runtime_debug_freeOSMemory() {
 
 // Initialize a new span with the given start and npages.
 func (span *mspan) init(base uintptr, npages uintptr) {
+	// span is *not* zeroed.
 	span.next = nil
 	span.prev = nil
 	span.list = nil
@@ -1408,7 +1418,7 @@ func newArena() *gcBits {
 	} else {
 		result = gcBitsArenas.free
 		gcBitsArenas.free = gcBitsArenas.free.next
-		memclr(unsafe.Pointer(result), gcBitsChunkBytes)
+		memclrNoHeapPointers(unsafe.Pointer(result), gcBitsChunkBytes)
 	}
 	result.next = nil
 	// If result.bits is not 8 byte aligned adjust index so

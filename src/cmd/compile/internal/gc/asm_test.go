@@ -21,6 +21,9 @@ import (
 // TestAssembly checks to make sure the assembly generated for
 // functions contains certain expected instructions.
 func TestAssembly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow test; skipping")
+	}
 	testenv.MustHaveGoBuild(t)
 	if runtime.GOOS == "windows" {
 		// TODO: remove if we can get "go tool compile -S" to work on windows.
@@ -153,6 +156,38 @@ func f(b []byte, i int) uint32 {
 }
 `,
 		[]string{"\tMOVL\t\\(.*\\)\\(.*\\*1\\),"},
+	},
+	{"amd64", "linux", `
+import "encoding/binary"
+func f(b []byte) uint64 {
+	return binary.BigEndian.Uint64(b)
+}
+`,
+		[]string{"\tBSWAPQ\t"},
+	},
+	{"amd64", "linux", `
+import "encoding/binary"
+func f(b []byte, i int) uint64 {
+	return binary.BigEndian.Uint64(b[i:])
+}
+`,
+		[]string{"\tBSWAPQ\t"},
+	},
+	{"amd64", "linux", `
+import "encoding/binary"
+func f(b []byte) uint32 {
+	return binary.BigEndian.Uint32(b)
+}
+`,
+		[]string{"\tBSWAPL\t"},
+	},
+	{"amd64", "linux", `
+import "encoding/binary"
+func f(b []byte, i int) uint32 {
+	return binary.BigEndian.Uint32(b[i:])
+}
+`,
+		[]string{"\tBSWAPL\t"},
 	},
 	{"386", "linux", `
 import "encoding/binary"

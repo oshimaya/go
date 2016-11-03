@@ -332,10 +332,21 @@ func newname(s *Sym) *Node {
 	if s == nil {
 		Fatalf("newname nil")
 	}
-
 	n := nod(ONAME, nil, nil)
 	n.Sym = s
-	n.Type = nil
+	n.Addable = true
+	n.Ullman = 1
+	n.Xoffset = 0
+	return n
+}
+
+// newnoname returns a new ONONAME Node associated with symbol s.
+func newnoname(s *Sym) *Node {
+	if s == nil {
+		Fatalf("newnoname nil")
+	}
+	n := nod(ONONAME, nil, nil)
+	n.Sym = s
 	n.Addable = true
 	n.Ullman = 1
 	n.Xoffset = 0
@@ -347,7 +358,7 @@ func newname(s *Sym) *Node {
 func newfuncname(s *Sym) *Node {
 	n := newname(s)
 	n.Func = new(Func)
-	n.Func.FCurfn = Curfn
+	n.Func.IsHiddenClosure = Curfn != nil
 	return n
 }
 
@@ -388,9 +399,8 @@ func oldname(s *Sym) *Node {
 		// Maybe a top-level declaration will come along later to
 		// define s. resolve will check s.Def again once all input
 		// source has been processed.
-		n = newname(s)
-		n.Op = ONONAME
-		n.Name.Iota = iota_ // save current iota value in const declarations
+		n = newnoname(s)
+		n.SetIota(iota_) // save current iota value in const declarations
 		return n
 	}
 
@@ -464,7 +474,7 @@ func colasdefn(left []*Node, defn *Node) {
 
 		if n.Sym.Flags&SymUniq == 0 {
 			yyerrorl(defn.Lineno, "%v repeated on left side of :=", n.Sym)
-			n.Diag++
+			n.Diag = true
 			nerr++
 			continue
 		}

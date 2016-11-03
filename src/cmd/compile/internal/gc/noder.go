@@ -52,7 +52,7 @@ func (p *noder) file(file *syntax.File) {
 func (p *noder) decls(decls []syntax.Decl) (l []*Node) {
 	var lastConstGroup *syntax.Group
 	var lastConstRHS []*Node
-	var iotaVal int32
+	var iotaVal int64
 
 	for _, decl := range decls {
 		p.lineno(decl)
@@ -174,7 +174,11 @@ func (p *noder) aliasDecl(decl *syntax.AliasDecl) {
 	}
 	pkg.Used = true
 
+	// Resolve original entity
 	orig := oldname(restrictlookup(qident.Sel.Value, pkg.Name.Pkg))
+	if orig.Sym.Flags&SymAlias != 0 {
+		Fatalf("original %v marked as alias", orig.Sym)
+	}
 
 	// An alias declaration must not refer to package unsafe.
 	if orig.Sym.Pkg == unsafepkg {
@@ -210,8 +214,12 @@ func (p *noder) aliasDecl(decl *syntax.AliasDecl) {
 		return
 	}
 
-	// don't declare blank aliases
-	if decl.Name.Value == "_" {
+	// handle special cases
+	switch decl.Name.Value {
+	case "_":
+		return // don't declare blank aliases
+	case "init":
+		yyerror("cannot declare init - must be non-alias function declaration")
 		return
 	}
 
@@ -222,16 +230,16 @@ func (p *noder) aliasDecl(decl *syntax.AliasDecl) {
 		redeclare(asym, "in alias declaration")
 		return
 	}
+	asym.Flags |= SymAlias
 	asym.Def = orig
 	asym.Block = block
 	asym.Lastlineno = lineno
 
 	if exportname(asym.Name) {
-		yyerror("cannot export alias %v: not yet implemented", asym)
 		// TODO(gri) newname(asym) is only needed to satisfy exportsym
 		// (and indirectly, exportlist). We should be able to just
 		// collect the Syms, eventually.
-		// exportsym(newname(asym))
+		exportsym(newname(asym))
 	}
 }
 
@@ -1141,4 +1149,19 @@ func (p *noder) pragma(pos, line int, text string) syntax.Pragma {
 	}
 
 	return 0
+}
+
+func mkname(sym *Sym) *Node {
+	n := oldname(sym)
+	if n.Name != nil && n.Name.Pack != nil {
+		n.Name.Pack.Used = true
+	}
+	return n
+}
+
+func unparen(x *Node) *Node {
+	for x.Op == OPAREN {
+		x = x.Left
+	}
+	return x
 }

@@ -28,6 +28,8 @@ type parser struct {
 	nerrors int // error count
 }
 
+type parserError string // for error recovery if no error handler was installed
+
 func (p *parser) init(src io.Reader, errh ErrorHandler, pragh PragmaHandler) {
 	p.scanner.init(src, func(pos, line int, msg string) {
 		p.nerrors++
@@ -35,7 +37,7 @@ func (p *parser) init(src io.Reader, errh ErrorHandler, pragh PragmaHandler) {
 			errh(pos, line, msg)
 			return
 		}
-		panic(fmt.Sprintf("%d: %s\n", line, msg))
+		panic(parserError(fmt.Sprintf("%d: %s\n", line, msg)))
 	}, pragh)
 
 	p.fnest = 0
@@ -365,8 +367,7 @@ func (p *parser) typeDecl(group *Group) Decl {
 	}
 
 	name := p.name()
-	// permit both: type T => p.T and: type T = p.T for now
-	if p.got(_Rarrow) || p.got(_Assign) {
+	if p.got(_Rarrow) {
 		return p.aliasDecl(Type, name, group)
 	}
 

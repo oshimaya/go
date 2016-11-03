@@ -361,7 +361,7 @@ func nod(op Op, nleft *Node, nright *Node) *Node {
 	switch op {
 	case OCLOSURE, ODCLFUNC:
 		n.Func = new(Func)
-		n.Func.FCurfn = Curfn
+		n.Func.IsHiddenClosure = Curfn != nil
 	case ONAME:
 		n.Name = new(Name)
 		n.Name.Param = new(Param)
@@ -504,9 +504,7 @@ func treecopy(n *Node, lineno int32) *Node {
 			if lineno != 0 {
 				m.Lineno = lineno
 			}
-			m.Name = new(Name)
-			*m.Name = *n.Name
-			m.Name.Iota = iota_
+			m.SetIota(iota_)
 			return &m
 		}
 		return n
@@ -973,9 +971,10 @@ func assignconvfn(n *Node, t *Type, context func() string) *Node {
 	}
 
 	old := n
-	old.Diag++ // silence errors about n; we'll issue one below
+	od := old.Diag
+	old.Diag = true // silence errors about n; we'll issue one below
 	n = defaultlit(n, t)
-	old.Diag--
+	old.Diag = od
 	if t.Etype == TBLANK {
 		return n
 	}
@@ -1183,6 +1182,12 @@ func ullmancalc(n *Node) {
 			ul = UINF
 			goto out
 		}
+	case OINDEX, OSLICE, OSLICEARR, OSLICE3, OSLICE3ARR, OSLICESTR,
+		OIND, ODOTPTR, ODOTTYPE, ODIV, OMOD:
+		// These ops might panic, make sure they are done
+		// before we start marshaling args for a call. See issue 16760.
+		ul = UINF
+		goto out
 	}
 
 	ul = 1
@@ -1492,7 +1497,9 @@ func dotpath(s *Sym, t *Type, save **Field, ignorecase bool) (path []Dlist, ambi
 // modify the tree with missing type names.
 func adddot(n *Node) *Node {
 	n.Left = typecheck(n.Left, Etype|Erv)
-	n.Diag |= n.Left.Diag
+	if n.Left.Diag {
+		n.Diag = true
+	}
 	t := n.Left.Type
 	if t == nil {
 		return n

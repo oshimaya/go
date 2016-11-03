@@ -15,6 +15,7 @@ package sql
 import (
 	"context"
 	"database/sql/driver"
+	"database/sql/internal"
 	"errors"
 	"fmt"
 	"io"
@@ -87,6 +88,40 @@ func Param(name string, value interface{}) NamedParam {
 	// so unkeyed struct literals are a vet error. Thus, we don't
 	// want to encourage sql.NamedParam{name, value}.
 	return NamedParam{Name: name, Value: value}
+}
+
+// IsolationLevel is the transaction isolation level stored in Context.
+// The IsolationLevel is set with IsolationContext and the context
+// should be passed to BeginContext.
+type IsolationLevel int
+
+// Various isolation levels that drivers may support in BeginContext.
+// If a driver does not support a given isolation level an error may be returned.
+//
+// See https://en.wikipedia.org/wiki/Isolation_(database_systems)#Isolation_levels.
+const (
+	LevelDefault IsolationLevel = iota
+	LevelReadUncommitted
+	LevelReadCommitted
+	LevelWriteCommitted
+	LevelRepeatableRead
+	LevelSnapshot
+	LevelSerializable
+	LevelLinearizable
+)
+
+// IsolationContext returns a new Context that carries the provided isolation level.
+// The context must contain the isolation level before beginning the transaction
+// with BeginContext.
+func IsolationContext(ctx context.Context, level IsolationLevel) context.Context {
+	return context.WithValue(ctx, internal.IsolationLevelKey{}, driver.IsolationLevel(level))
+}
+
+// ReadOnlyWithContext returns a new Context that carries the provided
+// read-only transaction property. The context must contain the read-only property
+// before beginning the transaction with BeginContext.
+func ReadOnlyContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, internal.ReadOnlyKey{}, true)
 }
 
 // RawBytes is a byte slice that holds a reference to memory owned by
@@ -520,15 +555,27 @@ func Open(driverName, dataSourceName string) (*DB, error) {
 // PingContext verifies a connection to the database is still alive,
 // establishing a connection if necessary.
 func (db *DB) PingContext(ctx context.Context) error {
-	// TODO(bradfitz): give drivers an optional hook to implement
-	// this in a more efficient or more reliable way, if they
-	// have one.
-	dc, err := db.conn(ctx, cachedOrNewConn)
+	var dc *driverConn
+	var err error
+
+	for i := 0; i < maxBadConnRetries; i++ {
+		dc, err = db.conn(ctx, cachedOrNewConn)
+		if err != driver.ErrBadConn {
+			break
+		}
+	}
+	if err == driver.ErrBadConn {
+		dc, err = db.conn(ctx, alwaysNewConn)
+	}
 	if err != nil {
 		return err
 	}
-	db.putConn(dc, nil)
-	return nil
+
+	if pinger, ok := dc.ci.(driver.Pinger); ok {
+		err = pinger.Ping(ctx)
+	}
+	db.putConn(dc, err)
+	return err
 }
 
 // Ping verifies a connection to the database is still alive,
@@ -1224,7 +1271,10 @@ func (db *DB) QueryRow(query string, args ...interface{}) *Row {
 	return db.QueryRowContext(context.Background(), query, args...)
 }
 
-// BeginContext starts a transaction. If a non-default isolation level is used
+// BeginContext starts a transaction.
+//
+// An isolation level may be set by setting the value in the context
+// before calling this. If a non-default isolation level is used
 // that the driver doesn't support an error will be returned. Different drivers
 // may have slightly different meanings for the same isolation level.
 func (db *DB) BeginContext(ctx context.Context) (*Tx, error) {
@@ -2212,9 +2262,9 @@ func (rs *Rows) isClosed() bool {
 	return atomic.LoadInt32(&rs.closed) != 0
 }
 
-// Close closes the Rows, preventing further enumeration. If Next and
-// NextResultSet both return
-// false, the Rows are closed automatically and it will suffice to check the
+// Close closes the Rows, preventing further enumeration. If Next is called
+// and returns false and there are no further result sets,
+// the Rows are closed automatically and it will suffice to check the
 // result of Err. Close is idempotent and does not affect the result of Err.
 func (rs *Rows) Close() error {
 	if !atomic.CompareAndSwapInt32(&rs.closed, 0, 1) {

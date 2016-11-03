@@ -8,8 +8,8 @@ package main
 
 import (
 	"bufio"
-	"cmd/internal/pprof/profile"
 	"fmt"
+	"internal/pprof/profile"
 	"internal/trace"
 	"io"
 	"io/ioutil"
@@ -62,7 +62,7 @@ func pprofBlock(w io.Writer) error {
 	for _, ev := range events {
 		switch ev.Type {
 		case trace.EvGoBlockSend, trace.EvGoBlockRecv, trace.EvGoBlockSelect,
-			trace.EvGoBlockSync, trace.EvGoBlockCond:
+			trace.EvGoBlockSync, trace.EvGoBlockCond, trace.EvGoBlockGC:
 		default:
 			continue
 		}

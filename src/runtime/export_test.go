@@ -32,6 +32,9 @@ var FuncPC = funcPC
 
 var Fastlog2 = fastlog2
 
+var Atoi = atoi
+var Atoi32 = atoi32
+
 type LFNode struct {
 	Next    uint64
 	Pushcnt uintptr
@@ -155,7 +158,11 @@ var Int32Hash = int32Hash
 var Int64Hash = int64Hash
 var EfaceHash = efaceHash
 var IfaceHash = ifaceHash
-var MemclrBytes = memclrBytes
+
+func MemclrBytes(b []byte) {
+	s := (*slice)(unsafe.Pointer(&b))
+	memclrNoHeapPointers(s.array, uintptr(s.len))
+}
 
 var HashLoad = &hashLoad
 
@@ -209,9 +216,6 @@ func BenchSetType(n int, x interface{}) {
 }
 
 const PtrSize = sys.PtrSize
-
-var TestingAssertE2I2GC = &testingAssertE2I2GC
-var TestingAssertE2T2GC = &testingAssertE2T2GC
 
 var ForceGCPeriod = &forcegcperiod
 

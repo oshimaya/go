@@ -155,10 +155,7 @@ func Main() {
 	obj.Flagcount("E", "debug symbol export", &Debug['E'])
 	obj.Flagfn1("I", "add `directory` to import search path", addidir)
 	obj.Flagcount("K", "debug missing line numbers", &Debug['K'])
-	obj.Flagcount("M", "debug move generation", &Debug['M'])
 	obj.Flagcount("N", "disable optimizations", &Debug['N'])
-	obj.Flagcount("P", "debug peephole optimizer", &Debug['P'])
-	obj.Flagcount("R", "debug register optimizer", &Debug['R'])
 	obj.Flagcount("S", "print assembly listing", &Debug['S'])
 	obj.Flagfn0("V", "print compiler version", doversion)
 	obj.Flagcount("W", "debug parse tree after type checking", &Debug['W'])
@@ -168,7 +165,6 @@ func Main() {
 	flag.StringVar(&debugstr, "d", "", "print debug information about items in `list`")
 	obj.Flagcount("e", "no limit on number of errors reported", &Debug['e'])
 	obj.Flagcount("f", "debug stack frames", &Debug['f'])
-	obj.Flagcount("g", "debug code generation", &Debug['g'])
 	obj.Flagcount("h", "halt on error", &Debug['h'])
 	obj.Flagcount("i", "debug line number stack", &Debug['i'])
 	obj.Flagfn1("importmap", "add `definition` of the form source=actual to import map", addImportMap)
@@ -191,7 +187,6 @@ func Main() {
 	obj.Flagcount("v", "increase debug verbosity", &Debug['v'])
 	obj.Flagcount("w", "debug type checking", &Debug['w'])
 	flag.BoolVar(&use_writebarrier, "wb", true, "enable write barrier")
-	obj.Flagcount("x", "debug lexer", &Debug['x'])
 	var flag_shared bool
 	var flag_dynlink bool
 	if supportsDynlink(Thearch.LinkArch.Arch) {
@@ -309,10 +304,6 @@ func Main() {
 	timings.Start("fe", "parse")
 	lexlineno0 := lexlineno
 	for _, infile = range flag.Args() {
-		if trace && Debug['x'] != 0 {
-			fmt.Printf("--- %s ---\n", infile)
-		}
-
 		linehistpush(infile)
 		block = 1
 		iota_ = -1000000
@@ -928,7 +919,7 @@ func mkpackage(pkgname string) {
 				continue
 			}
 
-			if s.Def.Sym != s {
+			if s.Def.Sym != s && s.Flags&SymAlias == 0 {
 				// throw away top-level name left over
 				// from previous import . "x"
 				if s.Def.Name != nil && s.Def.Name.Pack != nil && !s.Def.Name.Pack.Used && nsyntaxerrors == 0 {
@@ -936,8 +927,6 @@ func mkpackage(pkgname string) {
 					s.Def.Name.Pack.Used = true
 				}
 
-				// TODO(gri) This will also affect exported aliases.
-				// Need to fix this.
 				s.Def = nil
 				continue
 			}

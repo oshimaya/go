@@ -38,6 +38,7 @@ type Node struct {
 	// - ODOT, ODOTPTR, and OINDREGSP use it to indicate offset relative to their base address.
 	// - OSTRUCTKEY uses it to store the named field's offset.
 	// - OXCASE and OXFALL use it to validate the use of fallthrough.
+	// - ONONAME uses it to store the current value of iota, see Node.Iota
 	// Possibly still more uses. If you find any, document them.
 	Xoffset int64
 
@@ -54,7 +55,7 @@ type Node struct {
 	Class     Class // PPARAM, PAUTO, PEXTERN, etc
 	Embedded  uint8 // ODCLFIELD embedded type
 	Colas     bool  // OAS resulting from :=
-	Diag      uint8 // already printed error about this
+	Diag      bool  // already printed error about this
 	Noescape  bool  // func arguments do not escape; TODO(rsc): move Noescape to Func struct (see CL 7360)
 	Walkdef   uint8 // tracks state during typecheckdef; 2 == loop detected
 	Typecheck uint8 // tracks state during typechecking; 2 == loop detected
@@ -69,6 +70,15 @@ type Node struct {
 	Likely    int8  // likeliness of if statement
 	hasVal    int8  // +1 for Val, -1 for Opt, 0 for not yet set
 	flags     uint8 // TODO: store more bool fields in this flag field
+}
+
+// IsAutoTmp indicates if n was created by the compiler as a temporary,
+// based on the setting of the .AutoTemp flag in n's Name.
+func (n *Node) IsAutoTmp() bool {
+	if n == nil || n.Op != ONAME {
+		return false
+	}
+	return n.Name.AutoTemp
 }
 
 const (
@@ -162,25 +172,31 @@ func (n *Node) SetOpt(x interface{}) {
 	n.E = x
 }
 
+func (n *Node) Iota() int64 {
+	return n.Xoffset
+}
+
+func (n *Node) SetIota(x int64) {
+	n.Xoffset = x
+}
+
 // Name holds Node fields used only by named nodes (ONAME, OPACK, OLABEL, some OLITERAL).
 type Name struct {
 	Pack      *Node  // real package for import . names
 	Pkg       *Pkg   // pkg for OPACK nodes
 	Heapaddr  *Node  // temp holding heap address of param (could move to Param?)
-	Inlvar    *Node  // ONAME substitute while inlining (could move to Param?)
 	Defn      *Node  // initializing assignment
 	Curfn     *Node  // function for local variables
 	Param     *Param // additional fields for ONAME
 	Decldepth int32  // declaration loop depth, increased for every loop or label
 	Vargen    int32  // unique name for ONAME within a function.  Function outputs are numbered starting at one.
-	Iota      int32  // value if this name is iota
 	Funcdepth int32
-	Method    bool // OCALLMETH name
 	Readonly  bool
 	Captured  bool // is the variable captured by a closure
 	Byval     bool // is the variable captured by value or by reference
 	Needzero  bool // if it contains pointers, needs to be zeroed on function entry
 	Keepalive bool // mark value live across unknown assembly call
+	AutoTemp  bool // is the variable a temporary (implies no dwarf info. reset if escapes to heap)
 }
 
 type Param struct {
@@ -284,7 +300,6 @@ type Func struct {
 	Ntype      *Node // signature
 	Top        int   // top context (Ecall, Eproc, etc)
 	Closure    *Node // OCLOSURE <-> ODCLFUNC
-	FCurfn     *Node
 	Nname      *Node
 
 	Inl     Nodes // copy of the body for use in inlining
@@ -296,11 +311,12 @@ type Func struct {
 	Endlineno int32
 	WBLineno  int32 // line number of first write barrier
 
-	Pragma        Pragma // go:xxx function annotations
-	Dupok         bool   // duplicate definitions ok
-	Wrapper       bool   // is method wrapper
-	Needctxt      bool   // function uses context register (has closure variables)
-	ReflectMethod bool   // function calls reflect.Type.Method or MethodByName
+	Pragma          Pragma // go:xxx function annotations
+	Dupok           bool   // duplicate definitions ok
+	Wrapper         bool   // is method wrapper
+	Needctxt        bool   // function uses context register (has closure variables)
+	ReflectMethod   bool   // function calls reflect.Type.Method or MethodByName
+	IsHiddenClosure bool
 }
 
 type Op uint8
@@ -384,7 +400,7 @@ const (
 	OIND       // *Left
 	OINDEX     // Left[Right] (index of array or slice)
 	OINDEXMAP  // Left[Right] (index of map)
-	OKEY       // Left:Right (key:value in struct/array/map literal, or slice index pair)
+	OKEY       // Left:Right (key:value in struct/array/map literal)
 	OSTRUCTKEY // Sym:Left (key:value in struct literal, after type checking)
 	OLEN       // len(Left)
 	OMAKE      // make(List) (before type checking converts to one of the following)

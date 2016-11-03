@@ -9,6 +9,8 @@ import "C"
 
 import "common"
 
+func F() int { return 3 }
+
 func ReadCommonX() int {
 	return common.X
 }
