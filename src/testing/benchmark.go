@@ -5,8 +5,10 @@
 package testing
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"internal/race"
 	"os"
 	"runtime"
 	"sync"
@@ -126,11 +128,15 @@ func (b *B) nsPerOp() int64 {
 
 // runN runs a single benchmark for the specified number of iterations.
 func (b *B) runN(n int) {
+	b.ctx, b.cancel = context.WithCancel(b.parentContext())
+	defer b.cancel()
+
 	benchmarkLock.Lock()
 	defer benchmarkLock.Unlock()
 	// Try to get a comparable environment for each run
 	// by clearing garbage from previous runs.
 	runtime.GC()
+	b.raceErrors = -race.Errors()
 	b.N = n
 	b.parallelism = 1
 	b.ResetTimer()
@@ -139,6 +145,10 @@ func (b *B) runN(n int) {
 	b.StopTimer()
 	b.previousN = n
 	b.previousDuration = b.duration
+	b.raceErrors += race.Errors()
+	if b.raceErrors > 0 {
+		b.Errorf("race detected during execution of benchmark")
+	}
 }
 
 func min(x, y int) int {

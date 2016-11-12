@@ -293,6 +293,44 @@ type BugX struct {
 	BugB
 }
 
+// Issue 16042. Even if a nil interface value is passed in
+// as long as it implements MarshalJSON, it should be marshaled.
+type nilMarshaler string
+
+func (nm *nilMarshaler) MarshalJSON() ([]byte, error) {
+	if nm == nil {
+		return Marshal("0zenil0")
+	}
+	return Marshal("zenil:" + string(*nm))
+}
+
+// Issue 16042.
+func TestNilMarshal(t *testing.T) {
+	testCases := []struct {
+		v    interface{}
+		want string
+	}{
+		{v: nil, want: `null`},
+		{v: new(float64), want: `0`},
+		{v: []interface{}(nil), want: `null`},
+		{v: []string(nil), want: `null`},
+		{v: map[string]string(nil), want: `null`},
+		{v: []byte(nil), want: `null`},
+		{v: struct{ M string }{"gopher"}, want: `{"M":"gopher"}`},
+		{v: struct{ M Marshaler }{}, want: `{"M":null}`},
+		{v: struct{ M Marshaler }{(*nilMarshaler)(nil)}, want: `{"M":"0zenil0"}`},
+		{v: struct{ M interface{} }{(*nilMarshaler)(nil)}, want: `{"M":null}`},
+	}
+
+	for _, tt := range testCases {
+		out, err := Marshal(tt.v)
+		if err != nil || string(out) != tt.want {
+			t.Errorf("Marshal(%#v) = %#q, %#v, want %#q, nil", tt.v, out, err, tt.want)
+			continue
+		}
+	}
+}
+
 // Issue 5245.
 func TestEmbeddedBug(t *testing.T) {
 	v := BugB{
@@ -378,6 +416,7 @@ func TestDuplicatedFieldDisappears(t *testing.T) {
 }
 
 func TestStringBytes(t *testing.T) {
+	t.Parallel()
 	// Test that encodeState.stringBytes and encodeState.string use the same encoding.
 	var r []rune
 	for i := '\u0000'; i <= unicode.MaxRune; i++ {
@@ -462,7 +501,7 @@ func TestEncodePointerString(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if back.N == nil {
-		t.Fatalf("Unmarshalled nil N field")
+		t.Fatalf("Unmarshaled nil N field")
 	}
 	if *back.N != 42 {
 		t.Fatalf("*N = %d; want 42", *back.N)
@@ -593,7 +632,7 @@ func TestTextMarshalerMapKeysAreSorted(t *testing.T) {
 
 var re = regexp.MustCompile
 
-// syntactic checks on form of marshalled floating point numbers.
+// syntactic checks on form of marshaled floating point numbers.
 var badFloatREs = []*regexp.Regexp{
 	re(`p`),                     // no binary exponential notation
 	re(`^\+`),                   // no leading + sign
@@ -616,6 +655,7 @@ var badFloatREs = []*regexp.Regexp{
 }
 
 func TestMarshalFloat(t *testing.T) {
+	t.Parallel()
 	nfail := 0
 	test := func(f float64, bits int) {
 		vf := interface{}(f)

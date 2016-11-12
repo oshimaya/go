@@ -2184,6 +2184,10 @@ func http2configureServer18(h1 *Server, h2 *http2Server) error {
 	return nil
 }
 
+func http2shouldLogPanic(panicValue interface{}) bool {
+	return panicValue != nil && panicValue != ErrAbortHandler
+}
+
 var http2DebugGoroutines = os.Getenv("DEBUG_HTTP2_GOROUTINES") == "1"
 
 type http2goroutineLock uint64
@@ -3206,8 +3210,8 @@ type http2serverConn struct {
 	advMaxStreams         uint32 // our SETTINGS_MAX_CONCURRENT_STREAMS advertised the client
 	curClientStreams      uint32 // number of open streams initiated by the client
 	curPushedStreams      uint32 // number of open streams initiated by server push
-	maxStreamID           uint32 // max ever seen from client
-	maxPushPromiseID      uint32 // ID of the last push promise, or 0 if there have been no pushes
+	maxClientStreamID     uint32 // max ever seen from client (odd), or 0 if there have been no client requests
+	maxPushPromiseID      uint32 // ID of the last push promise (even), or 0 if there have been no pushes
 	streams               map[uint32]*http2stream
 	initialWindowSize     int32
 	maxFrameSize          int32
@@ -3295,8 +3299,14 @@ func (sc *http2serverConn) state(streamID uint32) (http2streamState, *http2strea
 		return st.state, st
 	}
 
-	if streamID <= sc.maxStreamID {
-		return http2stateClosed, nil
+	if streamID%2 == 1 {
+		if streamID <= sc.maxClientStreamID {
+			return http2stateClosed, nil
+		}
+	} else {
+		if streamID <= sc.maxPushPromiseID {
+			return http2stateClosed, nil
+		}
 	}
 	return http2stateIdle, nil
 }
@@ -3797,7 +3807,7 @@ func (sc *http2serverConn) scheduleFrameWrite() {
 			sc.needToSendGoAway = false
 			sc.startFrameWrite(http2FrameWriteRequest{
 				write: &http2writeGoAway{
-					maxStreamID: sc.maxStreamID,
+					maxStreamID: sc.maxClientStreamID,
 					code:        sc.goAwayCode,
 				},
 			})
@@ -3938,6 +3948,8 @@ func (sc *http2serverConn) processFrame(f http2Frame) error {
 		return sc.processResetStream(f)
 	case *http2PriorityFrame:
 		return sc.processPriority(f)
+	case *http2GoAwayFrame:
+		return sc.processGoAway(f)
 	case *http2PushPromiseFrame:
 
 		return http2ConnectionError(http2ErrCodeProtocol)
@@ -4158,6 +4170,19 @@ func (sc *http2serverConn) processData(f *http2DataFrame) error {
 	return nil
 }
 
+func (sc *http2serverConn) processGoAway(f *http2GoAwayFrame) error {
+	sc.serveG.check()
+	if f.ErrCode != http2ErrCodeNo {
+		sc.logf("http2: received GOAWAY %+v, starting graceful shutdown", f)
+	} else {
+		sc.vlogf("http2: received GOAWAY %+v, starting graceful shutdown", f)
+	}
+	sc.goAwayIn(http2ErrCodeNo, 0)
+
+	sc.pushEnabled = false
+	return nil
+}
+
 // isPushed reports whether the stream is server-initiated.
 func (st *http2stream) isPushed() bool {
 	return st.id%2 == 0
@@ -4206,10 +4231,10 @@ func (sc *http2serverConn) processHeaders(f *http2MetaHeadersFrame) error {
 		return st.processTrailerHeaders(f)
 	}
 
-	if id <= sc.maxStreamID {
+	if id <= sc.maxClientStreamID {
 		return http2ConnectionError(http2ErrCodeProtocol)
 	}
-	sc.maxStreamID = id
+	sc.maxClientStreamID = id
 
 	if sc.idleTimer != nil {
 		sc.idleTimer.Stop()
@@ -4513,15 +4538,17 @@ func (sc *http2serverConn) runHandler(rw *http2responseWriter, req *Request, han
 		rw.rws.stream.cancelCtx()
 		if didPanic {
 			e := recover()
-			// Same as net/http:
-			const size = 64 << 10
-			buf := make([]byte, size)
-			buf = buf[:runtime.Stack(buf, false)]
 			sc.writeFrameFromHandler(http2FrameWriteRequest{
 				write:  http2handlerPanicRST{rw.rws.stream.id},
 				stream: rw.rws.stream,
 			})
-			sc.logf("http2: panic serving %v: %v\n%s", sc.conn.RemoteAddr(), e, buf)
+
+			if http2shouldLogPanic(e) {
+				const size = 64 << 10
+				buf := make([]byte, size)
+				buf = buf[:runtime.Stack(buf, false)]
+				sc.logf("http2: panic serving %v: %v\n%s", sc.conn.RemoteAddr(), e, buf)
+			}
 			return
 		}
 		rw.handlerDone()
@@ -4926,8 +4953,9 @@ func (w *http2responseWriter) CloseNotify() <-chan bool {
 	if ch == nil {
 		ch = make(chan bool, 1)
 		rws.closeNotifierCh = ch
+		cw := rws.stream.cw
 		go func() {
-			rws.stream.cw.Wait()
+			cw.Wait()
 			ch <- true
 		}()
 	}
@@ -5152,6 +5180,10 @@ func (sc *http2serverConn) startPush(msg http2startPushRequest) {
 			return 0, http2ErrPushLimitReached
 		}
 
+		if sc.maxPushPromiseID+2 >= 1<<31 {
+			sc.goAwayIn(http2ErrCodeNo, 0)
+			return 0, http2ErrPushLimitReached
+		}
 		sc.maxPushPromiseID += 2
 		promisedID := sc.maxPushPromiseID
 

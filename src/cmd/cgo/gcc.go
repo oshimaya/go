@@ -429,6 +429,7 @@ func (p *Package) loadDWARF(f *File, names []*Name) {
 	var b bytes.Buffer
 	b.WriteString(f.Preamble)
 	b.WriteString(builtinProlog)
+	b.WriteString("#line 1 \"cgo-dwarf-inference\"\n")
 	for i, n := range names {
 		fmt.Fprintf(&b, "__typeof__(%s) *__cgo__%d;\n", n.C, i)
 		if n.Kind == "const" {
@@ -1701,9 +1702,13 @@ func (c *typeConv) Type(dtype dwarf.Type, pos token.Pos) *Type {
 		c.ptrs[dt.Type] = append(c.ptrs[dt.Type], t)
 
 	case *dwarf.QualType:
-		// Ignore qualifier.
-		t = c.Type(dt.Type, pos)
-		c.m[dtype] = t
+		t1 := c.Type(dt.Type, pos)
+		t.Size = t1.Size
+		t.Align = t1.Align
+		t.Go = t1.Go
+		t.EnumValues = nil
+		t.Typedef = ""
+		t.C.Set("%s "+dt.Qual, t1.C)
 		return t
 
 	case *dwarf.StructType:

@@ -75,7 +75,9 @@ var (
 // If ServeHTTP panics, the server (the caller of ServeHTTP) assumes
 // that the effect of the panic was isolated to the active request.
 // It recovers the panic, logs a stack trace to the server error log,
-// and hangs up the connection.
+// and hangs up the connection. To abort a handler so the client sees
+// an interrupted response but the server doesn't log an error, panic
+// with the value ErrAbortHandler.
 type Handler interface {
 	ServeHTTP(ResponseWriter, *Request)
 }
@@ -262,7 +264,7 @@ type conn struct {
 
 	curReq atomic.Value // of *response (which has a Request in it)
 
-	curState atomic.Value // of ConnectionState
+	curState atomic.Value // of ConnState
 
 	// mu guards hijackedv
 	mu sync.Mutex
@@ -1674,11 +1676,34 @@ type badRequestError string
 
 func (e badRequestError) Error() string { return "Bad Request: " + string(e) }
 
+// ErrAbortHandler is a sentinel panic value to abort a handler.
+// While any panic from ServeHTTP aborts the response to the client,
+// panicking with ErrAbortHandler also suppresses logging of a stack
+// trace to the server's error log.
+var ErrAbortHandler = errors.New("net/http: abort Handler")
+
+// isCommonNetReadError reports whether err is a common error
+// encountered during reading a request off the network when the
+// client has gone away or had its read fail somehow. This is used to
+// determine which logs are interesting enough to log about.
+func isCommonNetReadError(err error) bool {
+	if err == io.EOF {
+		return true
+	}
+	if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
+		return true
+	}
+	if oe, ok := err.(*net.OpError); ok && oe.Op == "read" {
+		return true
+	}
+	return false
+}
+
 // Serve a new connection.
 func (c *conn) serve(ctx context.Context) {
 	c.remoteAddr = c.rwc.RemoteAddr().String()
 	defer func() {
-		if err := recover(); err != nil {
+		if err := recover(); err != nil && err != ErrAbortHandler {
 			const size = 64 << 10
 			buf := make([]byte, size)
 			buf = buf[:runtime.Stack(buf, false)]
@@ -1729,27 +1754,31 @@ func (c *conn) serve(ctx context.Context) {
 			c.setState(c.rwc, StateActive)
 		}
 		if err != nil {
+			const errorHeaders = "\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n"
+
 			if err == errTooLarge {
 				// Their HTTP client may or may not be
 				// able to read this if we're
 				// responding to them and hanging up
 				// while they're still writing their
 				// request. Undefined behavior.
-				io.WriteString(c.rwc, "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n431 Request Header Fields Too Large")
+				const publicErr = "431 Request Header Fields Too Large"
+				c.server.logf("http: %s", publicErr)
+				fmt.Fprintf(c.rwc, "HTTP/1.1 "+publicErr+errorHeaders+publicErr)
 				c.closeWriteAndWait()
 				return
 			}
-			if err == io.EOF {
+			if isCommonNetReadError(err) {
 				return // don't reply
 			}
-			if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
-				return // don't reply
-			}
-			var publicErr string
+
+			publicErr := "400 Bad Request"
 			if v, ok := err.(badRequestError); ok {
-				publicErr = ": " + string(v)
+				publicErr = publicErr + ": " + string(v)
 			}
-			io.WriteString(c.rwc, "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n400 Bad Request"+publicErr)
+
+			c.server.logf("http: %s", publicErr)
+			fmt.Fprintf(c.rwc, "HTTP/1.1 "+publicErr+errorHeaders+publicErr)
 			return
 		}
 
@@ -1797,6 +1826,14 @@ func (c *conn) serve(ctx context.Context) {
 		}
 		c.setState(c.rwc, StateIdle)
 		c.curReq.Store((*response)(nil))
+
+		if !w.conn.server.doKeepAlives() {
+			// We're in shutdown mode. We might've replied
+			// to the user without "Connection: close" and
+			// they might think they can send another
+			// request, but such is life with HTTP/1.1.
+			return
+		}
 
 		if d := c.server.idleTimeout(); d != 0 {
 			c.rwc.SetReadDeadline(time.Now().Add(d))
@@ -2308,7 +2345,8 @@ type Server struct {
 	// handle HTTP requests and will initialize the Request's TLS
 	// and RemoteAddr if not already set. The connection is
 	// automatically closed when the function returns.
-	// If TLSNextProto is nil, HTTP/2 support is enabled automatically.
+	// If TLSNextProto is not nil, HTTP/2 support is not enabled
+	// automatically.
 	TLSNextProto map[string]func(*Server, *tls.Conn, Handler)
 
 	// ConnState specifies an optional callback function that is
@@ -2358,11 +2396,18 @@ func (s *Server) closeDoneChanLocked() {
 	}
 }
 
-// Close immediately closes all active net.Listeners and connections,
-// regardless of their state. For a graceful shutdown, use Shutdown.
+// Close immediately closes all active net.Listeners and any
+// connections in state StateNew, StateActive, or StateIdle. For a
+// graceful shutdown, use Shutdown.
+//
+// Close does not attempt to close (and does not even know about)
+// any hijacked connections, such as WebSockets.
+//
+// Close returns any error returned from closing the Server's
+// underlying Listener(s).
 func (s *Server) Close() error {
 	s.mu.Lock()
-	defer s.mu.Lock()
+	defer s.mu.Unlock()
 	s.closeDoneChanLocked()
 	err := s.closeListenersLocked()
 	for c := range s.activeConn {
@@ -2387,6 +2432,11 @@ var shutdownPollInterval = 500 * time.Millisecond
 // indefinitely for connections to return to idle and then shut down.
 // If the provided context expires before the shutdown is complete,
 // then the context's error is returned.
+//
+// Shutdown does not attempt to close nor wait for hijacked
+// connections such as WebSockets. The caller of Shutdown should
+// separately notify such long-lived connections of shutdown and wait
+// for them to close, if desired.
 func (s *Server) Shutdown(ctx context.Context) error {
 	atomic.AddInt32(&s.inShutdown, 1)
 	defer atomic.AddInt32(&s.inShutdown, -1)

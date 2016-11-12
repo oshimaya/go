@@ -5913,3 +5913,20 @@ func TestSwapper(t *testing.T) {
 		}
 	}
 }
+
+// TestUnaddressableField tests that the reflect package will not allow
+// a type from another package to be used as a named type with an
+// unexported field.
+//
+// This ensures that unexported fields cannot be modified by other packages.
+func TestUnaddressableField(t *testing.T) {
+	var b Buffer // type defined in reflect, a different package
+	var localBuffer struct {
+		buf []byte
+	}
+	lv := ValueOf(&localBuffer).Elem()
+	rv := ValueOf(b)
+	shouldPanic(func() {
+		lv.Set(rv)
+	})
+}

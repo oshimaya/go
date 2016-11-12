@@ -741,10 +741,10 @@ TEXT runtime·aeshash64(SB),NOSPLIT|NOFRAME,$0-0
 TEXT runtime·aeshashstr(SB),NOSPLIT|NOFRAME,$0-0
 	MOVW	(R0), R15
 
-// memequal(p, q unsafe.Pointer, size uintptr) bool
+// memequal(a, b unsafe.Pointer, size uintptr) bool
 TEXT runtime·memequal(SB),NOSPLIT|NOFRAME,$0-25
-	MOVD	p+0(FP), R3
-	MOVD	q+8(FP), R5
+	MOVD	a+0(FP), R3
+	MOVD	b+8(FP), R5
 	MOVD	size+16(FP), R6
 	LA	ret+24(FP), R7
 	BR	runtime·memeqbody(SB)
@@ -763,9 +763,9 @@ TEXT runtime·memequal_varlen(SB),NOSPLIT|NOFRAME,$0-17
 // See runtime_test.go:eqstring_generic for
 // equivalent Go code.
 TEXT runtime·eqstring(SB),NOSPLIT|NOFRAME,$0-33
-	MOVD	s1str+0(FP), R3
-	MOVD	s1len+8(FP), R6
-	MOVD	s2str+16(FP), R5
+	MOVD	s1_base+0(FP), R3
+	MOVD	s1_len+8(FP), R6
+	MOVD	s2_base+16(FP), R5
 	LA	ret+32(FP), R7
 	BR	runtime·memeqbody(SB)
 
@@ -1008,7 +1008,7 @@ TEXT runtime·prefetcht2(SB),NOSPLIT,$0-8
 TEXT runtime·prefetchnta(SB),NOSPLIT,$0-8
 	RET
 
-TEXT runtime·sigreturn(SB),NOSPLIT,$0-8
+TEXT runtime·sigreturn(SB),NOSPLIT,$0-0
 	RET
 
 TEXT ·publicationBarrier(SB),NOSPLIT|NOFRAME,$0-0
