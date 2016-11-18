@@ -202,7 +202,9 @@ type moduledata struct {
 
 	ptab []ptabEntry
 
-	pluginpath   string
+	pluginpath string
+	pkghashes  []modulehash
+
 	modulename   string
 	modulehashes []modulehash
 
@@ -213,10 +215,18 @@ type moduledata struct {
 	next *moduledata
 }
 
+// A modulehash is used to compare the ABI of a new module or a
+// package in a new module with the loaded program.
+//
 // For each shared library a module links against, the linker creates an entry in the
 // moduledata.modulehashes slice containing the name of the module, the abi hash seen
 // at link time and a pointer to the runtime abi hash. These are checked in
 // moduledataverify1 below.
+//
+// For each loaded plugin, the the pkghashes slice has a modulehash of the
+// newly loaded package that can be used to check the plugin's version of
+// a package against any previously loaded version of the package.
+// This is done in plugin.lastmoduleinit.
 type modulehash struct {
 	modulename   string
 	linktimehash string
@@ -432,11 +442,18 @@ func findfunc(pc uintptr) *_func {
 
 	ffb := (*findfuncbucket)(add(unsafe.Pointer(datap.findfunctab), b*unsafe.Sizeof(findfuncbucket{})))
 	idx := ffb.idx + uint32(ffb.subbuckets[i])
+
+	// If the idx is beyond the end of the ftab, set it to the end of the table and search backward.
+	// This situation can occur if multiple text sections are generated to handle large text sections
+	// and the linker has inserted jump tables between them.
+
+	if idx >= uint32(len(datap.ftab)) {
+		idx = uint32(len(datap.ftab) - 1)
+	}
 	if pc < datap.ftab[idx].entry {
 
-		// If there are multiple text sections then the buckets for the secondary
-		// text sections will be off because the addresses in those text sections
-		// were relocated to higher addresses.  Search back to find it.
+		// With multiple text sections, the idx might reference a function address that
+		// is higher than the pc being searched, so search backward until the matching address is found.
 
 		for datap.ftab[idx].entry > pc && idx > 0 {
 			idx--

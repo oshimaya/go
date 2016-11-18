@@ -1352,9 +1352,6 @@ func TestTransportConcurrency(t *testing.T) {
 
 func TestIssue4191_InfiniteGetTimeout(t *testing.T) {
 	setParallel(t)
-	if runtime.GOOS == "plan9" {
-		t.Skip("skipping test; see https://golang.org/issue/7237")
-	}
 	defer afterTest(t)
 	const debug = false
 	mux := NewServeMux()
@@ -1417,9 +1414,6 @@ func TestIssue4191_InfiniteGetTimeout(t *testing.T) {
 
 func TestIssue4191_InfiniteGetToPutTimeout(t *testing.T) {
 	setParallel(t)
-	if runtime.GOOS == "plan9" {
-		t.Skip("skipping test; see https://golang.org/issue/7237")
-	}
 	defer afterTest(t)
 	const debug = false
 	mux := NewServeMux()
@@ -3466,7 +3460,7 @@ func TestTransportRejectsAlphaPort(t *testing.T) {
 	res, err := Get("http://dummy.tld:123foo/bar")
 	if err == nil {
 		res.Body.Close()
-		t.Fatal("unexpected sucess")
+		t.Fatal("unexpected success")
 	}
 	ue, ok := err.(*url.Error)
 	if !ok {

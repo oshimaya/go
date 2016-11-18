@@ -672,7 +672,7 @@ func TestStatementClose(t *testing.T) {
 		msg  string
 	}{
 		{&Stmt{stickyErr: want}, "stickyErr not propagated"},
-		{&Stmt{tx: &Tx{}, txsi: &driverStmt{&sync.Mutex{}, stubDriverStmt{want}}}, "driverStmt.Close() error not propagated"},
+		{&Stmt{tx: &Tx{}, txds: &driverStmt{Locker: &sync.Mutex{}, si: stubDriverStmt{want}}}, "driverStmt.Close() error not propagated"},
 	}
 	for _, test := range tests {
 		if err := test.stmt.Close(); err != want {
@@ -2514,7 +2514,8 @@ func TestConnectionLeak(t *testing.T) {
 	go func() {
 		r, err := db.Query("SELECT|people|name|")
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 		r.Close()
 		wg.Done()

@@ -9,12 +9,42 @@ import (
 	"log"
 	"path/filepath"
 	"plugin"
+	"strings"
 
 	"common"
 )
 
 func init() {
 	common.X *= 5
+}
+
+// testUnnamed tests that two plugins built with .go files passed on
+// the command line do not have overlapping symbols. That is,
+// unnamed1.so/FuncInt and unnamed2.so/FuncInt should be distinct functions.
+func testUnnamed() {
+	p, err := plugin.Open("unnamed1.so")
+	if err != nil {
+		log.Fatalf(`plugin.Open("unnamed1.so"): %v`, err)
+	}
+	fn, err := p.Lookup("FuncInt")
+	if err != nil {
+		log.Fatalf(`unnamed1.so: Lookup("FuncInt") failed: %v`, err)
+	}
+	if got, want := fn.(func() int)(), 1; got != want {
+		log.Fatalf("unnamed1.so: FuncInt()=%d, want %d", got, want)
+	}
+
+	p, err = plugin.Open("unnamed2.so")
+	if err != nil {
+		log.Fatalf(`plugin.Open("unnamed2.so"): %v`, err)
+	}
+	fn, err = p.Lookup("FuncInt")
+	if err != nil {
+		log.Fatalf(`unnamed2.so: Lookup("FuncInt") failed: %v`, err)
+	}
+	if got, want := fn.(func() int)(), 2; got != want {
+		log.Fatalf("unnamed2.so: FuncInt()=%d, want %d", got, want)
+	}
 }
 
 func main() {
@@ -103,6 +133,16 @@ func main() {
 	if got, want := common.X, 2; got != want {
 		log.Fatalf("after loading plugin2, common.X=%d, want %d", got, want)
 	}
+
+	_, err = plugin.Open("plugin-mismatch.so")
+	if err == nil {
+		log.Fatal(`plugin.Open("plugin-mismatch.so"): should have failed`)
+	}
+	if s := err.Error(); !strings.Contains(s, "different version") {
+		log.Fatalf(`plugin.Open("plugin-mismatch.so"): error does not mention "different version": %v`, s)
+	}
+
+	testUnnamed()
 
 	fmt.Println("PASS")
 }

@@ -461,9 +461,6 @@ func TestMuxRedirectLeadingSlashes(t *testing.T) {
 }
 
 func TestServerTimeouts(t *testing.T) {
-	if runtime.GOOS == "plan9" {
-		t.Skip("skipping test; see https://golang.org/issue/7237")
-	}
 	setParallel(t)
 	defer afterTest(t)
 	reqNum := 0
@@ -542,9 +539,6 @@ func TestServerTimeouts(t *testing.T) {
 // request) that will never happen.
 func TestOnlyWriteTimeout(t *testing.T) {
 	setParallel(t)
-	if runtime.GOOS == "plan9" {
-		t.Skip("skipping test; see https://golang.org/issue/7237")
-	}
 	defer afterTest(t)
 	var conn net.Conn
 	var afterTimeoutErrc = make(chan error, 1)
@@ -1035,9 +1029,6 @@ func testHeadResponses(t *testing.T, h2 bool) {
 }
 
 func TestTLSHandshakeTimeout(t *testing.T) {
-	if runtime.GOOS == "plan9" {
-		t.Skip("skipping test; see https://golang.org/issue/7237")
-	}
 	setParallel(t)
 	defer afterTest(t)
 	ts := httptest.NewUnstartedServer(HandlerFunc(func(w ResponseWriter, r *Request) {}))
@@ -2470,14 +2461,14 @@ func TestClientWriteShutdown(t *testing.T) {
 	}
 	err = conn.(*net.TCPConn).CloseWrite()
 	if err != nil {
-		t.Fatalf("Dial: %v", err)
+		t.Fatalf("CloseWrite: %v", err)
 	}
 	donec := make(chan bool)
 	go func() {
 		defer close(donec)
 		bs, err := ioutil.ReadAll(conn)
 		if err != nil {
-			t.Fatalf("ReadAll: %v", err)
+			t.Errorf("ReadAll: %v", err)
 		}
 		got := string(bs)
 		if got != "" {
@@ -2629,7 +2620,8 @@ func TestCloseNotifier(t *testing.T) {
 	go func() {
 		_, err = fmt.Fprintf(conn, "GET / HTTP/1.1\r\nConnection: keep-alive\r\nHost: foo\r\n\r\n")
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 		<-diec
 		conn.Close()
@@ -2671,7 +2663,8 @@ func TestCloseNotifierPipelined(t *testing.T) {
 		const req = "GET / HTTP/1.1\r\nConnection: keep-alive\r\nHost: foo\r\n\r\n"
 		_, err = io.WriteString(conn, req+req) // two requests
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 		<-diec
 		conn.Close()
@@ -4916,9 +4909,6 @@ func get(t *testing.T, c *Client, url string) string {
 // Tests that calls to Server.SetKeepAlivesEnabled(false) closes any
 // currently-open connections.
 func TestServerSetKeepAlivesEnabledClosesConns(t *testing.T) {
-	if runtime.GOOS == "nacl" {
-		t.Skip("skipping on nacl; see golang.org/issue/17695")
-	}
 	setParallel(t)
 	defer afterTest(t)
 	ts := httptest.NewServer(HandlerFunc(func(w ResponseWriter, r *Request) {
@@ -5000,4 +4990,30 @@ func TestServerCloseDeadlock(t *testing.T) {
 	var s Server
 	s.Close()
 	s.Close()
+}
+
+// Issue 17717: tests that Server.SetKeepAlivesEnabled is respected by
+// both HTTP/1 and HTTP/2.
+func TestServerKeepAlivesEnabled_h1(t *testing.T) { testServerKeepAlivesEnabled(t, h1Mode) }
+func TestServerKeepAlivesEnabled_h2(t *testing.T) { testServerKeepAlivesEnabled(t, h2Mode) }
+func testServerKeepAlivesEnabled(t *testing.T, h2 bool) {
+	setParallel(t)
+	defer afterTest(t)
+	cst := newClientServerTest(t, h2, HandlerFunc(func(w ResponseWriter, r *Request) {
+		fmt.Fprintf(w, "%v", r.RemoteAddr)
+	}))
+	defer cst.close()
+	srv := cst.ts.Config
+	srv.SetKeepAlivesEnabled(false)
+	a := cst.getURL(cst.ts.URL)
+	if !waitCondition(2*time.Second, 10*time.Millisecond, srv.ExportAllConnsIdle) {
+		t.Fatalf("test server has active conns")
+	}
+	b := cst.getURL(cst.ts.URL)
+	if a == b {
+		t.Errorf("got same connection between first and second requests")
+	}
+	if !waitCondition(2*time.Second, 10*time.Millisecond, srv.ExportAllConnsIdle) {
+		t.Fatalf("test server has active conns")
+	}
 }
