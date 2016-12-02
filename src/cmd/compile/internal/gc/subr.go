@@ -58,6 +58,8 @@ func (x byLineno) Len() int           { return len(x) }
 func (x byLineno) Less(i, j int) bool { return x[i].lineno < x[j].lineno }
 func (x byLineno) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
 
+// flusherrors sorts errors seen so far by line number, prints them to stdout,
+// and empties the errors array.
 func flusherrors() {
 	Ctxt.Bso.Flush()
 	if len(errors) == 0 {
@@ -1808,6 +1810,8 @@ func genwrapper(rcvr *Type, method *Field, newnam *Sym, iface int) {
 		n := nod(ORETJMP, nil, nil)
 		n.Left = newname(methodsym(method.Sym, methodrcvr, 0))
 		fn.Nbody.Append(n)
+		// When tail-calling, we can't use a frame pointer.
+		fn.Func.NoFramePointer = true
 	} else {
 		fn.Func.Wrapper = true // ignore frame for panic+recover matching
 		call := nod(OCALL, dot, nil)

@@ -1063,14 +1063,14 @@ func TestInternalPackagesInGOROOTAreRespected(t *testing.T) {
 	tg := testgo(t)
 	defer tg.cleanup()
 	tg.runFail("build", "-v", "./testdata/testinternal")
-	tg.grepBoth("use of internal package not allowed", "wrong error message for testdata/testinternal")
+	tg.grepBoth(`testinternal(\/|\\)p\.go\:3\:8\: use of internal package not allowed`, "wrong error message for testdata/testinternal")
 }
 
 func TestInternalPackagesOutsideGOROOTAreRespected(t *testing.T) {
 	tg := testgo(t)
 	defer tg.cleanup()
 	tg.runFail("build", "-v", "./testdata/testinternal2")
-	tg.grepBoth("use of internal package not allowed", "wrote error message for testdata/testinternal2")
+	tg.grepBoth(`testinternal2(\/|\\)p\.go\:3\:8\: use of internal package not allowed`, "wrote error message for testdata/testinternal2")
 }
 
 func TestRunInternal(t *testing.T) {
@@ -1080,7 +1080,7 @@ func TestRunInternal(t *testing.T) {
 	tg.setenv("GOPATH", dir)
 	tg.run("run", filepath.Join(dir, "src/run/good.go"))
 	tg.runFail("run", filepath.Join(dir, "src/run/bad.go"))
-	tg.grepStderr("use of internal package not allowed", "unexpected error for run/bad.go")
+	tg.grepStderr(`testdata(\/|\\)src(\/|\\)run(\/|\\)bad\.go\:3\:8\: use of internal package not allowed`, "unexpected error for run/bad.go")
 }
 
 func testMove(t *testing.T, vcs, url, base, config string) {
@@ -1700,6 +1700,8 @@ func TestMissingGOPATHEnvShowsDefault(t *testing.T) {
 
 // Test go get missing GOPATH causes go get to warn if directory doesn't exist.
 func TestMissingGOPATHGetWarnsIfNotExists(t *testing.T) {
+	testenv.MustHaveExternalNetwork(t)
+
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("skipping because git binary not found")
 	}
@@ -1727,6 +1729,8 @@ func TestMissingGOPATHGetWarnsIfNotExists(t *testing.T) {
 
 // Test go get missing GOPATH causes no warning if directory exists.
 func TestMissingGOPATHGetDoesntWarnIfExists(t *testing.T) {
+	testenv.MustHaveExternalNetwork(t)
+
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("skipping because git binary not found")
 	}
@@ -1757,6 +1761,8 @@ func TestMissingGOPATHGetDoesntWarnIfExists(t *testing.T) {
 
 // Test go get missing GOPATH fails if pointed file is not a directory.
 func TestMissingGOPATHGetFailsIfItsNotDirectory(t *testing.T) {
+	testenv.MustHaveExternalNetwork(t)
+
 	tg := testgo(t)
 	defer tg.cleanup()
 
@@ -2067,9 +2073,7 @@ func TestCaseCollisions(t *testing.T) {
 
 // Issue 8181.
 func TestGoGetDashTIssue8181(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping test that uses network in short mode")
-	}
+	testenv.MustHaveExternalNetwork(t)
 
 	tg := testgo(t)
 	defer tg.cleanup()
@@ -2083,9 +2087,7 @@ func TestGoGetDashTIssue8181(t *testing.T) {
 
 func TestIssue11307(t *testing.T) {
 	// go get -u was not working except in checkout directory
-	if testing.Short() {
-		t.Skip("skipping test that uses network in short mode")
-	}
+	testenv.MustHaveExternalNetwork(t)
 
 	tg := testgo(t)
 	defer tg.cleanup()
@@ -3715,4 +3717,13 @@ func TestLinkXImportPathEscape(t *testing.T) {
 		tg.t.Log(string(out))
 		tg.t.Fatal(`incorrect output: expected "linkXworked\n"`)
 	}
+}
+
+// Issue 18044.
+func TestLdBindNow(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.parallel()
+	tg.setenv("LD_BIND_NOW", "1")
+	tg.run("help")
 }

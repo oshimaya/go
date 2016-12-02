@@ -313,8 +313,8 @@ type Request struct {
 // For outgoing client requests, the context controls cancelation.
 //
 // For incoming server requests, the context is canceled when the
-// ServeHTTP method returns. For its associated values, see
-// ServerContextKey and LocalAddrContextKey.
+// client's connection closes, the request is canceled (with HTTP/2),
+// or when the ServeHTTP method returns.
 func (r *Request) Context() context.Context {
 	if r.ctx != nil {
 		return r.ctx
@@ -726,11 +726,11 @@ func validMethod(method string) bool {
 // methods Do, Post, and PostForm, and Transport.RoundTrip.
 //
 // NewRequest returns a Request suitable for use with Client.Do or
-// Transport.RoundTrip.
-// To create a request for use with testing a Server Handler use either
-// ReadRequest or manually update the Request fields. See the Request
-// type's documentation for the difference between inbound and outbound
-// request fields.
+// Transport.RoundTrip. To create a request for use with testing a
+// Server Handler, either use the NewRequest function in the
+// net/http/httptest package, use ReadRequest, or manually update the
+// Request fields. See the Request type's documentation for the
+// difference between inbound and outbound request fields.
 func NewRequest(method, urlStr string, body io.Reader) (*Request, error) {
 	if method == "" {
 		// We document that "" means "GET" for Request.Method, and people have
@@ -785,7 +785,11 @@ func NewRequest(method, urlStr string, body io.Reader) (*Request, error) {
 				return ioutil.NopCloser(&r), nil
 			}
 		default:
-			req.ContentLength = -1 // unknown
+			// This is where we'd set it to -1 (at least
+			// if body != NoBody) to mean unknown, but
+			// that broke people during the Go 1.8 testing
+			// period. People depend on it being 0 I
+			// guess. Maybe retry later. See Issue 18117.
 		}
 		// For client requests, Request.ContentLength of 0
 		// means either actually 0, or unknown. The only way
@@ -795,7 +799,7 @@ func NewRequest(method, urlStr string, body io.Reader) (*Request, error) {
 		// so we use a well-known ReadCloser variable instead
 		// and have the http package also treat that sentinel
 		// variable to mean explicitly zero.
-		if req.ContentLength == 0 {
+		if req.GetBody != nil && req.ContentLength == 0 {
 			req.Body = NoBody
 			req.GetBody = func() (io.ReadCloser, error) { return NoBody, nil }
 		}

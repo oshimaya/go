@@ -69,13 +69,15 @@ func Drivers() []string {
 	return list
 }
 
-// NamedParam may be passed into query parameter arguments to associate
-// a named placeholder with a value.
-type NamedParam struct {
+// A NamedArg used as an argument to Query or Exec
+// binds to the corresponding named parameter in the SQL statement.
+type NamedArg struct {
 	_Named_Fields_Required struct{}
 
 	// Name of the parameter placeholder. If empty the ordinal position in the
 	// argument list will be used.
+	//
+	// Name must omit any symbol prefix.
 	Name string
 
 	// Value of the parameter. It may be assigned the same value types as
@@ -83,13 +85,24 @@ type NamedParam struct {
 	Value interface{}
 }
 
-// Param provides a more concise way to create NamedParam values.
-func Param(name string, value interface{}) NamedParam {
+// Named provides a more concise way to create NamedArg values.
+//
+// Example usage:
+//
+//     db.ExecContext(ctx, `
+//         delete from Invoice
+//         where
+//             TimeCreated < @end
+//             and TimeCreated >= @start;`,
+//         sql.Named("start", startTime),
+//         sql.Named("end", endTime),
+//     )
+func Named(name string, value interface{}) NamedArg {
 	// This method exists because the go1compat promise
 	// doesn't guarantee that structs don't grow more fields,
 	// so unkeyed struct literals are a vet error. Thus, we don't
-	// want to encourage sql.NamedParam{name, value}.
-	return NamedParam{Name: name, Value: value}
+	// want to allow sql.NamedArg{name, value}.
+	return NamedArg{Name: name, Value: value}
 }
 
 // IsolationLevel is the transaction isolation level stored in Context.
@@ -875,9 +888,11 @@ func (db *DB) conn(ctx context.Context, strategy connReuseStrategy) (*driverConn
 		return nil, errDBClosed
 	}
 	// Check if the context is expired.
-	if err := ctx.Err(); err != nil {
+	select {
+	default:
+	case <-ctx.Done():
 		db.mu.Unlock()
-		return nil, err
+		return nil, ctx.Err()
 	}
 	lifetime := db.maxLifetime
 
@@ -1288,6 +1303,11 @@ func (db *DB) QueryRow(query string, args ...interface{}) *Row {
 
 // BeginContext starts a transaction.
 //
+// The provided context is used until the transaction is committed or rolled back.
+// If the context is canceled, the sql package will roll back
+// the transaction. Tx.Commit will return an error if the context provided to
+// BeginContext is canceled.
+//
 // An isolation level may be set by setting the value in the context
 // before calling this. If a non-default isolation level is used
 // that the driver doesn't support an error will be returned. Different drivers
@@ -1335,15 +1355,18 @@ func (db *DB) begin(ctx context.Context, strategy connReuseStrategy) (tx *Tx, er
 		dc:     dc,
 		txi:    txi,
 		cancel: cancel,
+		ctx:    ctx,
 	}
-	go func() {
+	go func(tx *Tx) {
 		select {
-		case <-ctx.Done():
-			if !tx.done {
-				tx.Rollback()
+		case <-tx.ctx.Done():
+			if !tx.isDone() {
+				// Discard and close the connection used to ensure the transaction
+				// is closed and the resources are released.
+				tx.rollback(true)
 			}
 		}
-	}()
+	}(tx)
 	return tx, nil
 }
 
@@ -1370,10 +1393,11 @@ type Tx struct {
 	dc  *driverConn
 	txi driver.Tx
 
-	// done transitions from false to true exactly once, on Commit
+	// done transitions from 0 to 1 exactly once, on Commit
 	// or Rollback. once done, all operations fail with
 	// ErrTxDone.
-	done bool
+	// Use atomic operations on value when checking value.
+	done int32
 
 	// All Stmts prepared for this transaction. These will be closed after the
 	// transaction has been committed or rolled back.
@@ -1384,6 +1408,13 @@ type Tx struct {
 
 	// cancel is called after done transitions from false to true.
 	cancel func()
+
+	// ctx lives for the life of the transaction.
+	ctx context.Context
+}
+
+func (tx *Tx) isDone() bool {
+	return atomic.LoadInt32(&tx.done) != 0
 }
 
 // ErrTxDone is returned by any operation that is performed on a transaction
@@ -1391,10 +1422,9 @@ type Tx struct {
 var ErrTxDone = errors.New("sql: Transaction has already been committed or rolled back")
 
 func (tx *Tx) close(err error) {
-	if tx.done {
+	if !atomic.CompareAndSwapInt32(&tx.done, 0, 1) {
 		panic("double close") // internal error
 	}
-	tx.done = true
 	tx.db.putConn(tx.dc, err)
 	tx.cancel()
 	tx.dc = nil
@@ -1402,7 +1432,7 @@ func (tx *Tx) close(err error) {
 }
 
 func (tx *Tx) grabConn(ctx context.Context) (*driverConn, error) {
-	if tx.done {
+	if tx.isDone() {
 		return nil, ErrTxDone
 	}
 	return tx.dc, nil
@@ -1419,8 +1449,13 @@ func (tx *Tx) closePrepared() {
 
 // Commit commits the transaction.
 func (tx *Tx) Commit() error {
-	if tx.done {
+	if tx.isDone() {
 		return ErrTxDone
+	}
+	select {
+	default:
+	case <-tx.ctx.Done():
+		return tx.ctx.Err()
 	}
 	var err error
 	withLock(tx.dc, func() {
@@ -1433,9 +1468,10 @@ func (tx *Tx) Commit() error {
 	return err
 }
 
-// Rollback aborts the transaction.
-func (tx *Tx) Rollback() error {
-	if tx.done {
+// rollback aborts the transaction and optionally forces the pool to discard
+// the connection.
+func (tx *Tx) rollback(discardConn bool) error {
+	if tx.isDone() {
 		return ErrTxDone
 	}
 	var err error
@@ -1445,8 +1481,16 @@ func (tx *Tx) Rollback() error {
 	if err != driver.ErrBadConn {
 		tx.closePrepared()
 	}
+	if discardConn {
+		err = driver.ErrBadConn
+	}
 	tx.close(err)
 	return err
+}
+
+// Rollback aborts the transaction.
+func (tx *Tx) Rollback() error {
+	return tx.rollback(false)
 }
 
 // Prepare creates a prepared statement for use within a transaction.
@@ -1480,7 +1524,7 @@ func (tx *Tx) PrepareContext(ctx context.Context, query string) (*Stmt, error) {
 
 	var si driver.Stmt
 	withLock(dc, func() {
-		si, err = dc.ci.Prepare(query)
+		si, err = ctxDriverPrepare(ctx, dc.ci, query)
 	})
 	if err != nil {
 		return nil, err
@@ -1538,7 +1582,7 @@ func (tx *Tx) StmtContext(ctx context.Context, stmt *Stmt) *Stmt {
 	}
 	var si driver.Stmt
 	withLock(dc, func() {
-		si, err = dc.ci.Prepare(stmt.query)
+		si, err = ctxDriverPrepare(ctx, dc.ci, stmt.query)
 	})
 	txs := &Stmt{
 		db: tx.db,
