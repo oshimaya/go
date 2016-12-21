@@ -7,6 +7,7 @@ package runtime_test
 import (
 	"bytes"
 	"fmt"
+	"go/build"
 	"internal/testenv"
 	"io/ioutil"
 	"os"
@@ -67,7 +68,6 @@ func checkGdbPython(t *testing.T) {
 }
 
 const helloSource = `
-package main
 import "fmt"
 var gslice []string
 func main() {
@@ -85,6 +85,21 @@ func main() {
 `
 
 func TestGdbPython(t *testing.T) {
+	testGdbPython(t, false)
+}
+
+func TestGdbPythonCgo(t *testing.T) {
+	testGdbPython(t, true)
+}
+
+func testGdbPython(t *testing.T, cgo bool) {
+	if runtime.GOARCH == "mips64" {
+		testenv.SkipFlaky(t, 18173)
+	}
+	if cgo && !build.Default.CgoEnabled {
+		t.Skip("skipping because cgo is not enabled")
+	}
+
 	t.Parallel()
 	checkGdbEnvironment(t)
 	checkGdbVersion(t)
@@ -96,8 +111,15 @@ func TestGdbPython(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
+	var buf bytes.Buffer
+	buf.WriteString("package main\n")
+	if cgo {
+		buf.WriteString(`import "C"` + "\n")
+	}
+	buf.WriteString(helloSource)
+
 	src := filepath.Join(dir, "main.go")
-	err = ioutil.WriteFile(src, []byte(helloSource), 0644)
+	err = ioutil.WriteFile(src, buf.Bytes(), 0644)
 	if err != nil {
 		t.Fatalf("failed to create file: %v", err)
 	}
@@ -220,13 +242,16 @@ func main() {
 // TestGdbBacktrace tests that gdb can unwind the stack correctly
 // using only the DWARF debug info.
 func TestGdbBacktrace(t *testing.T) {
-	t.Parallel()
-	checkGdbEnvironment(t)
-	checkGdbVersion(t)
-
 	if runtime.GOOS == "netbsd" {
 		testenv.SkipFlaky(t, 15603)
 	}
+	if runtime.GOARCH == "mips64" {
+		testenv.SkipFlaky(t, 18173)
+	}
+
+	t.Parallel()
+	checkGdbEnvironment(t)
+	checkGdbVersion(t)
 
 	dir, err := ioutil.TempDir("", "go-build")
 	if err != nil {
@@ -294,6 +319,10 @@ func main() {
 // TestGdbAutotmpTypes ensures that types of autotmp variables appear in .debug_info
 // See bug #17830.
 func TestGdbAutotmpTypes(t *testing.T) {
+	if runtime.GOARCH == "mips64" {
+		testenv.SkipFlaky(t, 18173)
+	}
+
 	t.Parallel()
 	checkGdbEnvironment(t)
 	checkGdbVersion(t)

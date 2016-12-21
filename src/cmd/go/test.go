@@ -13,7 +13,6 @@ import (
 	"go/doc"
 	"go/parser"
 	"go/token"
-	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -201,7 +200,7 @@ const testFlag2 = `
 	    text from Log and Logf calls even if the test succeeds.
 
 The following flags are also recognized by 'go test' and can be used to
-profile the tests during execution::
+profile the tests during execution:
 
 	-benchmem
 	    Print memory allocation statistics for benchmarks.
@@ -244,7 +243,7 @@ profile the tests during execution::
 	    Writes test binary as -c would.
 
 	-mutexprofilefraction n
- 	    Sample 1 in n stack traces of goroutines holding a
+	    Sample 1 in n stack traces of goroutines holding a
 	    contended mutex.
 
 	-outputdir directory
@@ -335,7 +334,8 @@ If the last comment in the function starts with "Output:" then the output
 is compared exactly against the comment (see examples below). If the last
 comment begins with "Unordered output:" then the output is compared to the
 comment, however the order of the lines is ignored. An example with no such
-comment, or with no text after "Output:" is compiled but not executed.
+comment is compiled but not executed. An example with no text after
+"Output:" is compiled, executed, and expected to produce no output.
 
 Godoc displays the body of ExampleXXX to demonstrate the use
 of the function, constant, or variable XXX.  An example of a method M with
@@ -894,8 +894,12 @@ func (b *builder) test(p *Package) (buildAction, runAction, printAction *action,
 
 	if buildContext.GOOS == "darwin" {
 		if buildContext.GOARCH == "arm" || buildContext.GOARCH == "arm64" {
-			t.NeedCgo = true
+			t.IsIOS = true
+			t.NeedOS = true
 		}
+	}
+	if t.TestMain == nil {
+		t.NeedOS = true
 	}
 
 	for _, cp := range pmain.imports {
@@ -1122,12 +1126,8 @@ func (b *builder) runTest(a *action) error {
 	cmd.Env = envForDir(cmd.Dir, origEnv)
 	var buf bytes.Buffer
 	if testStreamOutput {
-		// The only way to keep the ordering of the messages and still
-		// intercept its contents. os/exec will share the same Pipe for
-		// both Stdout and Stderr when running the test program.
-		mw := io.MultiWriter(os.Stdout, &buf)
-		cmd.Stdout = mw
-		cmd.Stderr = mw
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
 	} else {
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
@@ -1192,7 +1192,7 @@ func (b *builder) runTest(a *action) error {
 	t := fmt.Sprintf("%.3fs", time.Since(t0).Seconds())
 	if err == nil {
 		norun := ""
-		if testShowPass && !testStreamOutput {
+		if testShowPass {
 			a.testOutput.Write(out)
 		}
 		if bytes.HasPrefix(out, noTestsToRun[1:]) || bytes.Contains(out, noTestsToRun) {
@@ -1204,9 +1204,7 @@ func (b *builder) runTest(a *action) error {
 
 	setExitStatus(1)
 	if len(out) > 0 {
-		if !testStreamOutput {
-			a.testOutput.Write(out)
-		}
+		a.testOutput.Write(out)
 		// assume printing the test binary's exit status is superfluous
 	} else {
 		fmt.Fprintf(a.testOutput, "%s\n", err)
@@ -1349,7 +1347,8 @@ type testFuncs struct {
 	NeedTest    bool
 	ImportXtest bool
 	NeedXtest   bool
-	NeedCgo     bool
+	NeedOS      bool
+	IsIOS       bool
 	Cover       []coverInfo
 }
 
@@ -1450,7 +1449,7 @@ var testmainTmpl = template.Must(template.New("main").Parse(`
 package main
 
 import (
-{{if not .TestMain}}
+{{if .NeedOS}}
 	"os"
 {{end}}
 	"testing"
@@ -1466,8 +1465,10 @@ import (
 	_cover{{$i}} {{$p.Package.ImportPath | printf "%q"}}
 {{end}}
 
-{{if .NeedCgo}}
+{{if .IsIOS}}
+	"os/signal"
 	_ "runtime/cgo"
+	"syscall"
 {{end}}
 )
 
@@ -1529,6 +1530,32 @@ func coverRegisterFile(fileName string, counter []uint32, pos []uint32, numStmts
 {{end}}
 
 func main() {
+{{if .IsIOS}}
+	// Send a SIGUSR2, which will be intercepted by LLDB to
+	// tell the test harness that installation was successful.
+	// See misc/ios/go_darwin_arm_exec.go.
+	signal.Notify(make(chan os.Signal), syscall.SIGUSR2)
+	syscall.Kill(0, syscall.SIGUSR2)
+	signal.Reset(syscall.SIGUSR2)
+
+	// The first argument supplied to an iOS test is an offset
+	// suffix for the current working directory.
+	// Process it here, and remove it from os.Args.
+	const hdr = "cwdSuffix="
+	if len(os.Args) < 2 || len(os.Args[1]) <= len(hdr) || os.Args[1][:len(hdr)] != hdr {
+		panic("iOS test not passed a working directory suffix")
+	}
+	suffix := os.Args[1][len(hdr):]
+	dir, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Chdir(dir + "/" + suffix); err != nil {
+		panic(err)
+	}
+	os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+{{end}}
+
 {{if .CoverEnabled}}
 	testing.RegisterCover(testing.Cover{
 		Mode: {{printf "%q" .CoverMode}},

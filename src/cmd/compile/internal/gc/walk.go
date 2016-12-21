@@ -694,6 +694,10 @@ opswitch:
 			break
 		}
 
+		if !instrumenting && iszero(n.Right) && !needwritebarrier(n.Left, n.Right) {
+			break
+		}
+
 		switch n.Right.Op {
 		default:
 			n.Right = walkexpr(n.Right, init)
@@ -3113,12 +3117,12 @@ func walkcompare(n *Node, init *Nodes) *Node {
 		cmpr = cmpr.Left
 	}
 
-	if !islvalue(cmpl) || !islvalue(cmpr) {
-		Fatalf("arguments of comparison must be lvalues - %v %v", cmpl, cmpr)
-	}
-
 	// Chose not to inline. Call equality function directly.
 	if !inline {
+		if !islvalue(cmpl) || !islvalue(cmpr) {
+			Fatalf("arguments of comparison must be lvalues - %v %v", cmpl, cmpr)
+		}
+
 		// eq algs take pointers
 		pl := temp(ptrto(t))
 		al := nod(OAS, pl, nod(OADDR, cmpl, nil))

@@ -6,7 +6,7 @@ package testing
 
 import (
 	"bytes"
-	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -278,33 +278,28 @@ func TestTRun(t *T) {
 		ok:     true,
 		maxPar: 4,
 		f: func(t *T) {
-			// t.Parallel doesn't work in the pseudo-T we start with:
-			// it leaks a goroutine.
-			// Call t.Run to get a real one.
-			t.Run("X", func(t *T) {
-				t.Parallel()
-				for i := 0; i < 12; i++ {
-					t.Run("a", func(t *T) {
-						t.Parallel()
-						time.Sleep(time.Nanosecond)
-						for i := 0; i < 12; i++ {
-							t.Run("b", func(t *T) {
-								time.Sleep(time.Nanosecond)
-								for i := 0; i < 12; i++ {
-									t.Run("c", func(t *T) {
-										t.Parallel()
-										time.Sleep(time.Nanosecond)
-										t.Run("d1", func(t *T) {})
-										t.Run("d2", func(t *T) {})
-										t.Run("d3", func(t *T) {})
-										t.Run("d4", func(t *T) {})
-									})
-								}
-							})
-						}
-					})
-				}
-			})
+			t.Parallel()
+			for i := 0; i < 12; i++ {
+				t.Run("a", func(t *T) {
+					t.Parallel()
+					time.Sleep(time.Nanosecond)
+					for i := 0; i < 12; i++ {
+						t.Run("b", func(t *T) {
+							time.Sleep(time.Nanosecond)
+							for i := 0; i < 12; i++ {
+								t.Run("c", func(t *T) {
+									t.Parallel()
+									time.Sleep(time.Nanosecond)
+									t.Run("d1", func(t *T) {})
+									t.Run("d2", func(t *T) {})
+									t.Run("d3", func(t *T) {})
+									t.Run("d4", func(t *T) {})
+								})
+							}
+						})
+					}
+				})
+			}
 		},
 	}, {
 		desc:   "skip output",
@@ -347,7 +342,6 @@ func TestTRun(t *T) {
 			},
 			context: ctx,
 		}
-		root.ctx, root.cancel = context.WithCancel(context.Background())
 		ok := root.Run(tc.desc, tc.f)
 		ctx.release()
 
@@ -364,7 +358,7 @@ func TestTRun(t *T) {
 		want := strings.TrimSpace(tc.output)
 		re := makeRegexp(want)
 		if ok, err := regexp.MatchString(re, got); !ok || err != nil {
-			t.Errorf("%s:ouput:\ngot:\n%s\nwant:\n%s", tc.desc, got, want)
+			t.Errorf("%s:output:\ngot:\n%s\nwant:\n%s", tc.desc, got, want)
 		}
 	}
 }
@@ -505,7 +499,7 @@ func TestBRun(t *T) {
 		want := strings.TrimSpace(tc.output)
 		re := makeRegexp(want)
 		if ok, err := regexp.MatchString(re, got); !ok || err != nil {
-			t.Errorf("%s:ouput:\ngot:\n%s\nwant:\n%s", tc.desc, got, want)
+			t.Errorf("%s:output:\ngot:\n%s\nwant:\n%s", tc.desc, got, want)
 		}
 	}
 }
@@ -521,4 +515,20 @@ func TestBenchmarkOutput(t *T) {
 	// normal case.
 	Benchmark(func(b *B) { b.Error("do not print this output") })
 	Benchmark(func(b *B) {})
+}
+
+func TestParallelSub(t *T) {
+	c := make(chan int)
+	block := make(chan int)
+	for i := 0; i < 10; i++ {
+		go func(i int) {
+			<-block
+			t.Run(fmt.Sprint(i), func(t *T) {})
+			c <- 1
+		}(i)
+	}
+	close(block)
+	for i := 0; i < 10; i++ {
+		<-c
+	}
 }

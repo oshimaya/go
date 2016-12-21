@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -359,25 +360,25 @@ func TestPostRedirects(t *testing.T) {
 	wantSegments := []string{
 		`POST / "first"`,
 		`POST /?code=301&next=302 "c301"`,
-		`GET /?code=302 "c301"`,
-		`GET / "c301"`,
+		`GET /?code=302 ""`,
+		`GET / ""`,
 		`POST /?code=302&next=302 "c302"`,
-		`GET /?code=302 "c302"`,
-		`GET / "c302"`,
+		`GET /?code=302 ""`,
+		`GET / ""`,
 		`POST /?code=303&next=301 "c303wc301"`,
-		`GET /?code=301 "c303wc301"`,
-		`GET / "c303wc301"`,
+		`GET /?code=301 ""`,
+		`GET / ""`,
 		`POST /?code=304 "c304"`,
 		`POST /?code=305 "c305"`,
 		`POST /?code=307&next=303,308,302 "c307"`,
 		`POST /?code=303&next=308,302 "c307"`,
-		`GET /?code=308&next=302 "c307"`,
+		`GET /?code=308&next=302 ""`,
 		`GET /?code=302 "c307"`,
-		`GET / "c307"`,
+		`GET / ""`,
 		`POST /?code=308&next=302,301 "c308"`,
 		`POST /?code=302&next=301 "c308"`,
-		`GET /?code=301 "c308"`,
-		`GET / "c308"`,
+		`GET /?code=301 ""`,
+		`GET / ""`,
 		`POST /?code=404 "c404"`,
 	}
 	want := strings.Join(wantSegments, "\n")
@@ -398,20 +399,20 @@ func TestDeleteRedirects(t *testing.T) {
 	wantSegments := []string{
 		`DELETE / "first"`,
 		`DELETE /?code=301&next=302,308 "c301"`,
-		`GET /?code=302&next=308 "c301"`,
-		`GET /?code=308 "c301"`,
+		`GET /?code=302&next=308 ""`,
+		`GET /?code=308 ""`,
 		`GET / "c301"`,
 		`DELETE /?code=302&next=302 "c302"`,
-		`GET /?code=302 "c302"`,
-		`GET / "c302"`,
+		`GET /?code=302 ""`,
+		`GET / ""`,
 		`DELETE /?code=303 "c303"`,
-		`GET / "c303"`,
+		`GET / ""`,
 		`DELETE /?code=307&next=301,308,303,302,304 "c307"`,
 		`DELETE /?code=301&next=308,303,302,304 "c307"`,
-		`GET /?code=308&next=303,302,304 "c307"`,
+		`GET /?code=308&next=303,302,304 ""`,
 		`GET /?code=303&next=302,304 "c307"`,
-		`GET /?code=302&next=304 "c307"`,
-		`GET /?code=304 "c307"`,
+		`GET /?code=302&next=304 ""`,
+		`GET /?code=304 ""`,
 		`DELETE /?code=308&next=307 "c308"`,
 		`DELETE /?code=307 "c308"`,
 		`DELETE / "c308"`,
@@ -431,7 +432,11 @@ func testRedirectsByMethod(t *testing.T, method string, table []redirectTest, wa
 	ts = httptest.NewServer(HandlerFunc(func(w ResponseWriter, r *Request) {
 		log.Lock()
 		slurp, _ := ioutil.ReadAll(r.Body)
-		fmt.Fprintf(&log.Buffer, "%s %s %q\n", r.Method, r.RequestURI, slurp)
+		fmt.Fprintf(&log.Buffer, "%s %s %q", r.Method, r.RequestURI, slurp)
+		if cl := r.Header.Get("Content-Length"); r.Method == "GET" && len(slurp) == 0 && (r.ContentLength != 0 || cl != "") {
+			fmt.Fprintf(&log.Buffer, " (but with body=%T, content-length = %v, %q)", r.Body, r.ContentLength, cl)
+		}
+		log.WriteByte('\n')
 		log.Unlock()
 		urlQuery := r.URL.Query()
 		if v := urlQuery.Get("code"); v != "" {
@@ -474,7 +479,24 @@ func testRedirectsByMethod(t *testing.T, method string, table []redirectTest, wa
 	want = strings.TrimSpace(want)
 
 	if got != want {
-		t.Errorf("Log differs.\n Got:\n%s\nWant:\n%s\n", got, want)
+		got, want, lines := removeCommonLines(got, want)
+		t.Errorf("Log differs after %d common lines.\n\nGot:\n%s\n\nWant:\n%s\n", lines, got, want)
+	}
+}
+
+func removeCommonLines(a, b string) (asuffix, bsuffix string, commonLines int) {
+	for {
+		nl := strings.IndexByte(a, '\n')
+		if nl < 0 {
+			return a, b, commonLines
+		}
+		line := a[:nl+1]
+		if !strings.HasPrefix(b, line) {
+			return a, b, commonLines
+		}
+		commonLines++
+		a = a[len(line):]
+		b = b[len(line):]
 	}
 }
 
@@ -1664,9 +1686,9 @@ func TestClientRedirectTypes(t *testing.T) {
 		3: {method: "POST", serverStatus: 307, wantMethod: "POST"},
 		4: {method: "POST", serverStatus: 308, wantMethod: "POST"},
 
-		5: {method: "HEAD", serverStatus: 301, wantMethod: "GET"},
-		6: {method: "HEAD", serverStatus: 302, wantMethod: "GET"},
-		7: {method: "HEAD", serverStatus: 303, wantMethod: "GET"},
+		5: {method: "HEAD", serverStatus: 301, wantMethod: "HEAD"},
+		6: {method: "HEAD", serverStatus: 302, wantMethod: "HEAD"},
+		7: {method: "HEAD", serverStatus: 303, wantMethod: "HEAD"},
 		8: {method: "HEAD", serverStatus: 307, wantMethod: "HEAD"},
 		9: {method: "HEAD", serverStatus: 308, wantMethod: "HEAD"},
 
@@ -1736,5 +1758,78 @@ func TestClientRedirectTypes(t *testing.T) {
 		}
 
 		res.Body.Close()
+	}
+}
+
+// issue18239Body is an io.ReadCloser for TestTransportBodyReadError.
+// Its Read returns readErr and increments *readCalls atomically.
+// Its Close returns nil and increments *closeCalls atomically.
+type issue18239Body struct {
+	readCalls  *int32
+	closeCalls *int32
+	readErr    error
+}
+
+func (b issue18239Body) Read([]byte) (int, error) {
+	atomic.AddInt32(b.readCalls, 1)
+	return 0, b.readErr
+}
+
+func (b issue18239Body) Close() error {
+	atomic.AddInt32(b.closeCalls, 1)
+	return nil
+}
+
+// Issue 18239: make sure the Transport doesn't retry requests with bodies.
+// (Especially if Request.GetBody is not defined.)
+func TestTransportBodyReadError(t *testing.T) {
+	setParallel(t)
+	defer afterTest(t)
+	ts := httptest.NewServer(HandlerFunc(func(w ResponseWriter, r *Request) {
+		if r.URL.Path == "/ping" {
+			return
+		}
+		buf := make([]byte, 1)
+		n, err := r.Body.Read(buf)
+		w.Header().Set("X-Body-Read", fmt.Sprintf("%v, %v", n, err))
+	}))
+	defer ts.Close()
+	tr := &Transport{}
+	defer tr.CloseIdleConnections()
+	c := &Client{Transport: tr}
+
+	// Do one initial successful request to create an idle TCP connection
+	// for the subsequent request to reuse. (The Transport only retries
+	// requests on reused connections.)
+	res, err := c.Get(ts.URL + "/ping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	var readCallsAtomic int32
+	var closeCallsAtomic int32 // atomic
+	someErr := errors.New("some body read error")
+	body := issue18239Body{&readCallsAtomic, &closeCallsAtomic, someErr}
+
+	req, err := NewRequest("POST", ts.URL, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tr.RoundTrip(req)
+	if err != someErr {
+		t.Errorf("Got error: %v; want Request.Body read error: %v", err, someErr)
+	}
+
+	// And verify that our Body wasn't used multiple times, which
+	// would indicate retries. (as it buggily was during part of
+	// Go 1.8's dev cycle)
+	readCalls := atomic.LoadInt32(&readCallsAtomic)
+	closeCalls := atomic.LoadInt32(&closeCallsAtomic)
+	if readCalls != 1 {
+		t.Errorf("read calls = %d; want 1", readCalls)
+	}
+	if closeCalls != 1 {
+		t.Errorf("close calls = %d; want 1", closeCalls)
 	}
 }
