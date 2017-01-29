@@ -429,7 +429,7 @@ func setErrorPos(p *Package, importPos []token.Position) *Package {
 func cleanImport(path string) string {
 	orig := path
 	path = pathpkg.Clean(path)
-	if strings.HasPrefix(orig, "./") && path != ".." && path != "." && !strings.HasPrefix(path, "../") {
+	if strings.HasPrefix(orig, "./") && path != ".." && !strings.HasPrefix(path, "../") {
 		path = "./" + path
 	}
 	return path
@@ -954,6 +954,10 @@ func (p *Package) load(stk *importStack, bp *build.Package, err error) *Package 
 		// On ARM with GOARM=5, everything depends on math for the link.
 		if p.Name == "main" && goarch == "arm" {
 			importPaths = append(importPaths, "math")
+		}
+		// In coverage atomic mode everything depends on sync/atomic.
+		if testCoverMode == "atomic" && (!p.Standard || (p.ImportPath != "runtime/cgo" && p.ImportPath != "runtime/race" && p.ImportPath != "sync/atomic")) {
+			importPaths = append(importPaths, "sync/atomic")
 		}
 	}
 

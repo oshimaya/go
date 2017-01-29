@@ -103,7 +103,7 @@ func archinit(ctxt *ld.Link) {
 			*ld.FlagDataAddr = 0
 		}
 		if *ld.FlagRound == -1 {
-			*ld.FlagRound = 4096
+			*ld.FlagRound = 0x10000
 		}
 
 	case obj.Hnetbsd:

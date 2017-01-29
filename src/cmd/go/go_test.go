@@ -1885,6 +1885,26 @@ func TestGoTestCpuprofileDashOControlsBinaryLocation(t *testing.T) {
 	tg.wantExecutable("myerrors.test"+exeSuffix, "go test -cpuprofile -o myerrors.test did not create myerrors.test")
 }
 
+func TestGoTestMutexprofileLeavesBinaryBehind(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	// TODO: tg.parallel()
+	tg.makeTempdir()
+	tg.cd(tg.path("."))
+	tg.run("test", "-mutexprofile", "errors.prof", "errors")
+	tg.wantExecutable("errors.test"+exeSuffix, "go test -mutexprofile did not create errors.test")
+}
+
+func TestGoTestMutexprofileDashOControlsBinaryLocation(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	// TODO: tg.parallel()
+	tg.makeTempdir()
+	tg.cd(tg.path("."))
+	tg.run("test", "-mutexprofile", "errors.prof", "-o", "myerrors.test"+exeSuffix, "errors")
+	tg.wantExecutable("myerrors.test"+exeSuffix, "go test -mutexprofile -o myerrors.test did not create myerrors.test")
+}
+
 func TestGoTestDashCDashOControlsBinaryLocation(t *testing.T) {
 	tg := testgo(t)
 	defer tg.cleanup()
@@ -2245,6 +2265,28 @@ func TestCoverageImportMainLoop(t *testing.T) {
 	tg.grepStderr("not an importable package", "did not detect import main")
 	tg.runFail("test", "-cover", "importmain/test")
 	tg.grepStderr("not an importable package", "did not detect import main")
+}
+
+func TestTestEmpty(t *testing.T) {
+	if !canRace {
+		t.Skip("no race detector")
+	}
+
+	wd, _ := os.Getwd()
+	testdata := filepath.Join(wd, "testdata")
+
+	for _, dir := range []string{"pkg", "test", "xtest", "pkgtest", "pkgxtest", "pkgtestxtest", "testxtest"} {
+		t.Run(dir, func(t *testing.T) {
+			tg := testgo(t)
+			defer tg.cleanup()
+			tg.setenv("GOPATH", testdata)
+			tg.cd(filepath.Join(testdata, "src/empty/"+dir))
+			tg.run("test", "-cover", "-coverpkg=.", "-race")
+		})
+		if testing.Short() {
+			break
+		}
+	}
 }
 
 func TestBuildDryRunWithCgo(t *testing.T) {
@@ -3744,4 +3786,27 @@ GLOBL ·constants<>(SB),8,$8
 	tg.tempFile("go/src/p/p.go", `package p`)
 	tg.setenv("GOPATH", tg.path("go"))
 	tg.run("build", "p")
+}
+
+// Issue 18778.
+func TestDotDotDotOutsideGOPATH(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+
+	tg.tempFile("pkgs/a.go", `package x`)
+	tg.tempFile("pkgs/a_test.go", `package x_test
+import "testing"
+func TestX(t *testing.T) {}`)
+
+	tg.tempFile("pkgs/a/a.go", `package a`)
+	tg.tempFile("pkgs/a/a_test.go", `package a_test
+import "testing"
+func TestA(t *testing.T) {}`)
+
+	tg.cd(tg.path("pkgs"))
+	tg.run("build", "./...")
+	tg.run("test", "./...")
+	tg.run("list", "./...")
+	tg.grepStdout("pkgs$", "expected package not listed")
+	tg.grepStdout("pkgs/a", "expected package not listed")
 }
