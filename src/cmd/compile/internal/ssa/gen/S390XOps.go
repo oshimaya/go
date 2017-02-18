@@ -571,8 +571,10 @@ func init() {
 				inputs:   []regMask{buildReg("R1"), buildReg("R2"), gpsp},
 				clobbers: buildReg("R1 R2"),
 			},
-			clobberFlags: true,
-			typ:          "Mem",
+			clobberFlags:   true,
+			typ:            "Mem",
+			faultOnNilArg0: true,
+			faultOnNilArg1: true,
 		},
 
 		// large clear
@@ -595,8 +597,9 @@ func init() {
 				inputs:   []regMask{buildReg("R1"), gpsp},
 				clobbers: buildReg("R1"),
 			},
-			clobberFlags: true,
-			typ:          "Mem",
+			clobberFlags:   true,
+			typ:            "Mem",
+			faultOnNilArg0: true,
 		},
 	}
 

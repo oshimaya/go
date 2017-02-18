@@ -322,7 +322,7 @@ func TestQueryContext(t *testing.T) {
 	select {
 	case <-ctx.Done():
 		if err := ctx.Err(); err != context.Canceled {
-			t.Fatalf("context err = %v; want context.Canceled")
+			t.Fatalf("context err = %v; want context.Canceled", err)
 		}
 	default:
 		t.Fatalf("context err = nil; want context.Canceled")
@@ -413,7 +413,8 @@ func TestTxContextWait(t *testing.T) {
 	db := newTestDB(t, "people")
 	defer closeDB(t, db)
 
-	ctx, _ := context.WithTimeout(context.Background(), time.Millisecond*15)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel()
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -589,13 +590,13 @@ func TestPoolExhaustOnCancel(t *testing.T) {
 	saturate.Wait()
 
 	// Now cancel the request while it is waiting.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	for i := 0; i < max; i++ {
 		ctxReq, cancelReq := context.WithCancel(ctx)
 		go func() {
-			time.Sleep(time.Millisecond * 100)
+			time.Sleep(100 * time.Millisecond)
 			cancelReq()
 		}()
 		err := db.PingContext(ctxReq)
@@ -1830,8 +1831,8 @@ func TestConnMaxLifetime(t *testing.T) {
 	}
 
 	// Expire first conn
-	offset = time.Second * 11
-	db.SetConnMaxLifetime(time.Second * 10)
+	offset = 11 * time.Second
+	db.SetConnMaxLifetime(10 * time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2750,7 +2751,7 @@ func TestIssue18429(t *testing.T) {
 			if err != nil {
 				return
 			}
-			// This is expected to give a cancel error many, but not all the time.
+			// This is expected to give a cancel error most, but not all the time.
 			// Test failure will happen with a panic or other race condition being
 			// reported.
 			rows, _ := tx.QueryContext(ctx, "WAIT|"+qwait+"|SELECT|people|name|")
@@ -2787,7 +2788,7 @@ func TestIssue18719(t *testing.T) {
 
 		// Wait for the context to cancel and tx to rollback.
 		for tx.isDone() == false {
-			time.Sleep(time.Millisecond * 3)
+			time.Sleep(3 * time.Millisecond)
 		}
 	}
 	defer func() { hookTxGrabConn = nil }()

@@ -2433,6 +2433,16 @@ func TestStripPrefix(t *testing.T) {
 	res.Body.Close()
 }
 
+// https://golang.org/issue/18952.
+func TestStripPrefix_notModifyRequest(t *testing.T) {
+	h := StripPrefix("/foo", NotFoundHandler())
+	req := httptest.NewRequest("GET", "/foo/bar", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if req.URL.Path != "/foo/bar" {
+		t.Errorf("StripPrefix should not modify the provided Request, but it did")
+	}
+}
+
 func TestRequestLimit_h1(t *testing.T) { testRequestLimit(t, h1Mode) }
 func TestRequestLimit_h2(t *testing.T) { testRequestLimit(t, h2Mode) }
 func testRequestLimit(t *testing.T, h2 bool) {
@@ -5310,5 +5320,32 @@ func TestServerHijackGetsBackgroundByte_big(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Error("timeout")
+	}
+}
+
+// Issue 18319: test that the Server validates the request method.
+func TestServerValidatesMethod(t *testing.T) {
+	tests := []struct {
+		method string
+		want   int
+	}{
+		{"GET", 200},
+		{"GE(T", 400},
+	}
+	for _, tt := range tests {
+		conn := &testConn{closec: make(chan bool, 1)}
+		io.WriteString(&conn.readBuf, tt.method+" / HTTP/1.1\r\nHost: foo.example\r\n\r\n")
+
+		ln := &oneConnListener{conn}
+		go Serve(ln, serve(200))
+		<-conn.closec
+		res, err := ReadResponse(bufio.NewReader(&conn.writeBuf), nil)
+		if err != nil {
+			t.Errorf("For %s, ReadResponse: %v", tt.method, res)
+			continue
+		}
+		if res.StatusCode != tt.want {
+			t.Errorf("For %s, Status = %d; want %d", tt.method, res.StatusCode, tt.want)
+		}
 	}
 }
