@@ -91,22 +91,8 @@ func archinit(ctxt *ld.Link) {
 
 	case obj.Hlinux, /* arm elf */
 		obj.Hfreebsd,
+		obj.Hnetbsd,
 		obj.Hopenbsd:
-		*ld.FlagD = false
-		// with dynamic linking
-		ld.Elfinit(ctxt)
-		ld.HEADR = ld.ELFRESERVE
-		if *ld.FlagTextAddr == -1 {
-			*ld.FlagTextAddr = 0x10000 + int64(ld.HEADR)
-		}
-		if *ld.FlagDataAddr == -1 {
-			*ld.FlagDataAddr = 0
-		}
-		if *ld.FlagRound == -1 {
-			*ld.FlagRound = 0x10000
-		}
-
-	case obj.Hnetbsd:
 		*ld.FlagD = false
 		// with dynamic linking
 		ld.Elfinit(ctxt)
