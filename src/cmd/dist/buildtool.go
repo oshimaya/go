@@ -40,6 +40,7 @@ var bootstrapDirs = []string{
 	"cmd/compile/internal/mips",
 	"cmd/compile/internal/mips64",
 	"cmd/compile/internal/ppc64",
+	"cmd/compile/internal/types",
 	"cmd/compile/internal/s390x",
 	"cmd/compile/internal/ssa",
 	"cmd/compile/internal/syntax",
@@ -68,6 +69,7 @@ var bootstrapDirs = []string{
 	"cmd/link/internal/x86",
 	"debug/pe",
 	"math/big",
+	"math/bits",
 }
 
 // File prefixes that are ignored by go/build anyway, and cause

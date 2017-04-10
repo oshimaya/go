@@ -47,12 +47,13 @@ type importer struct {
 // and returns the number of bytes consumed and a reference to the package.
 // If the export data version is not recognized or the format is otherwise
 // compromised, an error is returned.
-func BImportData(fset *token.FileSet, imports map[string]*types.Package, data []byte, path string) (_ int, _ *types.Package, err error) {
+func BImportData(fset *token.FileSet, imports map[string]*types.Package, data []byte, path string) (_ int, pkg *types.Package, err error) {
 	// catch panics and return them as errors
 	defer func() {
 		if e := recover(); e != nil {
 			// The package (filename) causing the problem is added to this
 			// error by a wrapper in the caller (Import in gcimporter.go).
+			// Return a (possibly nil or incomplete) package unchanged (see #16088).
 			err = fmt.Errorf("cannot import, possibly version skew (%v) - reinstall package", e)
 		}
 	}()
@@ -117,7 +118,7 @@ func BImportData(fset *token.FileSet, imports map[string]*types.Package, data []
 	p.typList = append(p.typList, predeclared...)
 
 	// read package data
-	pkg := p.pkg()
+	pkg = p.pkg()
 
 	// read objects of phase 1 only (see cmd/compiler/internal/gc/bexport.go)
 	objcount := 0
@@ -491,12 +492,13 @@ func (p *importer) typ(parent *types.Package) types.Type {
 			p.record(nil)
 		}
 
-		// no embedded interfaces with gc compiler
-		if p.int() != 0 {
-			errorf("unexpected embedded interface")
+		var embeddeds []*types.Named
+		for n := p.int(); n > 0; n-- {
+			p.pos()
+			embeddeds = append(embeddeds, p.typ(parent).(*types.Named))
 		}
 
-		t := types.NewInterface(p.methodList(parent), nil)
+		t := types.NewInterface(p.methodList(parent), embeddeds)
 		if p.trackAllTypes {
 			p.typList[n] = t
 		}

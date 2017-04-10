@@ -76,17 +76,10 @@ func mkfwd(sym *LSym) {
 	}
 }
 
-func Copyp(ctxt *Link, q *Prog) *Prog {
-	p := ctxt.NewProg()
-	*p = *q
-	return p
-}
-
-func Appendp(ctxt *Link, q *Prog) *Prog {
-	p := ctxt.NewProg()
+func Appendp(q *Prog, newprog ProgAlloc) *Prog {
+	p := newprog()
 	p.Link = q.Link
 	q.Link = p
 	p.Pos = q.Pos
-	p.Mode = q.Mode
 	return p
 }

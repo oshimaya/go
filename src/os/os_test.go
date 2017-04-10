@@ -55,15 +55,12 @@ var sysdir = func() *sysDir {
 	case "darwin":
 		switch runtime.GOARCH {
 		case "arm", "arm64":
-			/// At this point the test harness has not had a chance
-			// to move us into the ./src/os directory, so the
-			// current working directory is the root of the app.
 			wd, err := syscall.Getwd()
 			if err != nil {
 				wd = err.Error()
 			}
 			return &sysDir{
-				wd,
+				filepath.Join(wd, "..", ".."),
 				[]string{
 					"ResourceRules.plist",
 					"Info.plist",
@@ -1057,14 +1054,22 @@ func testChtimes(t *testing.T, name string) {
 	}
 	postStat := st
 
-	/* Plan 9, NaCl:
-		Mtime is the time of the last change of content.  Similarly, atime is set whenever the
-	    contents are accessed; also, it is set whenever mtime is set.
-	*/
 	pat := Atime(postStat)
 	pmt := postStat.ModTime()
-	if !pat.Before(at) && runtime.GOOS != "plan9" && runtime.GOOS != "nacl" {
-		t.Errorf("AccessTime didn't go backwards; was=%d, after=%d", at, pat)
+	if !pat.Before(at) {
+		switch runtime.GOOS {
+		case "plan9", "nacl":
+			// Ignore.
+			// Plan 9, NaCl:
+			// Mtime is the time of the last change of
+			// content.  Similarly, atime is set whenever
+			// the contents are accessed; also, it is set
+			// whenever mtime is set.
+		case "netbsd":
+			t.Logf("AccessTime didn't go backwards; was=%d, after=%d (Ignoring. See NetBSD issue golang.org/issue/19293)", at, pat)
+		default:
+			t.Errorf("AccessTime didn't go backwards; was=%d, after=%d", at, pat)
+		}
 	}
 
 	if !pmt.Before(mt) {
@@ -1446,6 +1451,26 @@ func TestReadAtOffset(t *testing.T) {
 	}
 }
 
+// Verify that ReadAt doesn't allow negative offset.
+func TestReadAtNegativeOffset(t *testing.T) {
+	f := newFile("TestReadAtNegativeOffset", t)
+	defer Remove(f.Name())
+	defer f.Close()
+
+	const data = "hello, world\n"
+	io.WriteString(f, data)
+
+	f.Seek(0, 0)
+	b := make([]byte, 5)
+
+	n, err := f.ReadAt(b, -10)
+
+	const wantsub = "negative offset"
+	if !strings.Contains(fmt.Sprint(err), wantsub) || n != 0 {
+		t.Errorf("ReadAt(-10) = %v, %v; want 0, ...%q...", n, err, wantsub)
+	}
+}
+
 func TestWriteAt(t *testing.T) {
 	f := newFile("TestWriteAt", t)
 	defer Remove(f.Name())
@@ -1465,6 +1490,20 @@ func TestWriteAt(t *testing.T) {
 	}
 	if string(b) != "hello, WORLD\n" {
 		t.Fatalf("after write: have %q want %q", string(b), "hello, WORLD\n")
+	}
+}
+
+// Verify that WriteAt doesn't allow negative offset.
+func TestWriteAtNegativeOffset(t *testing.T) {
+	f := newFile("TestWriteAtNegativeOffset", t)
+	defer Remove(f.Name())
+	defer f.Close()
+
+	n, err := f.WriteAt([]byte("WORLD"), -10)
+
+	const wantsub = "negative offset"
+	if !strings.Contains(fmt.Sprint(err), wantsub) || n != 0 {
+		t.Errorf("WriteAt(-10) = %v, %v; want 0, ...%q...", n, err, wantsub)
 	}
 }
 
@@ -1697,6 +1736,43 @@ func TestStatStdin(t *testing.T) {
 	// result will be like "prw-rw-rw"
 	if len(output) < 1 || output[0] != 'p' {
 		t.Fatalf("Child process reports stdin is not pipe '%v'", string(output))
+	}
+}
+
+func TestStatRelativeSymlink(t *testing.T) {
+	testenv.MustHaveSymlink(t)
+
+	tmpdir, err := ioutil.TempDir("", "TestStatRelativeSymlink")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer RemoveAll(tmpdir)
+
+	target := filepath.Join(tmpdir, "target")
+	f, err := Create(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	link := filepath.Join(tmpdir, "link")
+	err = Symlink(filepath.Base(target), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st1, err := Stat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !SameFile(st, st1) {
+		t.Error("Stat doesn't follow relative symlink")
 	}
 }
 

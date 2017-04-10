@@ -28,9 +28,10 @@ import (
 func testEndToEnd(t *testing.T, goarch, file string) {
 	input := filepath.Join("testdata", file+".s")
 	architecture, ctxt := setArch(goarch)
+	architecture.Init(ctxt)
 	lexer := lex.NewLexer(input)
 	parser := NewParser(ctxt, architecture, lexer)
-	pList := obj.Linknewplist(ctxt)
+	pList := new(obj.Plist)
 	var ok bool
 	testOut = new(bytes.Buffer) // The assembler writes test output to this buffer.
 	ctxt.Bso = bufio.NewWriter(os.Stdout)
@@ -179,7 +180,7 @@ Diff:
 		t.Errorf(format, args...)
 		ok = false
 	}
-	obj.FlushplistNoFree(ctxt)
+	obj.Flushplist(ctxt, pList, nil)
 
 	for p := top; p != nil; p = p.Link {
 		if p.As == obj.ATEXT {
@@ -267,7 +268,7 @@ func testErrors(t *testing.T, goarch, file string) {
 	architecture, ctxt := setArch(goarch)
 	lexer := lex.NewLexer(input)
 	parser := NewParser(ctxt, architecture, lexer)
-	pList := obj.Linknewplist(ctxt)
+	pList := new(obj.Plist)
 	var ok bool
 	testOut = new(bytes.Buffer) // The assembler writes test output to this buffer.
 	ctxt.Bso = bufio.NewWriter(os.Stdout)
@@ -283,7 +284,7 @@ func testErrors(t *testing.T, goarch, file string) {
 		errBuf.WriteString(s)
 	}
 	pList.Firstpc, ok = parser.Parse()
-	obj.Flushplist(ctxt)
+	obj.Flushplist(ctxt, pList, nil)
 	if ok && !failed {
 		t.Errorf("asm: %s had no errors", goarch)
 	}

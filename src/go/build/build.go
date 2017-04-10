@@ -155,6 +155,7 @@ func (ctxt *Context) hasSubdir(root, dir string) (rel string, ok bool) {
 	return hasSubdir(rootSym, dirSym)
 }
 
+// hasSubdir reports if dir is within root by performing lexical analysis only.
 func hasSubdir(root, dir string) (rel string, ok bool) {
 	const sep = string(filepath.Separator)
 	root = filepath.Clean(root)
@@ -528,6 +529,10 @@ func (ctxt *Context) Import(path string, srcDir string, mode ImportMode) (*Packa
 		if !ctxt.isAbsPath(path) {
 			p.Dir = ctxt.joinPath(srcDir, path)
 		}
+		if !ctxt.isDir(p.Dir) {
+			// package was not found
+			return p, fmt.Errorf("cannot find package %q in:\n\t%s", path, p.Dir)
+		}
 		// Determine canonical import path, if any.
 		// Exclude results where the import path would include /testdata/.
 		inTestdata := func(sub string) bool {
@@ -717,7 +722,7 @@ Found:
 			p.InvalidGoFiles = append(p.InvalidGoFiles, name)
 		}
 
-		match, data, filename, err := ctxt.matchFile(p.Dir, name, true, allTags, &p.BinaryOnly)
+		match, data, filename, err := ctxt.matchFile(p.Dir, name, allTags, &p.BinaryOnly)
 		if err != nil {
 			badFile(err)
 			continue
@@ -1031,19 +1036,19 @@ func parseWord(data []byte) (word, rest []byte) {
 // MatchFile considers the name of the file and may use ctxt.OpenFile to
 // read some or all of the file's content.
 func (ctxt *Context) MatchFile(dir, name string) (match bool, err error) {
-	match, _, _, err = ctxt.matchFile(dir, name, false, nil, nil)
+	match, _, _, err = ctxt.matchFile(dir, name, nil, nil)
 	return
 }
 
 // matchFile determines whether the file with the given name in the given directory
 // should be included in the package being constructed.
 // It returns the data read from the file.
-// If returnImports is true and name denotes a Go program, matchFile reads
-// until the end of the imports (and returns that data) even though it only
-// considers text until the first non-comment.
+// If name denotes a Go program, matchFile reads until the end of the
+// imports (and returns that data) even though it only considers text
+// until the first non-comment.
 // If allTags is non-nil, matchFile records any encountered build tag
 // by setting allTags[tag] = true.
-func (ctxt *Context) matchFile(dir, name string, returnImports bool, allTags map[string]bool, binaryOnly *bool) (match bool, data []byte, filename string, err error) {
+func (ctxt *Context) matchFile(dir, name string, allTags map[string]bool, binaryOnly *bool) (match bool, data []byte, filename string, err error) {
 	if strings.HasPrefix(name, "_") ||
 		strings.HasPrefix(name, ".") {
 		return

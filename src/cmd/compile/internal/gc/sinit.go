@@ -4,7 +4,10 @@
 
 package gc
 
-import "fmt"
+import (
+	"cmd/compile/internal/types"
+	"fmt"
+)
 
 // static initialization
 const (
@@ -43,7 +46,7 @@ func init1(n *Node, out *[]*Node) {
 	if n.Left != nil && n.Type != nil && n.Left.Op == OTYPE && n.Class == PFUNC {
 		// Methods called as Type.Method(receiver, ...).
 		// Definitions for method expressions are stored in type->nname.
-		init1(n.Type.Nname(), out)
+		init1(asNode(n.Type.FuncType().Nname), out)
 	}
 
 	if n.Op != ONAME {
@@ -214,7 +217,7 @@ func init2(n *Node, out *[]*Node) {
 		init2list(n.Func.Closure.Nbody, out)
 	}
 	if n.Op == ODOTMETH || n.Op == OCALLPART {
-		init2(n.Type.Nname(), out)
+		init2(asNode(n.Type.FuncType().Nname), out)
 	}
 }
 
@@ -424,7 +427,7 @@ func staticassign(l *Node, r *Node, out *[]*Node) bool {
 		initplan(r)
 		// Init slice.
 		bound := r.Right.Int64()
-		ta := typArray(r.Type.Elem(), bound)
+		ta := types.NewArray(r.Type.Elem(), bound)
 		a := staticname(ta)
 		inittemps[r] = a
 		n := *l
@@ -535,7 +538,7 @@ func staticassign(l *Node, r *Node, out *[]*Node) bool {
 				*out = append(*out, nod(OAS, a, val))
 			}
 			ptr := nod(OADDR, a, nil)
-			n.Type = ptrto(val.Type)
+			n.Type = types.NewPtr(val.Type)
 			gdata(&n, ptr, Widthptr)
 		}
 
@@ -569,11 +572,14 @@ const (
 // data statements for the constant
 // part of the composite literal.
 
+var statuniqgen int // name generator for static temps
+
 // staticname returns a name backed by a static data symbol.
-// Callers should set n.Name.Readonly = true on the
+// Callers should call n.Name.SetReadonly(true) on the
 // returned node for readonly nodes.
-func staticname(t *Type) *Node {
-	n := newname(lookupN("statictmp_", statuniqgen))
+func staticname(t *types.Type) *Node {
+	// Don't use lookupN; it interns the resulting string, but these are all unique.
+	n := newname(lookup(fmt.Sprintf("statictmp_%d", statuniqgen)))
 	statuniqgen++
 	addvar(n, t, PEXTERN)
 	return n
@@ -585,7 +591,7 @@ func isliteral(n *Node) bool {
 }
 
 func (n *Node) isSimpleName() bool {
-	return n.Op == ONAME && n.Addable && n.Class != PAUTOHEAP && n.Class != PEXTERN
+	return n.Op == ONAME && n.Addable() && n.Class != PAUTOHEAP && n.Class != PEXTERN
 }
 
 func litas(l *Node, r *Node, init *Nodes) {
@@ -719,6 +725,9 @@ func fixedlit(ctxt initContext, kind initKind, n *Node, var_ *Node, init *Nodes)
 			if r.Op != OSTRUCTKEY {
 				Fatalf("fixedlit: rhs not OSTRUCTKEY: %v", r)
 			}
+			if isblanksym(r.Sym) {
+				return nblank, r.Left
+			}
 			return nodSym(ODOT, var_, r.Sym), r.Left
 		}
 	default:
@@ -765,7 +774,7 @@ func fixedlit(ctxt initContext, kind initKind, n *Node, var_ *Node, init *Nodes)
 
 func slicelit(ctxt initContext, n *Node, var_ *Node, init *Nodes) {
 	// make an array type corresponding the number of elements we have
-	t := typArray(n.Type.Elem(), n.Right.Int64())
+	t := types.NewArray(n.Type.Elem(), n.Right.Int64())
 	dowidth(t)
 
 	if ctxt == inNonInitFunction {
@@ -783,7 +792,7 @@ func slicelit(ctxt initContext, n *Node, var_ *Node, init *Nodes) {
 		}
 
 		var v Node
-		nodconst(&v, Types[TINT], t.NumElem())
+		nodconst(&v, types.Types[TINT], t.NumElem())
 
 		nam.Xoffset += int64(array_array)
 		gdata(&nam, nod(OADDR, vstat, nil), Widthptr)
@@ -822,13 +831,13 @@ func slicelit(ctxt initContext, n *Node, var_ *Node, init *Nodes) {
 	if mode&initConst != 0 {
 		vstat = staticname(t)
 		if ctxt == inInitFunction {
-			vstat.Name.Readonly = true
+			vstat.Name.SetReadonly(true)
 		}
 		fixedlit(ctxt, initKindStatic, n, vstat, init)
 	}
 
 	// make new auto *array (3 declare)
-	vauto := temp(ptrto(t))
+	vauto := temp(types.NewPtr(t))
 
 	// set auto to point at new temp or heap (3 assign)
 	var a *Node
@@ -882,7 +891,7 @@ func slicelit(ctxt initContext, n *Node, var_ *Node, init *Nodes) {
 			value = r.Right
 		}
 		a := nod(OINDEX, vauto, nodintconst(index))
-		a.Bounded = true
+		a.SetBounded(true)
 		index++
 
 		// TODO need to check bounds?
@@ -921,30 +930,30 @@ func slicelit(ctxt initContext, n *Node, var_ *Node, init *Nodes) {
 
 func maplit(n *Node, m *Node, init *Nodes) {
 	// make the map var
-	nerr := nerrors
-
 	a := nod(OMAKE, nil, nil)
-	a.List.Set2(typenod(n.Type), nodintconst(int64(len(n.List.Slice()))))
+	a.List.Set2(typenod(n.Type), nodintconst(int64(n.List.Len())))
 	litas(m, a, init)
 
-	// count the initializers
-	b := 0
+	// Split the initializers into static and dynamic.
+	var stat, dyn []*Node
 	for _, r := range n.List.Slice() {
 		if r.Op != OKEY {
 			Fatalf("maplit: rhs not OKEY: %v", r)
 		}
-		index := r.Left
-		value := r.Right
-
-		if isliteral(index) && isliteral(value) {
-			b++
+		if isliteral(r.Left) && isliteral(r.Right) {
+			stat = append(stat, r)
+		} else {
+			dyn = append(dyn, r)
 		}
 	}
 
-	if b != 0 {
+	// Add static entries.
+	if len(stat) > 25 {
+		// For a large number of static entries, put them in an array and loop.
+
 		// build types [count]Tindex and [count]Tvalue
-		tk := typArray(n.Type.Key(), int64(b))
-		tv := typArray(n.Type.Val(), int64(b))
+		tk := types.NewArray(n.Type.Key(), int64(len(stat)))
+		tv := types.NewArray(n.Type.Val(), int64(len(stat)))
 
 		// TODO(josharian): suppress alg generation for these types?
 		dowidth(tk)
@@ -952,47 +961,39 @@ func maplit(n *Node, m *Node, init *Nodes) {
 
 		// make and initialize static arrays
 		vstatk := staticname(tk)
-		vstatk.Name.Readonly = true
+		vstatk.Name.SetReadonly(true)
 		vstatv := staticname(tv)
-		vstatv.Name.Readonly = true
+		vstatv.Name.SetReadonly(true)
 
-		b := int64(0)
-		for _, r := range n.List.Slice() {
-			if r.Op != OKEY {
-				Fatalf("maplit: rhs not OKEY: %v", r)
-			}
+		for i, r := range stat {
 			index := r.Left
 			value := r.Right
 
-			if isliteral(index) && isliteral(value) {
-				// build vstatk[b] = index
-				setlineno(index)
-				lhs := nod(OINDEX, vstatk, nodintconst(b))
-				as := nod(OAS, lhs, index)
-				as = typecheck(as, Etop)
-				genAsStatic(as)
+			// build vstatk[b] = index
+			setlineno(index)
+			lhs := nod(OINDEX, vstatk, nodintconst(int64(i)))
+			as := nod(OAS, lhs, index)
+			as = typecheck(as, Etop)
+			genAsStatic(as)
 
-				// build vstatv[b] = value
-				setlineno(value)
-				lhs = nod(OINDEX, vstatv, nodintconst(b))
-				as = nod(OAS, lhs, value)
-				as = typecheck(as, Etop)
-				genAsStatic(as)
-
-				b++
-			}
+			// build vstatv[b] = value
+			setlineno(value)
+			lhs = nod(OINDEX, vstatv, nodintconst(int64(i)))
+			as = nod(OAS, lhs, value)
+			as = typecheck(as, Etop)
+			genAsStatic(as)
 		}
 
 		// loop adding structure elements to map
 		// for i = 0; i < len(vstatk); i++ {
 		//	map[vstatk[i]] = vstatv[i]
 		// }
-		i := temp(Types[TINT])
+		i := temp(types.Types[TINT])
 		rhs := nod(OINDEX, vstatv, i)
-		rhs.Bounded = true
+		rhs.SetBounded(true)
 
 		kidx := nod(OINDEX, vstatk, i)
-		kidx.Bounded = true
+		kidx.SetBounded(true)
 		lhs := nod(OINDEX, m, kidx)
 
 		zero := nod(OAS, i, nodintconst(0))
@@ -1007,30 +1008,33 @@ func maplit(n *Node, m *Node, init *Nodes) {
 		loop = typecheck(loop, Etop)
 		loop = walkstmt(loop)
 		init.Append(loop)
+	} else {
+		// For a small number of static entries, just add them directly.
+		addMapEntries(m, stat, init)
 	}
 
-	// put in dynamic entries one-at-a-time
-	var key, val *Node
-	for _, r := range n.List.Slice() {
-		if r.Op != OKEY {
-			Fatalf("maplit: rhs not OKEY: %v", r)
-		}
-		index := r.Left
-		value := r.Right
+	// Add dynamic entries.
+	addMapEntries(m, dyn, init)
+}
 
-		if isliteral(index) && isliteral(value) {
-			continue
-		}
+func addMapEntries(m *Node, dyn []*Node, init *Nodes) {
+	if len(dyn) == 0 {
+		return
+	}
 
-		// build list of var[c] = expr.
-		// use temporary so that mapassign1 can have addressable key, val.
-		if key == nil {
-			key = temp(m.Type.Key())
-			val = temp(m.Type.Val())
-		}
+	nerr := nerrors
+
+	// Build list of var[c] = expr.
+	// Use temporaries so that mapassign1 can have addressable key, val.
+	// TODO(josharian): avoid map key temporaries for mapfast_* assignments with literal keys.
+	key := temp(m.Type.Key())
+	val := temp(m.Type.Val())
+
+	for _, r := range dyn {
+		index, value := r.Left, r.Right
 
 		setlineno(index)
-		a = nod(OAS, key, index)
+		a := nod(OAS, key, index)
 		a = typecheck(a, Etop)
 		a = walkstmt(a)
 		init.Append(a)
@@ -1052,14 +1056,12 @@ func maplit(n *Node, m *Node, init *Nodes) {
 		}
 	}
 
-	if key != nil {
-		a = nod(OVARKILL, key, nil)
-		a = typecheck(a, Etop)
-		init.Append(a)
-		a = nod(OVARKILL, val, nil)
-		a = typecheck(a, Etop)
-		init.Append(a)
-	}
+	a := nod(OVARKILL, key, nil)
+	a = typecheck(a, Etop)
+	init.Append(a)
+	a = nod(OVARKILL, val, nil)
+	a = typecheck(a, Etop)
+	init.Append(a)
 }
 
 func anylit(n *Node, var_ *Node, init *Nodes) {
@@ -1104,7 +1106,7 @@ func anylit(n *Node, var_ *Node, init *Nodes) {
 		if var_.isSimpleName() && n.List.Len() > 4 {
 			// lay out static data
 			vstat := staticname(t)
-			vstat.Name.Readonly = true
+			vstat.Name.SetReadonly(true)
 
 			ctxt := inInitFunction
 			if n.Op == OARRAYLIT {
@@ -1203,7 +1205,7 @@ func stataddr(nam *Node, n *Node) bool {
 	switch n.Op {
 	case ONAME:
 		*nam = *n
-		return n.Addable
+		return n.Addable()
 
 	case ODOT:
 		if !stataddr(nam, n.Left) {
@@ -1226,7 +1228,7 @@ func stataddr(nam *Node, n *Node) bool {
 		}
 
 		// Check for overflow.
-		if n.Type.Width != 0 && Thearch.MAXWIDTH/n.Type.Width <= int64(l) {
+		if n.Type.Width != 0 && thearch.MAXWIDTH/n.Type.Width <= int64(l) {
 			break
 		}
 		nam.Xoffset += int64(l) * n.Type.Width
@@ -1347,8 +1349,12 @@ func isvaluelit(n *Node) bool {
 }
 
 func genAsStatic(as *Node) {
+	if as.Left.Type == nil {
+		Fatalf("genAsStatic as.Left not typechecked")
+	}
+
 	var nam Node
-	if !stataddr(&nam, as.Left) || nam.Class != PEXTERN {
+	if !stataddr(&nam, as.Left) || (nam.Class != PEXTERN && as.Left != nblank) {
 		Fatalf("genAsStatic: lhs %v", as.Left)
 	}
 

@@ -336,7 +336,7 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) bool {
 			return true
 		}
 
-		if (ld.Headtype == obj.Hwindows || ld.Headtype == obj.Hwindowsgui) && s.Size == int64(ld.SysArch.PtrSize) {
+		if ld.Headtype == obj.Hwindows && s.Size == int64(ld.SysArch.PtrSize) {
 			// nothing to do, the relocation will be laid out in pereloc1
 			return true
 		}
@@ -481,6 +481,9 @@ func pereloc1(s *ld.Symbol, r *ld.Reloc, sectoff int64) bool {
 	switch r.Type {
 	default:
 		return false
+
+	case obj.R_DWARFREF:
+		v = ld.IMAGE_REL_I386_SECREL
 
 	case obj.R_ADDR:
 		v = ld.IMAGE_REL_I386_DIR32
@@ -696,7 +699,7 @@ func asmb(ctxt *ld.Link) {
 		case obj.Hdarwin:
 			symo = uint32(ld.Segdwarf.Fileoff + uint64(ld.Rnd(int64(ld.Segdwarf.Filelen), int64(*ld.FlagRound))) + uint64(machlink))
 
-		case obj.Hwindows, obj.Hwindowsgui:
+		case obj.Hwindows:
 			symo = uint32(ld.Segdwarf.Fileoff + ld.Segdwarf.Filelen)
 			symo = uint32(ld.Rnd(int64(symo), ld.PEFILEALIGN))
 		}
@@ -731,7 +734,7 @@ func asmb(ctxt *ld.Link) {
 				ld.Cflush()
 			}
 
-		case obj.Hwindows, obj.Hwindowsgui:
+		case obj.Hwindows:
 			if ctxt.Debugvlog != 0 {
 				ctxt.Logf("%5.2f dwarf\n", obj.Cputime())
 			}
@@ -771,7 +774,7 @@ func asmb(ctxt *ld.Link) {
 		obj.Hnacl:
 		ld.Asmbelf(ctxt, int64(symo))
 
-	case obj.Hwindows, obj.Hwindowsgui:
+	case obj.Hwindows:
 		ld.Asmbpe(ctxt)
 	}
 

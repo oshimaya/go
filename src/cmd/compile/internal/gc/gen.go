@@ -7,12 +7,15 @@
 package gc
 
 import (
+	"cmd/compile/internal/types"
 	"cmd/internal/obj"
+	"cmd/internal/src"
 	"fmt"
+	"strconv"
 )
 
 func Sysfunc(name string) *obj.LSym {
-	return Linksym(Pkglookup(name, Runtimepkg))
+	return Linksym(Runtimepkg.Lookup(name))
 }
 
 // addrescapes tags node n as having had its address taken
@@ -38,7 +41,7 @@ func addrescapes(n *Node) {
 		}
 
 		// If a closure reference escapes, mark the outer variable as escaping.
-		if n.isClosureVar() {
+		if n.IsClosureVar() {
 			addrescapes(n.Name.Defn)
 			break
 		}
@@ -112,14 +115,14 @@ func moveToHeap(n *Node) {
 
 	// Allocate a local stack variable to hold the pointer to the heap copy.
 	// temp will add it to the function declaration list automatically.
-	heapaddr := temp(ptrto(n.Type))
+	heapaddr := temp(types.NewPtr(n.Type))
 	heapaddr.Sym = lookup("&" + n.Sym.Name)
 	heapaddr.Orig.Sym = heapaddr.Sym
 
 	// Unset AutoTemp to persist the &foo variable name through SSA to
 	// liveness analysis.
 	// TODO(mdempsky/drchase): Cleaner solution?
-	heapaddr.Name.AutoTemp = false
+	heapaddr.Name.SetAutoTemp(false)
 
 	// Parameters have a local stack copy used at function start/end
 	// in addition to the copy in the heap that may live longer than
@@ -133,8 +136,8 @@ func moveToHeap(n *Node) {
 		// Preserve a copy so we can still write code referring to the original,
 		// and substitute that copy into the function declaration list
 		// so that analyses of the local (on-stack) variables use it.
-		stackcopy := nod(ONAME, nil, nil)
-		stackcopy.Sym = n.Sym
+		stackcopy := newname(n.Sym)
+		stackcopy.SetAddable(false)
 		stackcopy.Type = n.Type
 		stackcopy.Xoffset = n.Xoffset
 		stackcopy.Class = n.Class
@@ -145,7 +148,7 @@ func moveToHeap(n *Node) {
 			// Thus, we need the pointer to the heap copy always available so the
 			// post-deferreturn code can copy the return value back to the stack.
 			// See issue 16095.
-			heapaddr.setIsOutputParamHeapAddr(true)
+			heapaddr.SetIsOutputParamHeapAddr(true)
 		}
 		n.Name.Param.Stackcopy = stackcopy
 
@@ -173,7 +176,6 @@ func moveToHeap(n *Node) {
 
 	// Modify n in place so that uses of n now mean indirection of the heapaddr.
 	n.Class = PAUTOHEAP
-	n.Ullman = 2
 	n.Xoffset = 0
 	n.Name.Param.Heapaddr = heapaddr
 	n.Esc = EscHeap
@@ -182,46 +184,58 @@ func moveToHeap(n *Node) {
 	}
 }
 
+// autotmpname returns the name for an autotmp variable numbered n.
+func autotmpname(n int) string {
+	// Give each tmp a different name so that they can be registerized.
+	// Add a preceding . to avoid clashing with legal names.
+	const prefix = ".autotmp_"
+	// Start with a buffer big enough to hold a large n.
+	b := []byte(prefix + "      ")[:len(prefix)]
+	b = strconv.AppendInt(b, int64(n), 10)
+	_ = b
+	return types.InternString(b)
+}
+
 // make a new Node off the books
-func tempname(nn *Node, t *Type) {
-	if Curfn == nil {
+func tempnamel(pos src.XPos, curfn *Node, nn *Node, t *types.Type) {
+	if curfn == nil {
 		Fatalf("no curfn for tempname")
 	}
-	if Curfn.Func.Closure != nil && Curfn.Op == OCLOSURE {
-		Dump("tempname", Curfn)
+	if curfn.Func.Closure != nil && curfn.Op == OCLOSURE {
+		Dump("tempname", curfn)
 		Fatalf("adding tempname to wrong closure function")
 	}
-
 	if t == nil {
-		yyerror("tempname called with nil type")
-		t = Types[TINT32]
+		Fatalf("tempname called with nil type")
 	}
 
-	// give each tmp a different name so that there
-	// a chance to registerizer them.
-	// Add a preceding . to avoid clash with legal names.
-	s := lookupN(".autotmp_", statuniqgen)
-	statuniqgen++
-	n := nod(ONAME, nil, nil)
-	n.Sym = s
-	s.Def = n
+	s := &types.Sym{
+		Name: autotmpname(len(curfn.Func.Dcl)),
+		Pkg:  localpkg,
+	}
+	n := newnamel(pos, s)
+	s.Def = asTypesNode(n)
 	n.Type = t
 	n.Class = PAUTO
-	n.Addable = true
-	n.Ullman = 1
 	n.Esc = EscNever
-	n.Name.Curfn = Curfn
-	n.Name.AutoTemp = true
-	Curfn.Func.Dcl = append(Curfn.Func.Dcl, n)
+	n.Name.Curfn = curfn
+	n.Name.SetAutoTemp(true)
+	curfn.Func.Dcl = append(curfn.Func.Dcl, n)
 
 	dowidth(t)
-	n.Xoffset = 0
 	*nn = *n
 }
 
-func temp(t *Type) *Node {
+func temp(t *types.Type) *Node {
 	var n Node
-	tempname(&n, t)
-	n.Sym.Def.Used = true
+	tempnamel(lineno, Curfn, &n, t)
+	asNode(n.Sym.Def).SetUsed(true)
+	return n.Orig
+}
+
+func tempAt(pos src.XPos, curfn *Node, t *types.Type) *Node {
+	var n Node
+	tempnamel(pos, curfn, &n, t)
+	asNode(n.Sym.Def).SetUsed(true)
 	return n.Orig
 }

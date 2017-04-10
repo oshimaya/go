@@ -222,9 +222,10 @@ func onePassCopy(prog *syntax.Prog) *onePassProg {
 	p := &onePassProg{
 		Start:  prog.Start,
 		NumCap: prog.NumCap,
+		Inst:   make([]onePassInst, len(prog.Inst)),
 	}
-	for _, inst := range prog.Inst {
-		p.Inst = append(p.Inst, onePassInst{Inst: inst})
+	for i, inst := range prog.Inst {
+		p.Inst[i] = onePassInst{Inst: inst}
 	}
 
 	// rewrites one or more common Prog constructs that enable some otherwise
@@ -349,17 +350,17 @@ func makeOnePass(p *onePassProg) *onePassProg {
 			m[pc] = m[inst.Out]
 			// pass matching runes back through these no-ops.
 			onePassRunes[pc] = append([]rune{}, onePassRunes[inst.Out]...)
-			inst.Next = []uint32{}
-			for i := len(onePassRunes[pc]) / 2; i >= 0; i-- {
-				inst.Next = append(inst.Next, inst.Out)
+			inst.Next = make([]uint32, len(onePassRunes[pc])/2+1)
+			for i := range inst.Next {
+				inst.Next[i] = inst.Out
 			}
 		case syntax.InstEmptyWidth:
 			ok = check(inst.Out, m)
 			m[pc] = m[inst.Out]
 			onePassRunes[pc] = append([]rune{}, onePassRunes[inst.Out]...)
-			inst.Next = []uint32{}
-			for i := len(onePassRunes[pc]) / 2; i >= 0; i-- {
-				inst.Next = append(inst.Next, inst.Out)
+			inst.Next = make([]uint32, len(onePassRunes[pc])/2+1)
+			for i := range inst.Next {
+				inst.Next[i] = inst.Out
 			}
 		case syntax.InstMatch, syntax.InstFail:
 			m[pc] = inst.Op == syntax.InstMatch
@@ -387,9 +388,9 @@ func makeOnePass(p *onePassProg) *onePassProg {
 				runes = append(runes, inst.Rune...)
 			}
 			onePassRunes[pc] = runes
-			inst.Next = []uint32{}
-			for i := len(onePassRunes[pc]) / 2; i >= 0; i-- {
-				inst.Next = append(inst.Next, inst.Out)
+			inst.Next = make([]uint32, len(onePassRunes[pc])/2+1)
+			for i := range inst.Next {
+				inst.Next[i] = inst.Out
 			}
 			inst.Op = syntax.InstRune
 		case syntax.InstRune1:
@@ -411,9 +412,9 @@ func makeOnePass(p *onePassProg) *onePassProg {
 				runes = append(runes, inst.Rune[0], inst.Rune[0])
 			}
 			onePassRunes[pc] = runes
-			inst.Next = []uint32{}
-			for i := len(onePassRunes[pc]) / 2; i >= 0; i-- {
-				inst.Next = append(inst.Next, inst.Out)
+			inst.Next = make([]uint32, len(onePassRunes[pc])/2+1)
+			for i := range inst.Next {
+				inst.Next[i] = inst.Out
 			}
 			inst.Op = syntax.InstRune
 		case syntax.InstRuneAny:
@@ -431,9 +432,9 @@ func makeOnePass(p *onePassProg) *onePassProg {
 			}
 			instQueue.insert(inst.Out)
 			onePassRunes[pc] = append([]rune{}, anyRuneNotNL...)
-			inst.Next = []uint32{}
-			for i := len(onePassRunes[pc]) / 2; i >= 0; i-- {
-				inst.Next = append(inst.Next, inst.Out)
+			inst.Next = make([]uint32, len(onePassRunes[pc])/2+1)
+			for i := range inst.Next {
+				inst.Next[i] = inst.Out
 			}
 		}
 		return

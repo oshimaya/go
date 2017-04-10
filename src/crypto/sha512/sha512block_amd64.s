@@ -272,7 +272,7 @@ loop:
 end:
 	RET
 
-// Version bellow is based on "Fast SHA512 Implementations on Intel
+// Version below is based on "Fast SHA512 Implementations on Intel
 // Architecture Processors" White-paper
 // http://www.intel.com/content/dam/www/public/us/en/documents/white-papers/fast-sha512-implementations-ia-processors-paper.pdf
 // AVX2 version by Intel, same algorithm in Linux kernel:
@@ -1480,6 +1480,7 @@ TEXT ·checkAVX2(SB), NOSPLIT, $0
 	CMPB AX,$0
 	JNE check_bmi2
 	MOVB AX, ret+0(FP)
+	RET
 check_bmi2:
 	MOVB runtime·support_bmi2(SB), AX
 	MOVB AX, ret+0(FP)

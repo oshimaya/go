@@ -196,7 +196,8 @@ func stackpoolalloc(order uint8) gclinkptr {
 		if s.stackfreelist.ptr() != nil {
 			throw("bad stackfreelist")
 		}
-		for i := uintptr(0); i < _StackCacheSize; i += _FixedStack << order {
+		s.elemsize = _FixedStack << order
+		for i := uintptr(0); i < _StackCacheSize; i += s.elemsize {
 			x := gclinkptr(s.base() + i)
 			x.ptr().next = s.stackfreelist
 			s.stackfreelist = x
@@ -393,6 +394,7 @@ func stackalloc(n uint32) stack {
 			if s == nil {
 				throw("out of memory")
 			}
+			s.elemsize = uintptr(n)
 		}
 		v = unsafe.Pointer(s.base())
 	}
@@ -569,7 +571,7 @@ func ptrbit(bv *gobitvector, i uintptr) uint8 {
 
 // bv describes the memory starting at address scanp.
 // Adjust any pointers contained therein.
-func adjustpointers(scanp unsafe.Pointer, cbv *bitvector, adjinfo *adjustinfo, f *_func) {
+func adjustpointers(scanp unsafe.Pointer, cbv *bitvector, adjinfo *adjustinfo, f funcInfo) {
 	bv := gobv(*cbv)
 	minp := adjinfo.old.lo
 	maxp := adjinfo.old.hi
@@ -589,7 +591,7 @@ func adjustpointers(scanp unsafe.Pointer, cbv *bitvector, adjinfo *adjustinfo, f
 			pp := (*uintptr)(add(scanp, i*sys.PtrSize))
 		retry:
 			p := *pp
-			if f != nil && 0 < p && p < minLegalPointer && debug.invalidptr != 0 {
+			if f.valid() && 0 < p && p < minLegalPointer && debug.invalidptr != 0 {
 				// Looks like a junk value in a pointer slot.
 				// Live analysis wrong?
 				getg().m.traceback = 2
@@ -713,7 +715,7 @@ func adjustframe(frame *stkframe, arg unsafe.Pointer) bool {
 		if stackDebug >= 3 {
 			print("      args\n")
 		}
-		adjustpointers(unsafe.Pointer(frame.argp), &bv, adjinfo, nil)
+		adjustpointers(unsafe.Pointer(frame.argp), &bv, adjinfo, funcInfo{})
 	}
 	return true
 }
@@ -1188,6 +1190,6 @@ func freeStackSpans() {
 //go:nosplit
 func morestackc() {
 	systemstack(func() {
-		throw("attempt to execute C code on Go stack")
+		throw("attempt to execute system stack code on user stack")
 	})
 }

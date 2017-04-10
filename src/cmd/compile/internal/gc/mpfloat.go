@@ -38,7 +38,7 @@ func newMpflt() *Mpflt {
 }
 
 func (a *Mpflt) SetInt(b *Mpint) {
-	if b.Ovf {
+	if b.checkOverflow(0) {
 		// sign doesn't really matter but copy anyway
 		a.Val.SetInf(b.Val.Sign() < 0)
 		return
@@ -128,7 +128,7 @@ func (a *Mpflt) Float64() float64 {
 
 	// check for overflow
 	if math.IsInf(x, 0) && nsavederrors+nerrors == 0 {
-		yyerror("ovf in Mpflt Float64")
+		Fatalf("ovf in Mpflt Float64")
 	}
 
 	return x + 0 // avoid -0 (should not be needed, but be conservative)
@@ -140,7 +140,7 @@ func (a *Mpflt) Float32() float64 {
 
 	// check for overflow
 	if math.IsInf(x, 0) && nsavederrors+nerrors == 0 {
-		yyerror("ovf in Mpflt Float32")
+		Fatalf("ovf in Mpflt Float32")
 	}
 
 	return x + 0 // avoid -0 (should not be needed, but be conservative)

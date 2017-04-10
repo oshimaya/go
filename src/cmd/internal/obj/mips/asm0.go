@@ -31,6 +31,7 @@ package mips
 
 import (
 	"cmd/internal/obj"
+	"cmd/internal/sys"
 	"fmt"
 	"log"
 	"sort"
@@ -47,201 +48,201 @@ const (
 )
 
 type Optab struct {
-	as    obj.As
-	a1    uint8
-	a2    uint8
-	a3    uint8
-	type_ int8
-	size  int8
-	param int16
-	mode  int
+	as     obj.As
+	a1     uint8
+	a2     uint8
+	a3     uint8
+	type_  int8
+	size   int8
+	param  int16
+	family sys.ArchFamily // 0 means both sys.MIPS and sys.MIPS64
 }
 
 var optab = []Optab{
-	{obj.ATEXT, C_LEXT, C_NONE, C_TEXTSIZE, 0, 0, 0, Mips64},
+	{obj.ATEXT, C_LEXT, C_NONE, C_TEXTSIZE, 0, 0, 0, sys.MIPS64},
 	{obj.ATEXT, C_ADDR, C_NONE, C_TEXTSIZE, 0, 0, 0, 0},
 
 	{AMOVW, C_REG, C_NONE, C_REG, 1, 4, 0, 0},
-	{AMOVV, C_REG, C_NONE, C_REG, 1, 4, 0, Mips64},
+	{AMOVV, C_REG, C_NONE, C_REG, 1, 4, 0, sys.MIPS64},
 	{AMOVB, C_REG, C_NONE, C_REG, 12, 8, 0, 0},
 	{AMOVBU, C_REG, C_NONE, C_REG, 13, 4, 0, 0},
-	{AMOVWU, C_REG, C_NONE, C_REG, 14, 8, 0, Mips64},
+	{AMOVWU, C_REG, C_NONE, C_REG, 14, 8, 0, sys.MIPS64},
 
 	{ASUB, C_REG, C_REG, C_REG, 2, 4, 0, 0},
-	{ASUBV, C_REG, C_REG, C_REG, 2, 4, 0, Mips64},
+	{ASUBV, C_REG, C_REG, C_REG, 2, 4, 0, sys.MIPS64},
 	{AADD, C_REG, C_REG, C_REG, 2, 4, 0, 0},
-	{AADDV, C_REG, C_REG, C_REG, 2, 4, 0, Mips64},
+	{AADDV, C_REG, C_REG, C_REG, 2, 4, 0, sys.MIPS64},
 	{AAND, C_REG, C_REG, C_REG, 2, 4, 0, 0},
 	{ASUB, C_REG, C_NONE, C_REG, 2, 4, 0, 0},
-	{ASUBV, C_REG, C_NONE, C_REG, 2, 4, 0, Mips64},
+	{ASUBV, C_REG, C_NONE, C_REG, 2, 4, 0, sys.MIPS64},
 	{AADD, C_REG, C_NONE, C_REG, 2, 4, 0, 0},
-	{AADDV, C_REG, C_NONE, C_REG, 2, 4, 0, Mips64},
+	{AADDV, C_REG, C_NONE, C_REG, 2, 4, 0, sys.MIPS64},
 	{AAND, C_REG, C_NONE, C_REG, 2, 4, 0, 0},
 	{ACMOVN, C_REG, C_REG, C_REG, 2, 4, 0, 0},
 
 	{ASLL, C_REG, C_NONE, C_REG, 9, 4, 0, 0},
 	{ASLL, C_REG, C_REG, C_REG, 9, 4, 0, 0},
-	{ASLLV, C_REG, C_NONE, C_REG, 9, 4, 0, Mips64},
-	{ASLLV, C_REG, C_REG, C_REG, 9, 4, 0, Mips64},
+	{ASLLV, C_REG, C_NONE, C_REG, 9, 4, 0, sys.MIPS64},
+	{ASLLV, C_REG, C_REG, C_REG, 9, 4, 0, sys.MIPS64},
 	{ACLO, C_REG, C_NONE, C_REG, 9, 4, 0, 0},
 
 	{AADDF, C_FREG, C_NONE, C_FREG, 32, 4, 0, 0},
 	{AADDF, C_FREG, C_REG, C_FREG, 32, 4, 0, 0},
 	{ACMPEQF, C_FREG, C_REG, C_NONE, 32, 4, 0, 0},
 	{AABSF, C_FREG, C_NONE, C_FREG, 33, 4, 0, 0},
-	{AMOVVF, C_FREG, C_NONE, C_FREG, 33, 4, 0, Mips64},
+	{AMOVVF, C_FREG, C_NONE, C_FREG, 33, 4, 0, sys.MIPS64},
 	{AMOVF, C_FREG, C_NONE, C_FREG, 33, 4, 0, 0},
 	{AMOVD, C_FREG, C_NONE, C_FREG, 33, 4, 0, 0},
 
-	{AMOVW, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, Mips64},
-	{AMOVWU, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, Mips64},
-	{AMOVV, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, Mips64},
-	{AMOVB, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, Mips64},
-	{AMOVBU, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, Mips64},
-	{AMOVWL, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, Mips64},
-	{AMOVVL, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, Mips64},
+	{AMOVW, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, sys.MIPS64},
+	{AMOVWU, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, sys.MIPS64},
+	{AMOVV, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, sys.MIPS64},
+	{AMOVB, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, sys.MIPS64},
+	{AMOVBU, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, sys.MIPS64},
+	{AMOVWL, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, sys.MIPS64},
+	{AMOVVL, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, sys.MIPS64},
 	{AMOVW, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, 0},
-	{AMOVWU, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, Mips64},
-	{AMOVV, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, Mips64},
+	{AMOVWU, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, sys.MIPS64},
+	{AMOVV, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, sys.MIPS64},
 	{AMOVB, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, 0},
 	{AMOVBU, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, 0},
 	{AMOVWL, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, 0},
-	{AMOVVL, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, Mips64},
+	{AMOVVL, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, sys.MIPS64},
 	{AMOVW, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, 0},
-	{AMOVWU, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, Mips64},
-	{AMOVV, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, Mips64},
+	{AMOVWU, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, sys.MIPS64},
+	{AMOVV, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, sys.MIPS64},
 	{AMOVB, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, 0},
 	{AMOVBU, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, 0},
 	{AMOVWL, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, 0},
-	{AMOVVL, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, Mips64},
+	{AMOVVL, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, sys.MIPS64},
 	{ASC, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, 0},
 
-	{AMOVW, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, Mips64},
-	{AMOVWU, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, Mips64},
-	{AMOVV, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, Mips64},
-	{AMOVB, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, Mips64},
-	{AMOVBU, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, Mips64},
-	{AMOVWL, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, Mips64},
-	{AMOVVL, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, Mips64},
+	{AMOVW, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, sys.MIPS64},
+	{AMOVWU, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, sys.MIPS64},
+	{AMOVV, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, sys.MIPS64},
+	{AMOVB, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, sys.MIPS64},
+	{AMOVBU, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, sys.MIPS64},
+	{AMOVWL, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, sys.MIPS64},
+	{AMOVVL, C_SEXT, C_NONE, C_REG, 8, 4, REGSB, sys.MIPS64},
 	{AMOVW, C_SAUTO, C_NONE, C_REG, 8, 4, REGSP, 0},
-	{AMOVWU, C_SAUTO, C_NONE, C_REG, 8, 4, REGSP, Mips64},
-	{AMOVV, C_SAUTO, C_NONE, C_REG, 8, 4, REGSP, Mips64},
+	{AMOVWU, C_SAUTO, C_NONE, C_REG, 8, 4, REGSP, sys.MIPS64},
+	{AMOVV, C_SAUTO, C_NONE, C_REG, 8, 4, REGSP, sys.MIPS64},
 	{AMOVB, C_SAUTO, C_NONE, C_REG, 8, 4, REGSP, 0},
 	{AMOVBU, C_SAUTO, C_NONE, C_REG, 8, 4, REGSP, 0},
 	{AMOVWL, C_SAUTO, C_NONE, C_REG, 8, 4, REGSP, 0},
-	{AMOVVL, C_SAUTO, C_NONE, C_REG, 8, 4, REGSP, Mips64},
+	{AMOVVL, C_SAUTO, C_NONE, C_REG, 8, 4, REGSP, sys.MIPS64},
 	{AMOVW, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, 0},
-	{AMOVWU, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, Mips64},
-	{AMOVV, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, Mips64},
+	{AMOVWU, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, sys.MIPS64},
+	{AMOVV, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, sys.MIPS64},
 	{AMOVB, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, 0},
 	{AMOVBU, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, 0},
 	{AMOVWL, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, 0},
-	{AMOVVL, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, Mips64},
+	{AMOVVL, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, sys.MIPS64},
 	{ALL, C_SOREG, C_NONE, C_REG, 8, 4, REGZERO, 0},
 
-	{AMOVW, C_REG, C_NONE, C_LEXT, 35, 12, REGSB, Mips64},
-	{AMOVWU, C_REG, C_NONE, C_LEXT, 35, 12, REGSB, Mips64},
-	{AMOVV, C_REG, C_NONE, C_LEXT, 35, 12, REGSB, Mips64},
-	{AMOVB, C_REG, C_NONE, C_LEXT, 35, 12, REGSB, Mips64},
-	{AMOVBU, C_REG, C_NONE, C_LEXT, 35, 12, REGSB, Mips64},
+	{AMOVW, C_REG, C_NONE, C_LEXT, 35, 12, REGSB, sys.MIPS64},
+	{AMOVWU, C_REG, C_NONE, C_LEXT, 35, 12, REGSB, sys.MIPS64},
+	{AMOVV, C_REG, C_NONE, C_LEXT, 35, 12, REGSB, sys.MIPS64},
+	{AMOVB, C_REG, C_NONE, C_LEXT, 35, 12, REGSB, sys.MIPS64},
+	{AMOVBU, C_REG, C_NONE, C_LEXT, 35, 12, REGSB, sys.MIPS64},
 	{AMOVW, C_REG, C_NONE, C_LAUTO, 35, 12, REGSP, 0},
-	{AMOVWU, C_REG, C_NONE, C_LAUTO, 35, 12, REGSP, Mips64},
-	{AMOVV, C_REG, C_NONE, C_LAUTO, 35, 12, REGSP, Mips64},
+	{AMOVWU, C_REG, C_NONE, C_LAUTO, 35, 12, REGSP, sys.MIPS64},
+	{AMOVV, C_REG, C_NONE, C_LAUTO, 35, 12, REGSP, sys.MIPS64},
 	{AMOVB, C_REG, C_NONE, C_LAUTO, 35, 12, REGSP, 0},
 	{AMOVBU, C_REG, C_NONE, C_LAUTO, 35, 12, REGSP, 0},
 	{AMOVW, C_REG, C_NONE, C_LOREG, 35, 12, REGZERO, 0},
-	{AMOVWU, C_REG, C_NONE, C_LOREG, 35, 12, REGZERO, Mips64},
-	{AMOVV, C_REG, C_NONE, C_LOREG, 35, 12, REGZERO, Mips64},
+	{AMOVWU, C_REG, C_NONE, C_LOREG, 35, 12, REGZERO, sys.MIPS64},
+	{AMOVV, C_REG, C_NONE, C_LOREG, 35, 12, REGZERO, sys.MIPS64},
 	{AMOVB, C_REG, C_NONE, C_LOREG, 35, 12, REGZERO, 0},
 	{AMOVBU, C_REG, C_NONE, C_LOREG, 35, 12, REGZERO, 0},
 	{ASC, C_REG, C_NONE, C_LOREG, 35, 12, REGZERO, 0},
-	{AMOVW, C_REG, C_NONE, C_ADDR, 50, 8, 0, Mips32},
-	{AMOVW, C_REG, C_NONE, C_ADDR, 50, 12, 0, Mips64},
-	{AMOVWU, C_REG, C_NONE, C_ADDR, 50, 12, 0, Mips64},
-	{AMOVV, C_REG, C_NONE, C_ADDR, 50, 12, 0, Mips64},
-	{AMOVB, C_REG, C_NONE, C_ADDR, 50, 8, 0, Mips32},
-	{AMOVB, C_REG, C_NONE, C_ADDR, 50, 12, 0, Mips64},
-	{AMOVBU, C_REG, C_NONE, C_ADDR, 50, 8, 0, Mips32},
-	{AMOVBU, C_REG, C_NONE, C_ADDR, 50, 12, 0, Mips64},
+	{AMOVW, C_REG, C_NONE, C_ADDR, 50, 8, 0, sys.MIPS},
+	{AMOVW, C_REG, C_NONE, C_ADDR, 50, 12, 0, sys.MIPS64},
+	{AMOVWU, C_REG, C_NONE, C_ADDR, 50, 12, 0, sys.MIPS64},
+	{AMOVV, C_REG, C_NONE, C_ADDR, 50, 12, 0, sys.MIPS64},
+	{AMOVB, C_REG, C_NONE, C_ADDR, 50, 8, 0, sys.MIPS},
+	{AMOVB, C_REG, C_NONE, C_ADDR, 50, 12, 0, sys.MIPS64},
+	{AMOVBU, C_REG, C_NONE, C_ADDR, 50, 8, 0, sys.MIPS},
+	{AMOVBU, C_REG, C_NONE, C_ADDR, 50, 12, 0, sys.MIPS64},
 	{AMOVW, C_REG, C_NONE, C_TLS, 53, 8, 0, 0},
-	{AMOVWU, C_REG, C_NONE, C_TLS, 53, 8, 0, Mips64},
-	{AMOVV, C_REG, C_NONE, C_TLS, 53, 8, 0, Mips64},
+	{AMOVWU, C_REG, C_NONE, C_TLS, 53, 8, 0, sys.MIPS64},
+	{AMOVV, C_REG, C_NONE, C_TLS, 53, 8, 0, sys.MIPS64},
 	{AMOVB, C_REG, C_NONE, C_TLS, 53, 8, 0, 0},
 	{AMOVBU, C_REG, C_NONE, C_TLS, 53, 8, 0, 0},
 
-	{AMOVW, C_LEXT, C_NONE, C_REG, 36, 12, REGSB, Mips64},
-	{AMOVWU, C_LEXT, C_NONE, C_REG, 36, 12, REGSB, Mips64},
-	{AMOVV, C_LEXT, C_NONE, C_REG, 36, 12, REGSB, Mips64},
-	{AMOVB, C_LEXT, C_NONE, C_REG, 36, 12, REGSB, Mips64},
-	{AMOVBU, C_LEXT, C_NONE, C_REG, 36, 12, REGSB, Mips64},
+	{AMOVW, C_LEXT, C_NONE, C_REG, 36, 12, REGSB, sys.MIPS64},
+	{AMOVWU, C_LEXT, C_NONE, C_REG, 36, 12, REGSB, sys.MIPS64},
+	{AMOVV, C_LEXT, C_NONE, C_REG, 36, 12, REGSB, sys.MIPS64},
+	{AMOVB, C_LEXT, C_NONE, C_REG, 36, 12, REGSB, sys.MIPS64},
+	{AMOVBU, C_LEXT, C_NONE, C_REG, 36, 12, REGSB, sys.MIPS64},
 	{AMOVW, C_LAUTO, C_NONE, C_REG, 36, 12, REGSP, 0},
-	{AMOVWU, C_LAUTO, C_NONE, C_REG, 36, 12, REGSP, Mips64},
-	{AMOVV, C_LAUTO, C_NONE, C_REG, 36, 12, REGSP, Mips64},
+	{AMOVWU, C_LAUTO, C_NONE, C_REG, 36, 12, REGSP, sys.MIPS64},
+	{AMOVV, C_LAUTO, C_NONE, C_REG, 36, 12, REGSP, sys.MIPS64},
 	{AMOVB, C_LAUTO, C_NONE, C_REG, 36, 12, REGSP, 0},
 	{AMOVBU, C_LAUTO, C_NONE, C_REG, 36, 12, REGSP, 0},
 	{AMOVW, C_LOREG, C_NONE, C_REG, 36, 12, REGZERO, 0},
-	{AMOVWU, C_LOREG, C_NONE, C_REG, 36, 12, REGZERO, Mips64},
-	{AMOVV, C_LOREG, C_NONE, C_REG, 36, 12, REGZERO, Mips64},
+	{AMOVWU, C_LOREG, C_NONE, C_REG, 36, 12, REGZERO, sys.MIPS64},
+	{AMOVV, C_LOREG, C_NONE, C_REG, 36, 12, REGZERO, sys.MIPS64},
 	{AMOVB, C_LOREG, C_NONE, C_REG, 36, 12, REGZERO, 0},
 	{AMOVBU, C_LOREG, C_NONE, C_REG, 36, 12, REGZERO, 0},
-	{AMOVW, C_ADDR, C_NONE, C_REG, 51, 8, 0, Mips32},
-	{AMOVW, C_ADDR, C_NONE, C_REG, 51, 12, 0, Mips64},
-	{AMOVWU, C_ADDR, C_NONE, C_REG, 51, 12, 0, Mips64},
-	{AMOVV, C_ADDR, C_NONE, C_REG, 51, 12, 0, Mips64},
-	{AMOVB, C_ADDR, C_NONE, C_REG, 51, 8, 0, Mips32},
-	{AMOVB, C_ADDR, C_NONE, C_REG, 51, 12, 0, Mips64},
-	{AMOVBU, C_ADDR, C_NONE, C_REG, 51, 8, 0, Mips32},
-	{AMOVBU, C_ADDR, C_NONE, C_REG, 51, 12, 0, Mips64},
+	{AMOVW, C_ADDR, C_NONE, C_REG, 51, 8, 0, sys.MIPS},
+	{AMOVW, C_ADDR, C_NONE, C_REG, 51, 12, 0, sys.MIPS64},
+	{AMOVWU, C_ADDR, C_NONE, C_REG, 51, 12, 0, sys.MIPS64},
+	{AMOVV, C_ADDR, C_NONE, C_REG, 51, 12, 0, sys.MIPS64},
+	{AMOVB, C_ADDR, C_NONE, C_REG, 51, 8, 0, sys.MIPS},
+	{AMOVB, C_ADDR, C_NONE, C_REG, 51, 12, 0, sys.MIPS64},
+	{AMOVBU, C_ADDR, C_NONE, C_REG, 51, 8, 0, sys.MIPS},
+	{AMOVBU, C_ADDR, C_NONE, C_REG, 51, 12, 0, sys.MIPS64},
 	{AMOVW, C_TLS, C_NONE, C_REG, 54, 8, 0, 0},
-	{AMOVWU, C_TLS, C_NONE, C_REG, 54, 8, 0, Mips64},
-	{AMOVV, C_TLS, C_NONE, C_REG, 54, 8, 0, Mips64},
+	{AMOVWU, C_TLS, C_NONE, C_REG, 54, 8, 0, sys.MIPS64},
+	{AMOVV, C_TLS, C_NONE, C_REG, 54, 8, 0, sys.MIPS64},
 	{AMOVB, C_TLS, C_NONE, C_REG, 54, 8, 0, 0},
 	{AMOVBU, C_TLS, C_NONE, C_REG, 54, 8, 0, 0},
 
-	{AMOVW, C_SECON, C_NONE, C_REG, 3, 4, REGSB, Mips64},
-	{AMOVV, C_SECON, C_NONE, C_REG, 3, 4, REGSB, Mips64},
+	{AMOVW, C_SECON, C_NONE, C_REG, 3, 4, REGSB, sys.MIPS64},
+	{AMOVV, C_SECON, C_NONE, C_REG, 3, 4, REGSB, sys.MIPS64},
 	{AMOVW, C_SACON, C_NONE, C_REG, 3, 4, REGSP, 0},
-	{AMOVV, C_SACON, C_NONE, C_REG, 3, 4, REGSP, Mips64},
-	{AMOVW, C_LECON, C_NONE, C_REG, 52, 8, REGSB, Mips32},
-	{AMOVW, C_LECON, C_NONE, C_REG, 52, 12, REGSB, Mips64},
-	{AMOVV, C_LECON, C_NONE, C_REG, 52, 12, REGSB, Mips64},
+	{AMOVV, C_SACON, C_NONE, C_REG, 3, 4, REGSP, sys.MIPS64},
+	{AMOVW, C_LECON, C_NONE, C_REG, 52, 8, REGSB, sys.MIPS},
+	{AMOVW, C_LECON, C_NONE, C_REG, 52, 12, REGSB, sys.MIPS64},
+	{AMOVV, C_LECON, C_NONE, C_REG, 52, 12, REGSB, sys.MIPS64},
 
 	{AMOVW, C_LACON, C_NONE, C_REG, 26, 12, REGSP, 0},
-	{AMOVV, C_LACON, C_NONE, C_REG, 26, 12, REGSP, Mips64},
+	{AMOVV, C_LACON, C_NONE, C_REG, 26, 12, REGSP, sys.MIPS64},
 	{AMOVW, C_ADDCON, C_NONE, C_REG, 3, 4, REGZERO, 0},
-	{AMOVV, C_ADDCON, C_NONE, C_REG, 3, 4, REGZERO, Mips64},
+	{AMOVV, C_ADDCON, C_NONE, C_REG, 3, 4, REGZERO, sys.MIPS64},
 	{AMOVW, C_ANDCON, C_NONE, C_REG, 3, 4, REGZERO, 0},
-	{AMOVV, C_ANDCON, C_NONE, C_REG, 3, 4, REGZERO, Mips64},
+	{AMOVV, C_ANDCON, C_NONE, C_REG, 3, 4, REGZERO, sys.MIPS64},
 	{AMOVW, C_STCON, C_NONE, C_REG, 55, 8, 0, 0},
-	{AMOVV, C_STCON, C_NONE, C_REG, 55, 8, 0, Mips64},
+	{AMOVV, C_STCON, C_NONE, C_REG, 55, 8, 0, sys.MIPS64},
 
 	{AMOVW, C_UCON, C_NONE, C_REG, 24, 4, 0, 0},
-	{AMOVV, C_UCON, C_NONE, C_REG, 24, 4, 0, Mips64},
+	{AMOVV, C_UCON, C_NONE, C_REG, 24, 4, 0, sys.MIPS64},
 	{AMOVW, C_LCON, C_NONE, C_REG, 19, 8, 0, 0},
-	{AMOVV, C_LCON, C_NONE, C_REG, 19, 8, 0, Mips64},
+	{AMOVV, C_LCON, C_NONE, C_REG, 19, 8, 0, sys.MIPS64},
 
 	{AMOVW, C_HI, C_NONE, C_REG, 20, 4, 0, 0},
-	{AMOVV, C_HI, C_NONE, C_REG, 20, 4, 0, Mips64},
+	{AMOVV, C_HI, C_NONE, C_REG, 20, 4, 0, sys.MIPS64},
 	{AMOVW, C_LO, C_NONE, C_REG, 20, 4, 0, 0},
-	{AMOVV, C_LO, C_NONE, C_REG, 20, 4, 0, Mips64},
+	{AMOVV, C_LO, C_NONE, C_REG, 20, 4, 0, sys.MIPS64},
 	{AMOVW, C_REG, C_NONE, C_HI, 21, 4, 0, 0},
-	{AMOVV, C_REG, C_NONE, C_HI, 21, 4, 0, Mips64},
+	{AMOVV, C_REG, C_NONE, C_HI, 21, 4, 0, sys.MIPS64},
 	{AMOVW, C_REG, C_NONE, C_LO, 21, 4, 0, 0},
-	{AMOVV, C_REG, C_NONE, C_LO, 21, 4, 0, Mips64},
+	{AMOVV, C_REG, C_NONE, C_LO, 21, 4, 0, sys.MIPS64},
 
 	{AMUL, C_REG, C_REG, C_NONE, 22, 4, 0, 0},
 	{AMUL, C_REG, C_REG, C_REG, 22, 4, 0, 0},
-	{AMULV, C_REG, C_REG, C_NONE, 22, 4, 0, Mips64},
+	{AMULV, C_REG, C_REG, C_NONE, 22, 4, 0, sys.MIPS64},
 
 	{AADD, C_ADD0CON, C_REG, C_REG, 4, 4, 0, 0},
 	{AADD, C_ADD0CON, C_NONE, C_REG, 4, 4, 0, 0},
 	{AADD, C_ANDCON, C_REG, C_REG, 10, 8, 0, 0},
 	{AADD, C_ANDCON, C_NONE, C_REG, 10, 8, 0, 0},
 
-	{AADDV, C_ADD0CON, C_REG, C_REG, 4, 4, 0, Mips64},
-	{AADDV, C_ADD0CON, C_NONE, C_REG, 4, 4, 0, Mips64},
-	{AADDV, C_ANDCON, C_REG, C_REG, 10, 8, 0, Mips64},
-	{AADDV, C_ANDCON, C_NONE, C_REG, 10, 8, 0, Mips64},
+	{AADDV, C_ADD0CON, C_REG, C_REG, 4, 4, 0, sys.MIPS64},
+	{AADDV, C_ADD0CON, C_NONE, C_REG, 4, 4, 0, sys.MIPS64},
+	{AADDV, C_ANDCON, C_REG, C_REG, 10, 8, 0, sys.MIPS64},
+	{AADDV, C_ANDCON, C_NONE, C_REG, 10, 8, 0, sys.MIPS64},
 
 	{AAND, C_AND0CON, C_REG, C_REG, 4, 4, 0, 0},
 	{AAND, C_AND0CON, C_NONE, C_REG, 4, 4, 0, 0},
@@ -250,23 +251,23 @@ var optab = []Optab{
 
 	{AADD, C_UCON, C_REG, C_REG, 25, 8, 0, 0},
 	{AADD, C_UCON, C_NONE, C_REG, 25, 8, 0, 0},
-	{AADDV, C_UCON, C_REG, C_REG, 25, 8, 0, Mips64},
-	{AADDV, C_UCON, C_NONE, C_REG, 25, 8, 0, Mips64},
+	{AADDV, C_UCON, C_REG, C_REG, 25, 8, 0, sys.MIPS64},
+	{AADDV, C_UCON, C_NONE, C_REG, 25, 8, 0, sys.MIPS64},
 	{AAND, C_UCON, C_REG, C_REG, 25, 8, 0, 0},
 	{AAND, C_UCON, C_NONE, C_REG, 25, 8, 0, 0},
 
 	{AADD, C_LCON, C_NONE, C_REG, 23, 12, 0, 0},
-	{AADDV, C_LCON, C_NONE, C_REG, 23, 12, 0, Mips64},
+	{AADDV, C_LCON, C_NONE, C_REG, 23, 12, 0, sys.MIPS64},
 	{AAND, C_LCON, C_NONE, C_REG, 23, 12, 0, 0},
 	{AADD, C_LCON, C_REG, C_REG, 23, 12, 0, 0},
-	{AADDV, C_LCON, C_REG, C_REG, 23, 12, 0, Mips64},
+	{AADDV, C_LCON, C_REG, C_REG, 23, 12, 0, sys.MIPS64},
 	{AAND, C_LCON, C_REG, C_REG, 23, 12, 0, 0},
 
 	{ASLL, C_SCON, C_REG, C_REG, 16, 4, 0, 0},
 	{ASLL, C_SCON, C_NONE, C_REG, 16, 4, 0, 0},
 
-	{ASLLV, C_SCON, C_REG, C_REG, 16, 4, 0, Mips64},
-	{ASLLV, C_SCON, C_NONE, C_REG, 16, 4, 0, Mips64},
+	{ASLLV, C_SCON, C_REG, C_REG, 16, 4, 0, sys.MIPS64},
+	{ASLLV, C_SCON, C_NONE, C_REG, 16, 4, 0, sys.MIPS64},
 
 	{ASYSCALL, C_NONE, C_NONE, C_NONE, 5, 4, 0, 0},
 
@@ -281,85 +282,84 @@ var optab = []Optab{
 	{AJMP, C_NONE, C_NONE, C_ZOREG, 18, 4, REGZERO, 0},
 	{AJAL, C_NONE, C_NONE, C_ZOREG, 18, 4, REGLINK, 0},
 
-	{AMOVW, C_SEXT, C_NONE, C_FREG, 27, 4, REGSB, Mips64},
-	{AMOVF, C_SEXT, C_NONE, C_FREG, 27, 4, REGSB, Mips64},
-	{AMOVD, C_SEXT, C_NONE, C_FREG, 27, 4, REGSB, Mips64},
-	{AMOVW, C_SAUTO, C_NONE, C_FREG, 27, 4, REGSP, Mips64},
+	{AMOVW, C_SEXT, C_NONE, C_FREG, 27, 4, REGSB, sys.MIPS64},
+	{AMOVF, C_SEXT, C_NONE, C_FREG, 27, 4, REGSB, sys.MIPS64},
+	{AMOVD, C_SEXT, C_NONE, C_FREG, 27, 4, REGSB, sys.MIPS64},
+	{AMOVW, C_SAUTO, C_NONE, C_FREG, 27, 4, REGSP, sys.MIPS64},
 	{AMOVF, C_SAUTO, C_NONE, C_FREG, 27, 4, REGSP, 0},
 	{AMOVD, C_SAUTO, C_NONE, C_FREG, 27, 4, REGSP, 0},
-	{AMOVW, C_SOREG, C_NONE, C_FREG, 27, 4, REGZERO, Mips64},
+	{AMOVW, C_SOREG, C_NONE, C_FREG, 27, 4, REGZERO, sys.MIPS64},
 	{AMOVF, C_SOREG, C_NONE, C_FREG, 27, 4, REGZERO, 0},
 	{AMOVD, C_SOREG, C_NONE, C_FREG, 27, 4, REGZERO, 0},
 
-	{AMOVW, C_LEXT, C_NONE, C_FREG, 27, 12, REGSB, Mips64},
-	{AMOVF, C_LEXT, C_NONE, C_FREG, 27, 12, REGSB, Mips64},
-	{AMOVD, C_LEXT, C_NONE, C_FREG, 27, 12, REGSB, Mips64},
-	{AMOVW, C_LAUTO, C_NONE, C_FREG, 27, 12, REGSP, Mips64},
+	{AMOVW, C_LEXT, C_NONE, C_FREG, 27, 12, REGSB, sys.MIPS64},
+	{AMOVF, C_LEXT, C_NONE, C_FREG, 27, 12, REGSB, sys.MIPS64},
+	{AMOVD, C_LEXT, C_NONE, C_FREG, 27, 12, REGSB, sys.MIPS64},
+	{AMOVW, C_LAUTO, C_NONE, C_FREG, 27, 12, REGSP, sys.MIPS64},
 	{AMOVF, C_LAUTO, C_NONE, C_FREG, 27, 12, REGSP, 0},
 	{AMOVD, C_LAUTO, C_NONE, C_FREG, 27, 12, REGSP, 0},
-	{AMOVW, C_LOREG, C_NONE, C_FREG, 27, 12, REGZERO, Mips64},
+	{AMOVW, C_LOREG, C_NONE, C_FREG, 27, 12, REGZERO, sys.MIPS64},
 	{AMOVF, C_LOREG, C_NONE, C_FREG, 27, 12, REGZERO, 0},
 	{AMOVD, C_LOREG, C_NONE, C_FREG, 27, 12, REGZERO, 0},
-	{AMOVF, C_ADDR, C_NONE, C_FREG, 51, 8, 0, Mips32},
-	{AMOVF, C_ADDR, C_NONE, C_FREG, 51, 12, 0, Mips64},
-	{AMOVD, C_ADDR, C_NONE, C_FREG, 51, 8, 0, Mips32},
-	{AMOVD, C_ADDR, C_NONE, C_FREG, 51, 12, 0, Mips64},
+	{AMOVF, C_ADDR, C_NONE, C_FREG, 51, 8, 0, sys.MIPS},
+	{AMOVF, C_ADDR, C_NONE, C_FREG, 51, 12, 0, sys.MIPS64},
+	{AMOVD, C_ADDR, C_NONE, C_FREG, 51, 8, 0, sys.MIPS},
+	{AMOVD, C_ADDR, C_NONE, C_FREG, 51, 12, 0, sys.MIPS64},
 
-	{AMOVW, C_FREG, C_NONE, C_SEXT, 28, 4, REGSB, Mips64},
-	{AMOVF, C_FREG, C_NONE, C_SEXT, 28, 4, REGSB, Mips64},
-	{AMOVD, C_FREG, C_NONE, C_SEXT, 28, 4, REGSB, Mips64},
-	{AMOVW, C_FREG, C_NONE, C_SAUTO, 28, 4, REGSP, Mips64},
+	{AMOVW, C_FREG, C_NONE, C_SEXT, 28, 4, REGSB, sys.MIPS64},
+	{AMOVF, C_FREG, C_NONE, C_SEXT, 28, 4, REGSB, sys.MIPS64},
+	{AMOVD, C_FREG, C_NONE, C_SEXT, 28, 4, REGSB, sys.MIPS64},
+	{AMOVW, C_FREG, C_NONE, C_SAUTO, 28, 4, REGSP, sys.MIPS64},
 	{AMOVF, C_FREG, C_NONE, C_SAUTO, 28, 4, REGSP, 0},
 	{AMOVD, C_FREG, C_NONE, C_SAUTO, 28, 4, REGSP, 0},
-	{AMOVW, C_FREG, C_NONE, C_SOREG, 28, 4, REGZERO, Mips64},
+	{AMOVW, C_FREG, C_NONE, C_SOREG, 28, 4, REGZERO, sys.MIPS64},
 	{AMOVF, C_FREG, C_NONE, C_SOREG, 28, 4, REGZERO, 0},
 	{AMOVD, C_FREG, C_NONE, C_SOREG, 28, 4, REGZERO, 0},
 
-	{AMOVW, C_FREG, C_NONE, C_LEXT, 28, 12, REGSB, Mips64},
-	{AMOVF, C_FREG, C_NONE, C_LEXT, 28, 12, REGSB, Mips64},
-	{AMOVD, C_FREG, C_NONE, C_LEXT, 28, 12, REGSB, Mips64},
-	{AMOVW, C_FREG, C_NONE, C_LAUTO, 28, 12, REGSP, Mips64},
+	{AMOVW, C_FREG, C_NONE, C_LEXT, 28, 12, REGSB, sys.MIPS64},
+	{AMOVF, C_FREG, C_NONE, C_LEXT, 28, 12, REGSB, sys.MIPS64},
+	{AMOVD, C_FREG, C_NONE, C_LEXT, 28, 12, REGSB, sys.MIPS64},
+	{AMOVW, C_FREG, C_NONE, C_LAUTO, 28, 12, REGSP, sys.MIPS64},
 	{AMOVF, C_FREG, C_NONE, C_LAUTO, 28, 12, REGSP, 0},
 	{AMOVD, C_FREG, C_NONE, C_LAUTO, 28, 12, REGSP, 0},
-	{AMOVW, C_FREG, C_NONE, C_LOREG, 28, 12, REGZERO, Mips64},
+	{AMOVW, C_FREG, C_NONE, C_LOREG, 28, 12, REGZERO, sys.MIPS64},
 	{AMOVF, C_FREG, C_NONE, C_LOREG, 28, 12, REGZERO, 0},
 	{AMOVD, C_FREG, C_NONE, C_LOREG, 28, 12, REGZERO, 0},
-	{AMOVF, C_FREG, C_NONE, C_ADDR, 50, 8, 0, Mips32},
-	{AMOVF, C_FREG, C_NONE, C_ADDR, 50, 12, 0, Mips64},
-	{AMOVD, C_FREG, C_NONE, C_ADDR, 50, 8, 0, Mips32},
-	{AMOVD, C_FREG, C_NONE, C_ADDR, 50, 12, 0, Mips64},
+	{AMOVF, C_FREG, C_NONE, C_ADDR, 50, 8, 0, sys.MIPS},
+	{AMOVF, C_FREG, C_NONE, C_ADDR, 50, 12, 0, sys.MIPS64},
+	{AMOVD, C_FREG, C_NONE, C_ADDR, 50, 8, 0, sys.MIPS},
+	{AMOVD, C_FREG, C_NONE, C_ADDR, 50, 12, 0, sys.MIPS64},
 
 	{AMOVW, C_REG, C_NONE, C_FREG, 30, 4, 0, 0},
 	{AMOVW, C_FREG, C_NONE, C_REG, 31, 4, 0, 0},
-	{AMOVV, C_REG, C_NONE, C_FREG, 47, 4, 0, Mips64},
-	{AMOVV, C_FREG, C_NONE, C_REG, 48, 4, 0, Mips64},
+	{AMOVV, C_REG, C_NONE, C_FREG, 47, 4, 0, sys.MIPS64},
+	{AMOVV, C_FREG, C_NONE, C_REG, 48, 4, 0, sys.MIPS64},
 
-	{AMOVW, C_ADDCON, C_NONE, C_FREG, 34, 8, 0, Mips64},
-	{AMOVW, C_ANDCON, C_NONE, C_FREG, 34, 8, 0, Mips64},
+	{AMOVW, C_ADDCON, C_NONE, C_FREG, 34, 8, 0, sys.MIPS64},
+	{AMOVW, C_ANDCON, C_NONE, C_FREG, 34, 8, 0, sys.MIPS64},
 
 	{AMOVW, C_REG, C_NONE, C_MREG, 37, 4, 0, 0},
-	{AMOVV, C_REG, C_NONE, C_MREG, 37, 4, 0, Mips64},
+	{AMOVV, C_REG, C_NONE, C_MREG, 37, 4, 0, sys.MIPS64},
 	{AMOVW, C_MREG, C_NONE, C_REG, 38, 4, 0, 0},
-	{AMOVV, C_MREG, C_NONE, C_REG, 38, 4, 0, Mips64},
+	{AMOVV, C_MREG, C_NONE, C_REG, 38, 4, 0, sys.MIPS64},
 
 	{AWORD, C_LCON, C_NONE, C_NONE, 40, 4, 0, 0},
 
 	{AMOVW, C_REG, C_NONE, C_FCREG, 41, 8, 0, 0},
-	{AMOVV, C_REG, C_NONE, C_FCREG, 41, 8, 0, Mips64},
+	{AMOVV, C_REG, C_NONE, C_FCREG, 41, 8, 0, sys.MIPS64},
 	{AMOVW, C_FCREG, C_NONE, C_REG, 42, 4, 0, 0},
-	{AMOVV, C_FCREG, C_NONE, C_REG, 42, 4, 0, Mips64},
+	{AMOVV, C_FCREG, C_NONE, C_REG, 42, 4, 0, sys.MIPS64},
 
 	{ATEQ, C_SCON, C_REG, C_REG, 15, 4, 0, 0},
 	{ATEQ, C_SCON, C_NONE, C_REG, 15, 4, 0, 0},
 	{ACMOVT, C_REG, C_NONE, C_REG, 17, 4, 0, 0},
 
-	{ABREAK, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, Mips64}, /* really CACHE instruction */
-	{ABREAK, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, Mips64},
-	{ABREAK, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, Mips64},
+	{ABREAK, C_REG, C_NONE, C_SEXT, 7, 4, REGSB, sys.MIPS64}, /* really CACHE instruction */
+	{ABREAK, C_REG, C_NONE, C_SAUTO, 7, 4, REGSP, sys.MIPS64},
+	{ABREAK, C_REG, C_NONE, C_SOREG, 7, 4, REGZERO, sys.MIPS64},
 	{ABREAK, C_NONE, C_NONE, C_NONE, 5, 4, 0, 0},
 
 	{obj.AUNDEF, C_NONE, C_NONE, C_NONE, 49, 4, 0, 0},
-	{obj.AUSEFIELD, C_ADDR, C_NONE, C_NONE, 0, 0, 0, 0},
 	{obj.APCDATA, C_LCON, C_NONE, C_LCON, 0, 0, 0, 0},
 	{obj.AFUNCDATA, C_SCON, C_NONE, C_ADDR, 0, 0, 0, 0},
 	{obj.ANOP, C_NONE, C_NONE, C_NONE, 0, 0, 0, 0},
@@ -373,7 +373,7 @@ var oprange [ALAST & obj.AMask][]Optab
 
 var xcmp [C_NCLASS][C_NCLASS]bool
 
-func span0(ctxt *obj.Link, cursym *obj.LSym) {
+func span0(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
 	p := cursym.Text
 	if p == nil || p.Link == nil { // handle external functions and ELF section symbols
 		return
@@ -382,30 +382,29 @@ func span0(ctxt *obj.Link, cursym *obj.LSym) {
 	ctxt.Autosize = int32(p.To.Offset + ctxt.FixedFrameSize())
 
 	if oprange[AOR&obj.AMask] == nil {
-		buildop(ctxt)
+		ctxt.Diag("mips ops not initialized, call mips.buildop first")
 	}
 
-	c := int64(0)
-	p.Pc = c
+	pc := int64(0)
+	p.Pc = pc
 
 	var m int
 	var o *Optab
 	for p = p.Link; p != nil; p = p.Link {
-		ctxt.Curp = p
-		p.Pc = c
+		p.Pc = pc
 		o = oplook(ctxt, p)
 		m = int(o.size)
 		if m == 0 {
-			if p.As != obj.ANOP && p.As != obj.AFUNCDATA && p.As != obj.APCDATA && p.As != obj.AUSEFIELD {
+			if p.As != obj.ANOP && p.As != obj.AFUNCDATA && p.As != obj.APCDATA {
 				ctxt.Diag("zero-width instruction\n%v", p)
 			}
 			continue
 		}
 
-		c += int64(m)
+		pc += int64(m)
 	}
 
-	cursym.Size = c
+	cursym.Size = pc
 
 	/*
 	 * if any procedure is large enough to
@@ -418,20 +417,17 @@ func span0(ctxt *obj.Link, cursym *obj.LSym) {
 	var otxt int64
 	var q *obj.Prog
 	for bflag != 0 {
-		if ctxt.Debugvlog != 0 {
-			ctxt.Logf("%5.2f span1\n", obj.Cputime())
-		}
 		bflag = 0
-		c = 0
+		pc = 0
 		for p = cursym.Text.Link; p != nil; p = p.Link {
-			p.Pc = c
+			p.Pc = pc
 			o = oplook(ctxt, p)
 
 			// very large conditional branches
 			if o.type_ == 6 && p.Pcond != nil {
-				otxt = p.Pcond.Pc - c
+				otxt = p.Pcond.Pc - pc
 				if otxt < -(1<<17)+10 || otxt >= (1<<17)-10 {
-					q = ctxt.NewProg()
+					q = newprog()
 					q.Link = p.Link
 					p.Link = q
 					q.As = AJMP
@@ -439,7 +435,7 @@ func span0(ctxt *obj.Link, cursym *obj.LSym) {
 					q.To.Type = obj.TYPE_BRANCH
 					q.Pcond = p.Pcond
 					p.Pcond = q
-					q = ctxt.NewProg()
+					q = newprog()
 					q.Link = p.Link
 					p.Link = q
 					q.As = AJMP
@@ -447,29 +443,29 @@ func span0(ctxt *obj.Link, cursym *obj.LSym) {
 					q.To.Type = obj.TYPE_BRANCH
 					q.Pcond = q.Link.Link
 
-					addnop(ctxt, p.Link)
-					addnop(ctxt, p)
+					addnop(ctxt, p.Link, newprog)
+					addnop(ctxt, p, newprog)
 					bflag = 1
 				}
 			}
 
 			m = int(o.size)
 			if m == 0 {
-				if p.As != obj.ANOP && p.As != obj.AFUNCDATA && p.As != obj.APCDATA && p.As != obj.AUSEFIELD {
+				if p.As != obj.ANOP && p.As != obj.AFUNCDATA && p.As != obj.APCDATA {
 					ctxt.Diag("zero-width instruction\n%v", p)
 				}
 				continue
 			}
 
-			c += int64(m)
+			pc += int64(m)
 		}
 
-		cursym.Size = c
+		cursym.Size = pc
 	}
-	if ctxt.Mode&Mips64 != 0 {
-		c += -c & (mips64FuncAlign - 1)
+	if ctxt.Arch.Family == sys.MIPS64 {
+		pc += -pc & (mips64FuncAlign - 1)
 	}
-	cursym.Size = c
+	cursym.Size = pc
 
 	/*
 	 * lay out the code, emitting code and data relocations.
@@ -482,7 +478,6 @@ func span0(ctxt *obj.Link, cursym *obj.LSym) {
 	var out [4]uint32
 	for p := cursym.Text.Link; p != nil; p = p.Link {
 		ctxt.Pc = p.Pc
-		ctxt.Curp = p
 		o = oplook(ctxt, p)
 		if int(o.size) > 4*len(out) {
 			log.Fatalf("out array in span0 is too small, need at least %d for %v", o.size/4, p)
@@ -670,7 +665,7 @@ func prasm(p *obj.Prog) {
 
 func oplook(ctxt *obj.Link, p *obj.Prog) *Optab {
 	if oprange[AOR&obj.AMask] == nil {
-		buildop(ctxt)
+		ctxt.Diag("mips ops not initialized, call mips.buildop first")
 	}
 
 	a1 := int(p.Optab)
@@ -703,7 +698,7 @@ func oplook(ctxt *obj.Link, p *obj.Prog) *Optab {
 	c3 := &xcmp[a3]
 	for i := range ops {
 		op := &ops[i]
-		if int(op.a2) == a2 && c1[op.a1] && c3[op.a3] && (ctxt.Mode&op.mode == op.mode) {
+		if int(op.a2) == a2 && c1[op.a1] && c3[op.a3] && (op.family == 0 || ctxt.Arch.Family == op.family) {
 			p.Optab = uint16(cap(optab) - cap(ops) + i + 1)
 			return op
 		}
@@ -835,6 +830,13 @@ func opset(a, b0 obj.As) {
 }
 
 func buildop(ctxt *obj.Link) {
+	if oprange[AOR&obj.AMask] != nil {
+		// Already initialized; stop now.
+		// This happens in the cmd/asm tests,
+		// each of which re-initializes the arch.
+		return
+	}
+
 	var n int
 
 	for i := 0; i < C_NCLASS; i++ {
@@ -988,7 +990,6 @@ func buildop(ctxt *obj.Link) {
 			obj.ANOP,
 			obj.ATEXT,
 			obj.AUNDEF,
-			obj.AUSEFIELD,
 			obj.AFUNCDATA,
 			obj.APCDATA,
 			obj.ADUFFZERO,
@@ -1070,7 +1071,7 @@ func asmout(ctxt *obj.Link, p *obj.Prog, o *Optab, out []uint32) {
 
 	add := AADDU
 
-	if ctxt.Mode&Mips64 != 0 {
+	if ctxt.Arch.Family == sys.MIPS64 {
 		add = AADDVU
 	}
 	switch o.type_ {
@@ -1083,7 +1084,7 @@ func asmout(ctxt *obj.Link, p *obj.Prog, o *Optab, out []uint32) {
 
 	case 1: /* mov r1,r2 ==> OR r1,r0,r2 */
 		a := AOR
-		if p.As == AMOVW && ctxt.Mode&Mips64 != 0 {
+		if p.As == AMOVW && ctxt.Arch.Family == sys.MIPS64 {
 			a = AADDU // sign-extended to high 32 bits
 		}
 		o1 = OP_RRR(oprrr(ctxt, a), uint32(REGZERO), uint32(p.From.Reg), uint32(p.To.Reg))

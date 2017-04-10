@@ -431,8 +431,12 @@ func (ctxt *Link) loadlib() {
 	determineLinkMode(ctxt)
 
 	// Recalculate pe parameters now that we have Linkmode set.
-	if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
+	if Headtype == obj.Hwindows {
 		Peinit(ctxt)
+	}
+
+	if Headtype == obj.Hdarwin && Linkmode == LinkExternal {
+		*FlagTextAddr = 0
 	}
 
 	if Linkmode == LinkExternal && SysArch.Family == sys.PPC64 {
@@ -569,7 +573,7 @@ func (ctxt *Link) loadlib() {
 			if *flagLibGCC != "none" {
 				hostArchive(ctxt, *flagLibGCC)
 			}
-			if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
+			if Headtype == obj.Hwindows {
 				if p := ctxt.findLibPath("libmingwex.a"); p != "none" {
 					hostArchive(ctxt, p)
 				}
@@ -643,6 +647,12 @@ func (ctxt *Link) loadlib() {
 				if !s.Attr.OnList() {
 					ctxt.Textp = append(ctxt.Textp, s)
 					s.Attr |= AttrOnList
+					// dupok symbols may be defined in multiple packages. its
+					// associated package is chosen sort of arbitrarily (the
+					// first containing package that the linker loads). canonicalize
+					// it here to the package with which it will be laid down
+					// in text.
+					s.File = pathtoprefix(lib.Pkg)
 				}
 			}
 		}
@@ -1003,6 +1013,10 @@ func (l *Link) hostlink() {
 
 	if !*FlagS && !debug_s {
 		argv = append(argv, "-gdwarf-2")
+	} else if Headtype == obj.Hdarwin {
+		// Recent versions of macOS print
+		//	ld: warning: option -s is obsolete and being ignored
+		// so do not pass any arguments.
 	} else {
 		argv = append(argv, "-s")
 	}
@@ -1018,9 +1032,11 @@ func (l *Link) hostlink() {
 	case obj.Hopenbsd:
 		argv = append(argv, "-Wl,-nopie")
 	case obj.Hwindows:
-		argv = append(argv, "-mconsole")
-	case obj.Hwindowsgui:
-		argv = append(argv, "-mwindows")
+		if windowsgui {
+			argv = append(argv, "-mwindows")
+		} else {
+			argv = append(argv, "-mconsole")
+		}
 	}
 
 	switch Buildmode {
@@ -1203,7 +1219,7 @@ func (l *Link) hostlink() {
 			}
 		}
 	}
-	if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui {
+	if Headtype == obj.Hwindows {
 		// libmingw32 and libmingwex have some inter-dependencies,
 		// so must use linker groups.
 		argv = append(argv, "-Wl,--start-group", "-lmingwex", "-lmingw32", "-Wl,--end-group")
@@ -1224,7 +1240,7 @@ func (l *Link) hostlink() {
 		l.Logf("%s", out)
 	}
 
-	if !*FlagS && !debug_s && Headtype == obj.Hdarwin {
+	if !*FlagS && !*FlagW && !debug_s && Headtype == obj.Hdarwin {
 		// Skip combining dwarf on arm.
 		if !SysArch.InFamily(sys.ARM, sys.ARM64) {
 			dsym := filepath.Join(*flagTmpdir, "go.dwarf")
@@ -1944,7 +1960,7 @@ func genasmsym(ctxt *Link, put func(*Link, *Symbol, string, SymbolType, int64, *
 			put(ctxt, nil, s.Name, FileSym, s.Value, nil)
 
 		case obj.SHOSTOBJ:
-			if Headtype == obj.Hwindows || Headtype == obj.Hwindowsgui || Iself {
+			if Headtype == obj.Hwindows || Iself {
 				put(ctxt, s, s.Name, UndefinedSym, s.Value, nil)
 			}
 

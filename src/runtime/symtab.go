@@ -21,8 +21,15 @@ type Frames struct {
 	wasPanic bool
 
 	// Frames to return for subsequent calls to the Next method.
-	// Used for non-Go frames.
-	frames *[]Frame
+	// Used for non-Go or inlined frames.
+	framesNext []Frame
+
+	// This buffer is used when expanding PCs into multiple frames.
+	// Initially it points to the scratch space.
+	frames []Frame
+
+	// Scratch space to avoid allocation.
+	scratch [4]Frame
 }
 
 // Frame is the information returned by Frames for each call frame.
@@ -51,21 +58,40 @@ type Frame struct {
 // prepares to return function/file/line information.
 // Do not change the slice until you are done with the Frames.
 func CallersFrames(callers []uintptr) *Frames {
-	return &Frames{callers: callers}
+	ci := &Frames{}
+	ci.frames = ci.scratch[:0]
+	if len(callers) >= 1 {
+		pc := callers[0]
+		s := pc - skipPC
+		if s >= 0 && s < sizeofSkipFunction {
+			// Ignore skip frame callers[0] since this means the caller trimmed the PC slice.
+			ci.callers = callers[1:]
+			return ci
+		}
+	}
+	if len(callers) >= 2 {
+		pc := callers[1]
+		s := pc - skipPC
+		if s >= 0 && s < sizeofSkipFunction {
+			// Expand callers[0] and skip s logical frames at this PC.
+			ci.frames = ci.expandPC(ci.frames[:0], callers[0])
+			ci.framesNext = ci.frames[int(s):]
+			ci.callers = callers[2:]
+			return ci
+		}
+	}
+	ci.callers = callers
+	return ci
 }
 
 // Next returns frame information for the next caller.
 // If more is false, there are no more callers (the Frame value is valid).
 func (ci *Frames) Next() (frame Frame, more bool) {
-	if ci.frames != nil {
+	if len(ci.framesNext) > 0 {
 		// We have saved up frames to return.
-		f := (*ci.frames)[0]
-		if len(*ci.frames) == 1 {
-			ci.frames = nil
-		} else {
-			*ci.frames = (*ci.frames)[1:]
-		}
-		return f, ci.frames != nil || len(ci.callers) > 0
+		f := ci.framesNext[0]
+		ci.framesNext = ci.framesNext[1:]
+		return f, len(ci.framesNext) > 0 || len(ci.callers) > 0
 	}
 
 	if len(ci.callers) == 0 {
@@ -75,13 +101,27 @@ func (ci *Frames) Next() (frame Frame, more bool) {
 	pc := ci.callers[0]
 	ci.callers = ci.callers[1:]
 	more = len(ci.callers) > 0
+
+	ci.frames = ci.expandPC(ci.frames[:0], pc)
+	if len(ci.frames) == 0 {
+		// Expansion failed, so there's no useful symbolic information.
+		return Frame{}, more
+	}
+
+	ci.framesNext = ci.frames[1:]
+	return ci.frames[0], more || len(ci.framesNext) > 0
+}
+
+// expandPC appends the frames corresponding to pc to frames
+// and returns the new slice.
+func (ci *Frames) expandPC(frames []Frame, pc uintptr) []Frame {
 	f := FuncForPC(pc)
 	if f == nil {
 		ci.wasPanic = false
 		if cgoSymbolizer != nil {
-			return ci.cgoNext(pc, more)
+			frames = expandCgoFrames(frames, pc)
 		}
-		return Frame{}, more
+		return frames
 	}
 
 	entry := f.Entry()
@@ -89,35 +129,68 @@ func (ci *Frames) Next() (frame Frame, more bool) {
 	if xpc > entry && !ci.wasPanic {
 		xpc--
 	}
-	file, line := f.FileLine(xpc)
-
-	function := f.Name()
 	ci.wasPanic = entry == sigpanicPC
 
-	frame = Frame{
+	frames = expandInlinedCalls(frames, xpc, f)
+	return frames
+}
+
+// expandInlinedCalls expands xpc into multiple frames using the inlining
+// info in fn. expandInlinedCalls appends to frames and returns the new
+// slice. The resulting slice has at least one frame for the physical frame
+// that contains xpc (i.e., the function represented by fn).
+func expandInlinedCalls(frames []Frame, xpc uintptr, fn *Func) []Frame {
+	entry := fn.Entry()
+
+	// file and line are the innermost position at xpc.
+	file, line := fn.FileLine(xpc)
+
+	funcInfo := fn.funcInfo()
+	inldata := funcdata(funcInfo, _FUNCDATA_InlTree)
+	if inldata != nil {
+		inltree := (*[1 << 20]inlinedCall)(inldata)
+		ix := pcdatavalue(funcInfo, _PCDATA_InlTreeIndex, xpc, nil)
+		for ix >= 0 {
+			call := inltree[ix]
+			frames = append(frames, Frame{
+				PC:       xpc,
+				Func:     nil, // nil for inlined functions
+				Function: funcnameFromNameoff(funcInfo, call.func_),
+				File:     file,
+				Line:     line,
+				Entry:    entry,
+			})
+			file = funcfile(funcInfo, call.file)
+			line = int(call.line)
+			ix = call.parent
+		}
+	}
+
+	physicalFrame := Frame{
 		PC:       xpc,
-		Func:     f,
-		Function: function,
+		Func:     fn,
+		Function: fn.Name(),
 		File:     file,
 		Line:     line,
 		Entry:    entry,
 	}
+	frames = append(frames, physicalFrame)
 
-	return frame, more
+	return frames
 }
 
-// cgoNext returns frame information for pc, known to be a non-Go function,
-// using the cgoSymbolizer hook.
-func (ci *Frames) cgoNext(pc uintptr, more bool) (Frame, bool) {
+// expandCgoFrames expands frame information for pc, known to be
+// a non-Go function, using the cgoSymbolizer hook. expandCgoFrames
+// appends to frames and returns the new slice.
+func expandCgoFrames(frames []Frame, pc uintptr) []Frame {
 	arg := cgoSymbolizerArg{pc: pc}
 	callCgoSymbolizer(&arg)
 
 	if arg.file == nil && arg.funcName == nil {
 		// No useful information from symbolizer.
-		return Frame{}, more
+		return frames
 	}
 
-	var frames []Frame
 	for {
 		frames = append(frames, Frame{
 			PC:       pc,
@@ -140,24 +213,14 @@ func (ci *Frames) cgoNext(pc uintptr, more bool) (Frame, bool) {
 	arg.pc = 0
 	callCgoSymbolizer(&arg)
 
-	if len(frames) == 1 {
-		// Return a single frame.
-		return frames[0], more
-	}
-
-	// Return the first frame we saw and store the rest to be
-	// returned by later calls to Next.
-	rf := frames[0]
-	frames = frames[1:]
-	ci.frames = new([]Frame)
-	*ci.frames = frames
-	return rf, true
+	return frames
 }
 
 // NOTE: Func does not expose the actual unexported fields, because we return *Func
 // values to users, and we want to keep them from being able to overwrite the data
 // with (say) *f = Func{}.
-// All code operating on a *Func must call raw to get the *_func instead.
+// All code operating on a *Func must call raw() to get the *_func
+// or funcInfo() to get the funcInfo instead.
 
 // A Func represents a Go function in the running binary.
 type Func struct {
@@ -168,11 +231,20 @@ func (f *Func) raw() *_func {
 	return (*_func)(unsafe.Pointer(f))
 }
 
-// funcdata.h
+func (f *Func) funcInfo() funcInfo {
+	fn := f.raw()
+	return funcInfo{fn, findmoduledatap(fn.entry)}
+}
+
+// PCDATA and FUNCDATA table indexes.
+//
+// See funcdata.h and ../cmd/internal/obj/funcdata.go.
 const (
 	_PCDATA_StackMapIndex       = 0
+	_PCDATA_InlTreeIndex        = 1
 	_FUNCDATA_ArgsPointerMaps   = 0
 	_FUNCDATA_LocalsPointerMaps = 1
+	_FUNCDATA_InlTree           = 2
 	_ArgsSizeUnknown            = -0x80000000
 )
 
@@ -361,15 +433,15 @@ func moduledataverify1(datap *moduledata) {
 	for i := 0; i < nftab; i++ {
 		// NOTE: ftab[nftab].entry is legal; it is the address beyond the final function.
 		if datap.ftab[i].entry > datap.ftab[i+1].entry {
-			f1 := (*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[i].funcoff]))
-			f2 := (*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[i+1].funcoff]))
+			f1 := funcInfo{(*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[i].funcoff])), datap}
+			f2 := funcInfo{(*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[i+1].funcoff])), datap}
 			f2name := "end"
 			if i+1 < nftab {
 				f2name = funcname(f2)
 			}
 			println("function symbol table not sorted by program counter:", hex(datap.ftab[i].entry), funcname(f1), ">", hex(datap.ftab[i+1].entry), f2name)
 			for j := 0; j <= i; j++ {
-				print("\t", hex(datap.ftab[j].entry), " ", funcname((*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[j].funcoff]))), "\n")
+				print("\t", hex(datap.ftab[j].entry), " ", funcname(funcInfo{(*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[j].funcoff])), datap}), "\n")
 			}
 			throw("invalid runtime symbol table")
 		}
@@ -382,10 +454,10 @@ func moduledataverify1(datap *moduledata) {
 			// But don't use the next PC if it corresponds to a foreign object chunk
 			// (no pcln table, f2.pcln == 0). That chunk might have an alignment
 			// more than 16 bytes.
-			f := (*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[i].funcoff]))
+			f := funcInfo{(*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[i].funcoff])), datap}
 			end := f.entry
 			if i+1 < nftab {
-				f2 := (*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[i+1].funcoff]))
+				f2 := funcInfo{(*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[i+1].funcoff])), datap}
 				if f2.pcln != 0 {
 					end = f2.entry - 16
 					if end < f.entry {
@@ -415,12 +487,12 @@ func moduledataverify1(datap *moduledata) {
 // FuncForPC returns a *Func describing the function that contains the
 // given program counter address, or else nil.
 func FuncForPC(pc uintptr) *Func {
-	return (*Func)(unsafe.Pointer(findfunc(pc)))
+	return (*Func)(unsafe.Pointer(findfunc(pc)._func))
 }
 
 // Name returns the name of the function.
 func (f *Func) Name() string {
-	return funcname(f.raw())
+	return funcname(f.funcInfo())
 }
 
 // Entry returns the entry address of the function.
@@ -435,7 +507,7 @@ func (f *Func) Entry() uintptr {
 func (f *Func) FileLine(pc uintptr) (file string, line int) {
 	// Pass strict=false here, because anyone can call this function,
 	// and they might just be wrong about targetpc belonging to f.
-	file, line32 := funcline1(f.raw(), pc, false)
+	file, line32 := funcline1(f.funcInfo(), pc, false)
 	return file, int(line32)
 }
 
@@ -448,10 +520,19 @@ func findmoduledatap(pc uintptr) *moduledata {
 	return nil
 }
 
-func findfunc(pc uintptr) *_func {
+type funcInfo struct {
+	*_func
+	datap *moduledata
+}
+
+func (f funcInfo) valid() bool {
+	return f._func != nil
+}
+
+func findfunc(pc uintptr) funcInfo {
 	datap := findmoduledatap(pc)
 	if datap == nil {
-		return nil
+		return funcInfo{}
 	}
 	const nsub = uintptr(len(findfuncbucket{}.subbuckets))
 
@@ -487,7 +568,7 @@ func findfunc(pc uintptr) *_func {
 			idx++
 		}
 	}
-	return (*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[idx].funcoff]))
+	return funcInfo{(*_func)(unsafe.Pointer(&datap.pclntable[datap.ftab[idx].funcoff])), datap}
 }
 
 type pcvalueCache struct {
@@ -502,7 +583,7 @@ type pcvalueCacheEnt struct {
 	val int32
 }
 
-func pcvalue(f *_func, off int32, targetpc uintptr, cache *pcvalueCache, strict bool) int32 {
+func pcvalue(f funcInfo, off int32, targetpc uintptr, cache *pcvalueCache, strict bool) int32 {
 	if off == 0 {
 		return -1
 	}
@@ -526,14 +607,14 @@ func pcvalue(f *_func, off int32, targetpc uintptr, cache *pcvalueCache, strict 
 		}
 	}
 
-	datap := findmoduledatap(f.entry) // inefficient
-	if datap == nil {
+	if !f.valid() {
 		if strict && panicking == 0 {
 			print("runtime: no module data for ", hex(f.entry), "\n")
 			throw("no module data")
 		}
 		return -1
 	}
+	datap := f.datap
 	p := datap.pclntable[off:]
 	pc := f.entry
 	val := int32(-1)
@@ -585,24 +666,37 @@ func pcvalue(f *_func, off int32, targetpc uintptr, cache *pcvalueCache, strict 
 	return -1
 }
 
-func cfuncname(f *_func) *byte {
-	if f == nil || f.nameoff == 0 {
+func cfuncname(f funcInfo) *byte {
+	if !f.valid() || f.nameoff == 0 {
 		return nil
 	}
-	datap := findmoduledatap(f.entry) // inefficient
-	if datap == nil {
-		return nil
-	}
-	return &datap.pclntable[f.nameoff]
+	return &f.datap.pclntable[f.nameoff]
 }
 
-func funcname(f *_func) string {
+func funcname(f funcInfo) string {
 	return gostringnocopy(cfuncname(f))
 }
 
-func funcline1(f *_func, targetpc uintptr, strict bool) (file string, line int32) {
-	datap := findmoduledatap(f.entry) // inefficient
-	if datap == nil {
+func funcnameFromNameoff(f funcInfo, nameoff int32) string {
+	datap := f.datap
+	if !f.valid() {
+		return ""
+	}
+	cstr := &datap.pclntable[nameoff]
+	return gostringnocopy(cstr)
+}
+
+func funcfile(f funcInfo, fileno int32) string {
+	datap := f.datap
+	if !f.valid() {
+		return "?"
+	}
+	return gostringnocopy(&datap.pclntable[datap.filetab[fileno]])
+}
+
+func funcline1(f funcInfo, targetpc uintptr, strict bool) (file string, line int32) {
+	datap := f.datap
+	if !f.valid() {
 		return "?", 0
 	}
 	fileno := int(pcvalue(f, f.pcfile, targetpc, nil, strict))
@@ -615,11 +709,11 @@ func funcline1(f *_func, targetpc uintptr, strict bool) (file string, line int32
 	return
 }
 
-func funcline(f *_func, targetpc uintptr) (file string, line int32) {
+func funcline(f funcInfo, targetpc uintptr) (file string, line int32) {
 	return funcline1(f, targetpc, true)
 }
 
-func funcspdelta(f *_func, targetpc uintptr, cache *pcvalueCache) int32 {
+func funcspdelta(f funcInfo, targetpc uintptr, cache *pcvalueCache) int32 {
 	x := pcvalue(f, f.pcsp, targetpc, cache, true)
 	if x&(sys.PtrSize-1) != 0 {
 		print("invalid spdelta ", funcname(f), " ", hex(f.entry), " ", hex(targetpc), " ", hex(f.pcsp), " ", x, "\n")
@@ -627,7 +721,7 @@ func funcspdelta(f *_func, targetpc uintptr, cache *pcvalueCache) int32 {
 	return x
 }
 
-func pcdatavalue(f *_func, table int32, targetpc uintptr, cache *pcvalueCache) int32 {
+func pcdatavalue(f funcInfo, table int32, targetpc uintptr, cache *pcvalueCache) int32 {
 	if table < 0 || table >= f.npcdata {
 		return -1
 	}
@@ -635,14 +729,14 @@ func pcdatavalue(f *_func, table int32, targetpc uintptr, cache *pcvalueCache) i
 	return pcvalue(f, off, targetpc, cache, true)
 }
 
-func funcdata(f *_func, i int32) unsafe.Pointer {
+func funcdata(f funcInfo, i int32) unsafe.Pointer {
 	if i < 0 || i >= f.nfuncdata {
 		return nil
 	}
 	p := add(unsafe.Pointer(&f.nfuncdata), unsafe.Sizeof(f.nfuncdata)+uintptr(f.npcdata)*4)
 	if sys.PtrSize == 8 && uintptr(p)&4 != 0 {
-		if uintptr(unsafe.Pointer(f))&4 != 0 {
-			println("runtime: misaligned func", f)
+		if uintptr(unsafe.Pointer(f._func))&4 != 0 {
+			println("runtime: misaligned func", f._func)
 		}
 		p = add(p, 4)
 	}
@@ -694,4 +788,12 @@ func stackmapdata(stkmap *stackmap, n int32) bitvector {
 		throw("stackmapdata: index out of range")
 	}
 	return bitvector{stkmap.nbit, (*byte)(add(unsafe.Pointer(&stkmap.bytedata), uintptr(n*((stkmap.nbit+7)/8))))}
+}
+
+// inlinedCall is the encoding of entries in the FUNCDATA_InlTree table.
+type inlinedCall struct {
+	parent int32 // index of parent in the inltree, or < 0
+	file   int32 // fileno index into filetab
+	line   int32 // line number of the call site
+	func_  int32 // offset into pclntab for name of called function
 }

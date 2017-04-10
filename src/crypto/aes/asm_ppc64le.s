@@ -7,7 +7,7 @@
 // licensed under OpenSSL and CRYPTOGAMS licenses depending on where you obtain
 // it. For further details see http://www.openssl.org/~appro/cryptogams/.
 
-// Original code can be found at the link bellow:
+// Original code can be found at the link below:
 // https://git.openssl.org/?p=openssl.git;a=blob;f=crypto/aes/asm/aesp8-ppc.pl
 
 // The code is based on 627c953376 from 4 Jun 2016. I changed some function
@@ -439,7 +439,7 @@ TEXT ·decryptBlockAsm(SB),NOSPLIT|NOFRAME,$0
 	// Load the arguments inside the registers
 	MOVD dst+0(FP), BLK_OUT
 	MOVD src+8(FP), BLK_INP
-	MOVD enc+16(FP), BLK_KEY
+	MOVD dec+16(FP), BLK_KEY
 
 	MOVWZ 240(BLK_KEY), BLK_ROUNDS // lwz 6,240(5)
 	MOVD $15, BLK_IDX              // li 7,15

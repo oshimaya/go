@@ -539,7 +539,6 @@ var optab = []Optab{
 	{ALSW, C_ZOREG, C_NONE, C_NONE, C_REG, 45, 4, 0},
 	{ALSW, C_ZOREG, C_NONE, C_LCON, C_REG, 42, 4, 0},
 	{obj.AUNDEF, C_NONE, C_NONE, C_NONE, C_NONE, 78, 4, 0},
-	{obj.AUSEFIELD, C_ADDR, C_NONE, C_NONE, C_NONE, 0, 0, 0},
 	{obj.APCDATA, C_LCON, C_NONE, C_NONE, C_LCON, 0, 0, 0},
 	{obj.AFUNCDATA, C_SCON, C_NONE, C_NONE, C_ADDR, 0, 0, 0},
 	{obj.ANOP, C_NONE, C_NONE, C_NONE, C_NONE, 0, 0, 0},
@@ -553,7 +552,7 @@ var oprange [ALAST & obj.AMask][]Optab
 
 var xcmp [C_NCLASS][C_NCLASS]bool
 
-func span9(ctxt *obj.Link, cursym *obj.LSym) {
+func span9(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
 	p := cursym.Text
 	if p == nil || p.Link == nil { // handle external functions and ELF section symbols
 		return
@@ -562,30 +561,29 @@ func span9(ctxt *obj.Link, cursym *obj.LSym) {
 	ctxt.Autosize = int32(p.To.Offset)
 
 	if oprange[AANDN&obj.AMask] == nil {
-		buildop(ctxt)
+		ctxt.Diag("ppc64 ops not initialized, call ppc64.buildop first")
 	}
 
-	c := int64(0)
-	p.Pc = c
+	pc := int64(0)
+	p.Pc = pc
 
 	var m int
 	var o *Optab
 	for p = p.Link; p != nil; p = p.Link {
-		ctxt.Curp = p
-		p.Pc = c
+		p.Pc = pc
 		o = oplook(ctxt, p)
 		m = int(o.size)
 		if m == 0 {
-			if p.As != obj.ANOP && p.As != obj.AFUNCDATA && p.As != obj.APCDATA && p.As != obj.AUSEFIELD {
+			if p.As != obj.ANOP && p.As != obj.AFUNCDATA && p.As != obj.APCDATA {
 				ctxt.Diag("zero-width instruction\n%v", p)
 			}
 			continue
 		}
 
-		c += int64(m)
+		pc += int64(m)
 	}
 
-	cursym.Size = c
+	cursym.Size = pc
 
 	/*
 	 * if any procedure is large enough to
@@ -598,27 +596,24 @@ func span9(ctxt *obj.Link, cursym *obj.LSym) {
 	var otxt int64
 	var q *obj.Prog
 	for bflag != 0 {
-		if ctxt.Debugvlog != 0 {
-			ctxt.Logf("%5.2f span1\n", obj.Cputime())
-		}
 		bflag = 0
-		c = 0
+		pc = 0
 		for p = cursym.Text.Link; p != nil; p = p.Link {
-			p.Pc = c
+			p.Pc = pc
 			o = oplook(ctxt, p)
 
 			// very large conditional branches
 			if (o.type_ == 16 || o.type_ == 17) && p.Pcond != nil {
-				otxt = p.Pcond.Pc - c
+				otxt = p.Pcond.Pc - pc
 				if otxt < -(1<<15)+10 || otxt >= (1<<15)-10 {
-					q = ctxt.NewProg()
+					q = newprog()
 					q.Link = p.Link
 					p.Link = q
 					q.As = ABR
 					q.To.Type = obj.TYPE_BRANCH
 					q.Pcond = p.Pcond
 					p.Pcond = q
-					q = ctxt.NewProg()
+					q = newprog()
 					q.Link = p.Link
 					p.Link = q
 					q.As = ABR
@@ -633,20 +628,20 @@ func span9(ctxt *obj.Link, cursym *obj.LSym) {
 
 			m = int(o.size)
 			if m == 0 {
-				if p.As != obj.ANOP && p.As != obj.AFUNCDATA && p.As != obj.APCDATA && p.As != obj.AUSEFIELD {
+				if p.As != obj.ANOP && p.As != obj.AFUNCDATA && p.As != obj.APCDATA {
 					ctxt.Diag("zero-width instruction\n%v", p)
 				}
 				continue
 			}
 
-			c += int64(m)
+			pc += int64(m)
 		}
 
-		cursym.Size = c
+		cursym.Size = pc
 	}
 
-	c += -c & (funcAlign - 1)
-	cursym.Size = c
+	pc += -pc & (funcAlign - 1)
+	cursym.Size = pc
 
 	/*
 	 * lay out the code, emitting code and data relocations.
@@ -659,7 +654,6 @@ func span9(ctxt *obj.Link, cursym *obj.LSym) {
 	var out [6]uint32
 	for p := cursym.Text.Link; p != nil; p = p.Link {
 		ctxt.Pc = p.Pc
-		ctxt.Curp = p
 		o = oplook(ctxt, p)
 		if int(o.size) > 4*len(out) {
 			log.Fatalf("out array in span9 is too small, need at least %d for %v", o.size/4, p)
@@ -1055,6 +1049,13 @@ func opset(a, b0 obj.As) {
 }
 
 func buildop(ctxt *obj.Link) {
+	if oprange[AANDN&obj.AMask] != nil {
+		// Already initialized; stop now.
+		// This happens in the cmd/asm tests,
+		// each of which re-initializes the arch.
+		return
+	}
+
 	var n int
 
 	for i := 0; i < C_NCLASS; i++ {
@@ -1768,7 +1769,6 @@ func buildop(ctxt *obj.Link) {
 			obj.ANOP,
 			obj.ATEXT,
 			obj.AUNDEF,
-			obj.AUSEFIELD,
 			obj.AFUNCDATA,
 			obj.APCDATA,
 			obj.ADUFFZERO,
@@ -2248,7 +2248,7 @@ func asmout(ctxt *obj.Link, p *obj.Prog, o *Optab, out []uint32) {
 				// that knows the name of the tls variable. Possibly
 				// we could add some assembly syntax so that the name
 				// of the variable does not have to be assumed.
-				rel.Sym = obj.Linklookup(ctxt, "runtime.tls_g", 0)
+				rel.Sym = ctxt.Lookup("runtime.tls_g", 0)
 				rel.Type = obj.R_POWER_TLS
 			}
 			o1 = AOP_RRR(opstorex(ctxt, p.As), uint32(p.From.Reg), uint32(p.To.Index), uint32(r))
@@ -2274,7 +2274,7 @@ func asmout(ctxt *obj.Link, p *obj.Prog, o *Optab, out []uint32) {
 				rel := obj.Addrel(ctxt.Cursym)
 				rel.Off = int32(ctxt.Pc)
 				rel.Siz = 4
-				rel.Sym = obj.Linklookup(ctxt, "runtime.tls_g", 0)
+				rel.Sym = ctxt.Lookup("runtime.tls_g", 0)
 				rel.Type = obj.R_POWER_TLS
 			}
 			o1 = AOP_RRR(oploadx(ctxt, p.As), uint32(p.To.Reg), uint32(p.From.Index), uint32(r))
@@ -2721,6 +2721,9 @@ func asmout(ctxt *obj.Link, p *obj.Prog, o *Optab, out []uint32) {
 		case ARLDIMI, ARLDIMICC:
 			o1 = AOP_RRR(opirr(ctxt, p.As), uint32(p.Reg), uint32(p.To.Reg), (uint32(v) & 0x1F))
 			o1 |= (uint32(d) & 31) << 6
+			if d&0x20 != 0 {
+				o1 |= 1 << 5
+			}
 			if v&0x20 != 0 {
 				o1 |= 1 << 1
 			}
@@ -2764,7 +2767,7 @@ func asmout(ctxt *obj.Link, p *obj.Prog, o *Optab, out []uint32) {
 		}
 		o1 = AOP_RRR(oprrr(ctxt, p.As), uint32(p.To.Reg), 0, uint32(r))
 
-	case 34: /* FMADDx fra,frb,frc,frd (d=a*b+c); FSELx a<0? (d=b): (d=c) */
+	case 34: /* FMADDx fra,frb,frc,frt (t=a*c±b) */
 		o1 = AOP_RRR(oprrr(ctxt, p.As), uint32(p.To.Reg), uint32(p.From.Reg), uint32(p.Reg)) | (uint32(p.From3.Reg)&31)<<6
 
 	case 35: /* mov r,lext/lauto/loreg ==> cau $(v>>16),sb,r'; store o(r') */

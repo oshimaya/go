@@ -30,35 +30,103 @@
 
 package gc
 
-import "cmd/internal/obj"
+import (
+	"cmd/compile/internal/types"
+	"cmd/internal/obj"
+	"cmd/internal/src"
+)
 
-func Prog(as obj.As) *obj.Prog {
-	var p *obj.Prog
+var sharedProgArray *[10000]obj.Prog // *T instead of T to work around issue 19839
 
-	p = pc
-	pc = Ctxt.NewProg()
-	Clearp(pc)
-	p.Link = pc
+func init() {
+	sharedProgArray = new([10000]obj.Prog)
+}
 
-	if !lineno.IsKnown() && Debug['K'] != 0 {
+// Progs accumulates Progs for a function and converts them into machine code.
+type Progs struct {
+	Text      *obj.Prog  // ATEXT Prog for this function
+	next      *obj.Prog  // next Prog
+	pc        int64      // virtual PC; count of Progs
+	pos       src.XPos   // position to use for new Progs
+	curfn     *Node      // fn these Progs are for
+	progcache []obj.Prog // local progcache
+	cacheidx  int        // first free element of progcache
+}
+
+// newProgs returns a new Progs for fn.
+func newProgs(fn *Node) *Progs {
+	pp := new(Progs)
+	if Ctxt.CanReuseProgs() {
+		pp.progcache = sharedProgArray[:]
+	}
+	pp.curfn = fn
+
+	// prime the pump
+	pp.next = pp.NewProg()
+	pp.clearp(pp.next)
+
+	pp.pos = fn.Pos
+	pp.settext(fn)
+	return pp
+}
+
+func (pp *Progs) NewProg() *obj.Prog {
+	if pp.cacheidx < len(pp.progcache) {
+		p := &pp.progcache[pp.cacheidx]
+		p.Ctxt = Ctxt
+		pp.cacheidx++
+		return p
+	}
+	p := new(obj.Prog)
+	p.Ctxt = Ctxt
+	return p
+}
+
+// Flush converts from pp to machine code.
+func (pp *Progs) Flush() {
+	plist := &obj.Plist{Firstpc: pp.Text, Curfn: pp.curfn}
+	obj.Flushplist(Ctxt, plist, pp.NewProg)
+}
+
+// Free clears pp and any associated resources.
+func (pp *Progs) Free() {
+	if Ctxt.CanReuseProgs() {
+		// Clear progs to enable GC and avoid abuse.
+		s := pp.progcache[:pp.cacheidx]
+		for i := range s {
+			s[i] = obj.Prog{}
+		}
+	}
+	// Clear pp to avoid abuse.
+	*pp = Progs{}
+}
+
+// Prog adds a Prog with instruction As to pp.
+func (pp *Progs) Prog(as obj.As) *obj.Prog {
+	p := pp.next
+	pp.next = pp.NewProg()
+	pp.clearp(pp.next)
+	p.Link = pp.next
+
+	if !pp.pos.IsKnown() && Debug['K'] != 0 {
 		Warn("prog: unknown position (line 0)")
 	}
 
 	p.As = as
-	p.Pos = lineno
+	p.Pos = pp.pos
 	return p
 }
 
-func Clearp(p *obj.Prog) {
+func (pp *Progs) clearp(p *obj.Prog) {
 	obj.Nopout(p)
 	p.As = obj.AEND
-	p.Pc = int64(pcloc)
-	pcloc++
+	p.Pc = pp.pc
+	pp.pc++
 }
 
-func Appendpp(p *obj.Prog, as obj.As, ftype obj.AddrType, freg int16, foffset int64, ttype obj.AddrType, treg int16, toffset int64) *obj.Prog {
-	q := Ctxt.NewProg()
-	Clearp(q)
+func (pp *Progs) Appendpp(p *obj.Prog, as obj.As, ftype obj.AddrType, freg int16, foffset int64, ttype obj.AddrType, treg int16, toffset int64) *obj.Prog {
+	q := pp.NewProg()
+	pp.clearp(q)
 	q.As = as
 	q.Pos = p.Pos
 	q.From.Type = ftype
@@ -72,20 +140,68 @@ func Appendpp(p *obj.Prog, as obj.As, ftype obj.AddrType, freg int16, foffset in
 	return q
 }
 
+func (pp *Progs) settext(fn *Node) {
+	if pp.Text != nil {
+		Fatalf("Progs.settext called twice")
+	}
+
+	ptxt := pp.Prog(obj.ATEXT)
+	if nam := fn.Func.Nname; !isblank(nam) {
+		ptxt.From.Type = obj.TYPE_MEM
+		ptxt.From.Name = obj.NAME_EXTERN
+		ptxt.From.Sym = Linksym(nam.Sym)
+		if fn.Func.Pragma&Systemstack != 0 {
+			ptxt.From.Sym.Set(obj.AttrCFunc, true)
+		}
+	}
+
+	ptxt.From3 = new(obj.Addr)
+	if fn.Func.Dupok() {
+		ptxt.From3.Offset |= obj.DUPOK
+	}
+	if fn.Func.Wrapper() {
+		ptxt.From3.Offset |= obj.WRAPPER
+	}
+	if fn.Func.NoFramePointer() {
+		ptxt.From3.Offset |= obj.NOFRAME
+	}
+	if fn.Func.Needctxt() {
+		ptxt.From3.Offset |= obj.NEEDCTXT
+	}
+	if fn.Func.Pragma&Nosplit != 0 {
+		ptxt.From3.Offset |= obj.NOSPLIT
+	}
+	if fn.Func.ReflectMethod() {
+		ptxt.From3.Offset |= obj.REFLECTMETHOD
+	}
+
+	// Clumsy but important.
+	// See test/recover.go for test cases and src/reflect/value.go
+	// for the actual functions being considered.
+	if myimportpath == "reflect" {
+		switch fn.Func.Nname.Sym.Name {
+		case "callReflect", "callMethod":
+			ptxt.From3.Offset |= obj.WRAPPER
+		}
+	}
+
+	pp.Text = ptxt
+}
+
 func ggloblnod(nam *Node) {
 	s := Linksym(nam.Sym)
 	s.Gotype = Linksym(ngotype(nam))
 	flags := 0
-	if nam.Name.Readonly {
+	if nam.Name.Readonly() {
 		flags = obj.RODATA
 	}
-	if nam.Type != nil && !haspointers(nam.Type) {
+	if nam.Type != nil && !types.Haspointers(nam.Type) {
 		flags |= obj.NOPTR
 	}
 	Ctxt.Globl(s, nam.Type.Width, flags)
 }
 
-func ggloblsym(s *Sym, width int32, flags int16) {
+func ggloblsym(s *types.Sym, width int32, flags int16) {
 	ggloblLSym(Linksym(s), width, flags)
 }
 
@@ -97,14 +213,7 @@ func ggloblLSym(s *obj.LSym, width int32, flags int16) {
 	Ctxt.Globl(s, int64(width), int(flags))
 }
 
-func gtrack(s *Sym) {
-	p := Gins(obj.AUSEFIELD, nil, nil)
-	p.From.Type = obj.TYPE_MEM
-	p.From.Name = obj.NAME_EXTERN
-	p.From.Sym = Linksym(s)
-}
-
-func isfat(t *Type) bool {
+func isfat(t *types.Type) bool {
 	if t != nil {
 		switch t.Etype {
 		case TSTRUCT, TARRAY, TSLICE, TSTRING,
@@ -116,64 +225,15 @@ func isfat(t *Type) bool {
 	return false
 }
 
-// Naddr rewrites a to refer to n.
-// It assumes that a is zeroed on entry.
-func Naddr(a *obj.Addr, n *Node) {
-	if n == nil {
-		return
-	}
-
-	if n.Op != ONAME {
-		Debug['h'] = 1
-		Dump("naddr", n)
-		Fatalf("naddr: bad %v %v", n.Op, Ctxt.Dconv(a))
-	}
-
-	a.Offset = n.Xoffset
-	s := n.Sym
-	a.Node = n.Orig
-
-	if s == nil {
-		Fatalf("naddr: nil sym %v", n)
-	}
-
-	a.Type = obj.TYPE_MEM
-	switch n.Class {
-	default:
-		Fatalf("naddr: ONAME class %v %d\n", n.Sym, n.Class)
-
-	case PEXTERN, PFUNC:
-		a.Name = obj.NAME_EXTERN
-
-	case PAUTO:
-		a.Name = obj.NAME_AUTO
-
-	case PPARAM, PPARAMOUT:
-		a.Name = obj.NAME_PARAM
-	}
-
-	a.Sym = Linksym(s)
-}
-
 func Addrconst(a *obj.Addr, v int64) {
 	a.Sym = nil
 	a.Type = obj.TYPE_CONST
 	a.Offset = v
 }
 
-func newplist() *obj.Plist {
-	pl := obj.Linknewplist(Ctxt)
-
-	pc = Ctxt.NewProg()
-	Clearp(pc)
-	pl.Firstpc = pc
-
-	return pl
-}
-
 // nodarg returns a Node for the function argument denoted by t,
-// which is either the entire function argument or result struct (t is a  struct *Type)
-// or a specific argument (t is a *Field within a struct *Type).
+// which is either the entire function argument or result struct (t is a  struct *types.Type)
+// or a specific argument (t is a *types.Field within a struct *types.Type).
 //
 // If fp is 0, the node is for use by a caller invoking the given
 // function, preparing the arguments before the call
@@ -188,12 +248,12 @@ func newplist() *obj.Plist {
 func nodarg(t interface{}, fp int) *Node {
 	var n *Node
 
-	var funarg Funarg
+	var funarg types.Funarg
 	switch t := t.(type) {
 	default:
 		Fatalf("bad nodarg %T(%v)", t, t)
 
-	case *Type:
+	case *types.Type:
 		// Entire argument struct, not just one arg
 		if !t.IsFuncArgStruct() {
 			Fatalf("nodarg: bad type %v", t)
@@ -201,8 +261,7 @@ func nodarg(t interface{}, fp int) *Node {
 		funarg = t.StructType().Funarg
 
 		// Build fake variable name for whole arg struct.
-		n = nod(ONAME, nil, nil)
-		n.Sym = lookup(".args")
+		n = newname(lookup(".args"))
 		n.Type = t
 		first := t.Field(0)
 		if first == nil {
@@ -212,9 +271,8 @@ func nodarg(t interface{}, fp int) *Node {
 			Fatalf("nodarg: offset not computed for %v", t)
 		}
 		n.Xoffset = first.Offset
-		n.Addable = true
 
-	case *Field:
+	case *types.Field:
 		funarg = t.Funarg
 		if fp == 1 {
 			// NOTE(rsc): This should be using t.Nname directly,
@@ -228,7 +286,7 @@ func nodarg(t interface{}, fp int) *Node {
 			// toward time for the Go 1.7 beta).
 			// At some quieter time (assuming we've never seen these Fatalfs happen)
 			// we could change this code to use "expect" directly.
-			expect := t.Nname
+			expect := asNode(t.Nname)
 			if expect.isParamHeapCopy() {
 				expect = expect.Name.Param.Stackcopy
 			}
@@ -236,7 +294,7 @@ func nodarg(t interface{}, fp int) *Node {
 			for _, n := range Curfn.Func.Dcl {
 				if (n.Class == PPARAM || n.Class == PPARAMOUT) && !isblanksym(t.Sym) && n.Sym == t.Sym {
 					if n != expect {
-						Fatalf("nodarg: unexpected node: %v (%p %v) vs %v (%p %v)", n, n, n.Op, t.Nname, t.Nname, t.Nname.Op)
+						Fatalf("nodarg: unexpected node: %v (%p %v) vs %v (%p %v)", n, n, n.Op, asNode(t.Nname), asNode(t.Nname), asNode(t.Nname).Op)
 					}
 					return n
 				}
@@ -250,15 +308,13 @@ func nodarg(t interface{}, fp int) *Node {
 		// Build fake name for individual variable.
 		// This is safe because if there was a real declared name
 		// we'd have used it above.
-		n = nod(ONAME, nil, nil)
+		n = newname(lookup("__"))
 		n.Type = t.Type
-		n.Sym = t.Sym
 		if t.Offset == BADWIDTH {
 			Fatalf("nodarg: offset not computed for %v", t)
 		}
 		n.Xoffset = t.Offset
-		n.Addable = true
-		n.Orig = t.Nname
+		n.Orig = asNode(t.Nname)
 	}
 
 	// Rewrite argument named _ to __,
@@ -278,13 +334,13 @@ func nodarg(t interface{}, fp int) *Node {
 
 	case 1: // reading arguments inside call
 		n.Class = PPARAM
-		if funarg == FunargResults {
+		if funarg == types.FunargResults {
 			n.Class = PPARAMOUT
 		}
 	}
 
 	n.Typecheck = 1
-	n.Addrtaken = true // keep optimizers at bay
+	n.SetAddrtaken(true) // keep optimizers at bay
 	return n
 }
 
@@ -294,19 +350,4 @@ func Patch(p *obj.Prog, to *obj.Prog) {
 	}
 	p.To.Val = to
 	p.To.Offset = to.Pc
-}
-
-// Gins inserts instruction as. f is from, t is to.
-func Gins(as obj.As, f, t *Node) *obj.Prog {
-	switch as {
-	case obj.AVARKILL, obj.AVARLIVE, obj.AVARDEF,
-		obj.ATEXT, obj.AFUNCDATA, obj.AUSEFIELD:
-	default:
-		Fatalf("unhandled gins op %v", as)
-	}
-
-	p := Prog(as)
-	Naddr(&p.From, f)
-	Naddr(&p.To, t)
-	return p
 }

@@ -59,7 +59,7 @@ func Getgoextlinkenabled() string {
 }
 
 func (p *Prog) Line() string {
-	return p.Ctxt.PosTable.Pos(p.Pos).String()
+	return p.Ctxt.OutermostPos(p.Pos).Format(false)
 }
 
 var armCondCode = []string{
@@ -163,26 +163,13 @@ func (p *Prog) String() string {
 }
 
 func (ctxt *Link) NewProg() *Prog {
-	var p *Prog
-	if i := ctxt.allocIdx; i < len(ctxt.progs) {
-		p = &ctxt.progs[i]
-		ctxt.allocIdx = i + 1
-	} else {
-		p = new(Prog) // should be the only call to this; all others should use ctxt.NewProg
-	}
+	p := new(Prog)
 	p.Ctxt = ctxt
 	return p
 }
-func (ctxt *Link) freeProgs() {
-	s := ctxt.progs[:ctxt.allocIdx]
-	for i := range s {
-		s[i] = Prog{}
-	}
-	ctxt.allocIdx = 0
-}
 
-func Getcallerpc(interface{}) uintptr {
-	return 1
+func (ctxt *Link) CanReuseProgs() bool {
+	return !ctxt.Debugasm
 }
 
 func (ctxt *Link) Dconv(a *Addr) string {
@@ -316,39 +303,60 @@ func Mconv(a *Addr) string {
 			str = fmt.Sprintf("%d(%v)", a.Offset, Rconv(int(a.Reg)))
 		}
 
+		// Note: a.Reg == REG_NONE encodes the default base register for the NAME_ type.
 	case NAME_EXTERN:
+		reg := "SB"
+		if a.Reg != REG_NONE {
+			reg = Rconv(int(a.Reg))
+		}
 		if a.Sym != nil {
-			str = fmt.Sprintf("%s%s(SB)", a.Sym.Name, offConv(a.Offset))
+			str = fmt.Sprintf("%s%s(%s)", a.Sym.Name, offConv(a.Offset), reg)
 		} else {
-			str = fmt.Sprintf("%s(SB)", offConv(a.Offset))
+			str = fmt.Sprintf("%s(%s)", offConv(a.Offset), reg)
 		}
 
 	case NAME_GOTREF:
+		reg := "SB"
+		if a.Reg != REG_NONE {
+			reg = Rconv(int(a.Reg))
+		}
 		if a.Sym != nil {
-			str = fmt.Sprintf("%s%s@GOT(SB)", a.Sym.Name, offConv(a.Offset))
+			str = fmt.Sprintf("%s%s@GOT(%s)", a.Sym.Name, offConv(a.Offset), reg)
 		} else {
-			str = fmt.Sprintf("%s@GOT(SB)", offConv(a.Offset))
+			str = fmt.Sprintf("%s@GOT(%s)", offConv(a.Offset), reg)
 		}
 
 	case NAME_STATIC:
+		reg := "SB"
+		if a.Reg != REG_NONE {
+			reg = Rconv(int(a.Reg))
+		}
 		if a.Sym != nil {
-			str = fmt.Sprintf("%s<>%s(SB)", a.Sym.Name, offConv(a.Offset))
+			str = fmt.Sprintf("%s<>%s(%s)", a.Sym.Name, offConv(a.Offset), reg)
 		} else {
-			str = fmt.Sprintf("<>%s(SB)", offConv(a.Offset))
+			str = fmt.Sprintf("<>%s(%s)", offConv(a.Offset), reg)
 		}
 
 	case NAME_AUTO:
+		reg := "SP"
+		if a.Reg != REG_NONE {
+			reg = Rconv(int(a.Reg))
+		}
 		if a.Sym != nil {
-			str = fmt.Sprintf("%s%s(SP)", a.Sym.Name, offConv(a.Offset))
+			str = fmt.Sprintf("%s%s(%s)", a.Sym.Name, offConv(a.Offset), reg)
 		} else {
-			str = fmt.Sprintf("%s(SP)", offConv(a.Offset))
+			str = fmt.Sprintf("%s(%s)", offConv(a.Offset), reg)
 		}
 
 	case NAME_PARAM:
+		reg := "FP"
+		if a.Reg != REG_NONE {
+			reg = Rconv(int(a.Reg))
+		}
 		if a.Sym != nil {
-			str = fmt.Sprintf("%s%s(FP)", a.Sym.Name, offConv(a.Offset))
+			str = fmt.Sprintf("%s%s(%s)", a.Sym.Name, offConv(a.Offset), reg)
 		} else {
-			str = fmt.Sprintf("%s(FP)", offConv(a.Offset))
+			str = fmt.Sprintf("%s(%s)", offConv(a.Offset), reg)
 		}
 	}
 	return str
@@ -475,10 +483,6 @@ var Anames = []string{
 	"RET",
 	"TEXT",
 	"UNDEF",
-	"USEFIELD",
-	"VARDEF",
-	"VARKILL",
-	"VARLIVE",
 }
 
 func Bool2int(b bool) int {

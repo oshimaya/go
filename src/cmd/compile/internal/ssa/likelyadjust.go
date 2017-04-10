@@ -33,13 +33,24 @@ type loop struct {
 
 // outerinner records that outer contains inner
 func (sdom SparseTree) outerinner(outer, inner *loop) {
+	// There could be other outer loops found in some random order,
+	// locate the new outer loop appropriately among them.
 	oldouter := inner.outer
-	if oldouter == nil || sdom.isAncestorEq(oldouter.header, outer.header) {
-		inner.outer = outer
-		outer.isInner = false
-		if inner.containsCall {
-			outer.setContainsCall()
-		}
+	for oldouter != nil && sdom.isAncestor(outer.header, oldouter.header) {
+		inner = oldouter
+		oldouter = inner.outer
+	}
+	if outer == oldouter {
+		return
+	}
+	if oldouter != nil {
+		outer.outer = oldouter
+	}
+
+	inner.outer = outer
+	outer.isInner = false
+	if inner.containsCall {
+		outer.setContainsCall()
 	}
 }
 
@@ -108,7 +119,7 @@ func describePredictionAgrees(b *Block, prediction BranchPrediction) string {
 }
 
 func describeBranchPrediction(f *Func, b *Block, likely, not int8, prediction BranchPrediction) {
-	f.Config.Warnl(b.Pos, "Branch prediction rule %s < %s%s",
+	f.Warnl(b.Pos, "Branch prediction rule %s < %s%s",
 		bllikelies[likely-blMin], bllikelies[not-blMin], describePredictionAgrees(b, prediction))
 }
 
@@ -183,7 +194,7 @@ func likelyadjust(f *Func) {
 						noprediction = true
 					}
 					if f.pass.debug > 0 && !noprediction {
-						f.Config.Warnl(b.Pos, "Branch prediction rule stay in loop%s",
+						f.Warnl(b.Pos, "Branch prediction rule stay in loop%s",
 							describePredictionAgrees(b, prediction))
 					}
 
@@ -226,7 +237,7 @@ func likelyadjust(f *Func) {
 			}
 		}
 		if f.pass.debug > 2 {
-			f.Config.Warnl(b.Pos, "BP: Block %s, local=%s, certain=%s", b, bllikelies[local[b.ID]-blMin], bllikelies[certain[b.ID]-blMin])
+			f.Warnl(b.Pos, "BP: Block %s, local=%s, certain=%s", b, bllikelies[local[b.ID]-blMin], bllikelies[certain[b.ID]-blMin])
 		}
 
 	}
@@ -430,6 +441,14 @@ func (ln *loopnest) findExits() {
 		}
 	}
 	ln.initializedExits = true
+}
+
+// depth returns the loop nesting level of block b.
+func (ln *loopnest) depth(b ID) int16 {
+	if l := ln.b2l[b]; l != nil {
+		return l.depth
+	}
+	return 0
 }
 
 // recordIfExit checks sl (the loop containing b) to see if it

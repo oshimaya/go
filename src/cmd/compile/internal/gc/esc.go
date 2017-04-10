@@ -5,6 +5,7 @@
 package gc
 
 import (
+	"cmd/compile/internal/types"
 	"fmt"
 	"strconv"
 	"strings"
@@ -18,7 +19,7 @@ import (
 // The algorithm (known as Tarjan's algorithm) for doing that is taken from
 // Sedgewick, Algorithms, Second Edition, p. 482, with two adaptations.
 //
-// First, a hidden closure function (n.Func.IsHiddenClosure) cannot be the
+// First, a hidden closure function (n.Func.IsHiddenClosure()) cannot be the
 // root of a connected component. Refusing to use it as a root
 // forces it into the component of the function in which it appears.
 // This is more convenient for escape analysis.
@@ -58,7 +59,7 @@ func visitBottomUp(list []*Node, analyze func(list []*Node, recursive bool)) {
 	v.analyze = analyze
 	v.nodeID = make(map[*Node]uint32)
 	for _, n := range list {
-		if n.Op == ODCLFUNC && !n.Func.IsHiddenClosure {
+		if n.Op == ODCLFUNC && !n.Func.IsHiddenClosure() {
 			v.visit(n)
 		}
 	}
@@ -78,7 +79,7 @@ func (v *bottomUpVisitor) visit(n *Node) uint32 {
 
 	v.stack = append(v.stack, n)
 	min = v.visitcodelist(n.Nbody, min)
-	if (min == id || min == id+1) && !n.Func.IsHiddenClosure {
+	if (min == id || min == id+1) && !n.Func.IsHiddenClosure() {
 		// This node is the root of a strongly connected component.
 
 		// The original min passed to visitcodelist was v.nodeID[n]+1.
@@ -131,7 +132,7 @@ func (v *bottomUpVisitor) visitcode(n *Node, min uint32) uint32 {
 	if n.Op == OCALLFUNC || n.Op == OCALLMETH {
 		fn := n.Left
 		if n.Op == OCALLMETH {
-			fn = n.Left.Sym.Def
+			fn = asNode(n.Left.Sym.Def)
 		}
 		if fn != nil && fn.Op == ONAME && fn.Class == PFUNC && fn.Name.Defn != nil {
 			m := v.visit(fn.Name.Defn)
@@ -458,7 +459,7 @@ func (e *EscState) stepAssignWhere(dst, src *Node, why string, where *Node) *Esc
 }
 
 // funcSym returns fn.Func.Nname.Sym if no nils are encountered along the way.
-func funcSym(fn *Node) *Sym {
+func funcSym(fn *Node) *types.Sym {
 	if fn == nil || fn.Func.Nname == nil {
 		return nil
 	}
@@ -466,7 +467,7 @@ func funcSym(fn *Node) *Sym {
 }
 
 // curfnSym returns n.Curfn.Nname.Sym if no nils are encountered along the way.
-func (e *EscState) curfnSym(n *Node) *Sym {
+func (e *EscState) curfnSym(n *Node) *types.Sym {
 	nE := e.nodeEscState(n)
 	return funcSym(nE.Curfn)
 }
@@ -477,6 +478,10 @@ func escAnalyze(all []*Node, recursive bool) {
 	for _, n := range all {
 		if n.Op == ODCLFUNC {
 			n.Esc = EscFuncPlanned
+			if Debug['m'] > 3 {
+				Dump("escAnalyze", n)
+			}
+
 		}
 	}
 
@@ -559,10 +564,10 @@ func (e *EscState) escfunc(fn *Node) {
 
 		case PPARAM:
 			lnE.Loopdepth = 1
-			if ln.Type != nil && !haspointers(ln.Type) {
+			if ln.Type != nil && !types.Haspointers(ln.Type) {
 				break
 			}
-			if Curfn.Nbody.Len() == 0 && !Curfn.Noescape {
+			if Curfn.Nbody.Len() == 0 && !Curfn.Noescape() {
 				ln.Esc = EscHeap
 			} else {
 				ln.Esc = EscNone // prime for escflood later
@@ -617,7 +622,7 @@ func (e *EscState) escloopdepth(n *Node) {
 		// after escape analysis. in the future, maybe pull label & goto analysis out of walk and put before esc
 		// if(n.Left.Sym.Label != nil)
 		//	fatal("escape analysis messed up analyzing label: %+N", n);
-		n.Left.Sym.Label = &nonlooping
+		n.Left.Sym.Label = asTypesNode(&nonlooping)
 
 	case OGOTO:
 		if n.Left == nil || n.Left.Sym == nil {
@@ -626,8 +631,8 @@ func (e *EscState) escloopdepth(n *Node) {
 
 		// If we come past one that's uninitialized, this must be a (harmless) forward jump
 		// but if it's set to nonlooping the label must have preceded this goto.
-		if n.Left.Sym.Label == &nonlooping {
-			n.Left.Sym.Label = &looping
+		if asNode(n.Left.Sym.Label) == &nonlooping {
+			n.Left.Sym.Label = asTypesNode(&looping)
 		}
 	}
 
@@ -654,7 +659,7 @@ func (e *EscState) esc(n *Node, parent *Node) {
 	// ninit logically runs at a different loopdepth than the rest of the for loop.
 	e.esclist(n.Ninit, n)
 
-	if n.Op == OFOR || n.Op == ORANGE {
+	if n.Op == OFOR || n.Op == OFORUNTIL || n.Op == ORANGE {
 		e.loopdepth++
 	}
 
@@ -663,10 +668,10 @@ func (e *EscState) esc(n *Node, parent *Node) {
 	// must happen before processing of switch body,
 	// so before recursion.
 	if n.Op == OSWITCH && n.Left != nil && n.Left.Op == OTYPESW {
-		for _, n1 := range n.List.Slice() { // cases
+		for _, cas := range n.List.Slice() { // cases
 			// it.N().Rlist is the variable per case
-			if n1.Rlist.Len() != 0 {
-				e.nodeEscState(n1.Rlist.First()).Loopdepth = e.loopdepth
+			if cas.Rlist.Len() != 0 {
+				e.nodeEscState(cas.Rlist.First()).Loopdepth = e.loopdepth
 			}
 		}
 	}
@@ -685,13 +690,22 @@ func (e *EscState) esc(n *Node, parent *Node) {
 		e.escassignSinkWhy(n, n, "too large for stack") // TODO category: tooLarge
 	}
 
-	e.esc(n.Left, n)
-	e.esc(n.Right, n)
-	e.esclist(n.Nbody, n)
-	e.esclist(n.List, n)
-	e.esclist(n.Rlist, n)
+	if n.Op == OIF && Isconst(n.Left, CTBOOL) {
+		// Don't examine dead code.
+		if n.Left.Bool() {
+			e.esclist(n.Nbody, n)
+		} else {
+			e.esclist(n.Rlist, n)
+		}
+	} else {
+		e.esc(n.Left, n)
+		e.esc(n.Right, n)
+		e.esclist(n.Nbody, n)
+		e.esclist(n.List, n)
+		e.esclist(n.Rlist, n)
+	}
 
-	if n.Op == OFOR || n.Op == ORANGE {
+	if n.Op == OFOR || n.Op == OFORUNTIL || n.Op == ORANGE {
 		e.loopdepth--
 	}
 
@@ -707,11 +721,11 @@ func (e *EscState) esc(n *Node, parent *Node) {
 		}
 
 	case OLABEL:
-		if n.Left.Sym.Label == &nonlooping {
+		if asNode(n.Left.Sym.Label) == &nonlooping {
 			if Debug['m'] > 2 {
 				fmt.Printf("%v:%v non-looping label\n", linestr(lineno), n)
 			}
-		} else if n.Left.Sym.Label == &looping {
+		} else if asNode(n.Left.Sym.Label) == &looping {
 			if Debug['m'] > 2 {
 				fmt.Printf("%v: %v looping label\n", linestr(lineno), n)
 			}
@@ -741,12 +755,12 @@ func (e *EscState) esc(n *Node, parent *Node) {
 
 	case OSWITCH:
 		if n.Left != nil && n.Left.Op == OTYPESW {
-			for _, n2 := range n.List.Slice() {
+			for _, cas := range n.List.Slice() {
 				// cases
 				// n.Left.Right is the argument of the .(type),
 				// it.N().Rlist is the variable per case
-				if n2.Rlist.Len() != 0 {
-					e.escassignWhyWhere(n2.Rlist.First(), n.Left.Right, "switch case", n)
+				if cas.Rlist.Len() != 0 {
+					e.escassignWhyWhere(cas.Rlist.First(), n.Left.Right, "switch case", n)
 				}
 			}
 		}
@@ -812,19 +826,17 @@ func (e *EscState) esc(n *Node, parent *Node) {
 		// TODO: leak to a dummy node instead
 		// defer f(x) - f and x escape
 		e.escassignSinkWhy(n, n.Left.Left, "defer func")
-
 		e.escassignSinkWhy(n, n.Left.Right, "defer func ...") // ODDDARG for call
-		for _, n4 := range n.Left.List.Slice() {
-			e.escassignSinkWhy(n, n4, "defer func arg")
+		for _, arg := range n.Left.List.Slice() {
+			e.escassignSinkWhy(n, arg, "defer func arg")
 		}
 
 	case OPROC:
 		// go f(x) - f and x escape
 		e.escassignSinkWhy(n, n.Left.Left, "go func")
-
 		e.escassignSinkWhy(n, n.Left.Right, "go func ...") // ODDDARG for call
-		for _, n4 := range n.Left.List.Slice() {
-			e.escassignSinkWhy(n, n4, "go func arg")
+		for _, arg := range n.Left.List.Slice() {
+			e.escassignSinkWhy(n, arg, "go func arg")
 		}
 
 	case OCALLMETH, OCALLFUNC, OCALLINTER:
@@ -873,7 +885,7 @@ func (e *EscState) esc(n *Node, parent *Node) {
 		e.escassignSinkWhy(n, n.Left, "panic")
 
 	case OAPPEND:
-		if !n.Isddd {
+		if !n.Isddd() {
 			for _, nn := range n.List.Slice()[1:] {
 				e.escassignSinkWhy(n, nn, "appended to slice") // lose track of assign to dereference
 			}
@@ -899,28 +911,28 @@ func (e *EscState) esc(n *Node, parent *Node) {
 
 	case OARRAYLIT:
 		// Link values to array
-		for _, n2 := range n.List.Slice() {
-			if n2.Op == OKEY {
-				n2 = n2.Right
+		for _, elt := range n.List.Slice() {
+			if elt.Op == OKEY {
+				elt = elt.Right
 			}
-			e.escassign(n, n2, e.stepAssignWhere(n, n2, "array literal element", n))
+			e.escassign(n, elt, e.stepAssignWhere(n, elt, "array literal element", n))
 		}
 
 	case OSLICELIT:
 		// Slice is not leaked until proven otherwise
 		e.track(n)
 		// Link values to slice
-		for _, n2 := range n.List.Slice() {
-			if n2.Op == OKEY {
-				n2 = n2.Right
+		for _, elt := range n.List.Slice() {
+			if elt.Op == OKEY {
+				elt = elt.Right
 			}
-			e.escassign(n, n2, e.stepAssignWhere(n, n2, "slice literal element", n))
+			e.escassign(n, elt, e.stepAssignWhere(n, elt, "slice literal element", n))
 		}
 
 		// Link values to struct.
 	case OSTRUCTLIT:
-		for _, n6 := range n.List.Slice() {
-			e.escassignWhyWhere(n, n6.Left, "struct literal element", n)
+		for _, elt := range n.List.Slice() {
+			e.escassignWhyWhere(n, elt.Left, "struct literal element", n)
 		}
 
 	case OPTRLIT:
@@ -938,9 +950,9 @@ func (e *EscState) esc(n *Node, parent *Node) {
 	case OMAPLIT:
 		e.track(n)
 		// Keys and values make it to memory, lose track.
-		for _, n7 := range n.List.Slice() {
-			e.escassignSinkWhy(n, n7.Left, "map literal key")
-			e.escassignSinkWhy(n, n7.Right, "map literal value")
+		for _, elt := range n.List.Slice() {
+			e.escassignSinkWhy(n, elt.Left, "map literal key")
+			e.escassignSinkWhy(n, elt.Right, "map literal value")
 		}
 
 	case OCLOSURE:
@@ -950,7 +962,7 @@ func (e *EscState) esc(n *Node, parent *Node) {
 				continue
 			}
 			a := v.Name.Defn
-			if !v.Name.Byval {
+			if !v.Name.Byval() {
 				a = nod(OADDR, a, nil)
 				a.Pos = v.Pos
 				e.nodeEscState(a).Loopdepth = e.loopdepth
@@ -1147,7 +1159,7 @@ func (e *EscState) escassign(dst, src *Node, step *EscStep) {
 		a := nod(OADDR, src, nil)
 		a.Pos = src.Pos
 		e.nodeEscState(a).Loopdepth = e.nodeEscState(src).Loopdepth
-		a.Type = ptrto(src.Type)
+		a.Type = types.NewPtr(src.Type)
 		e.escflows(dst, a, e.stepAssign(nil, originalDst, src, dstwhy))
 
 	// Flowing multiple returns to a single dst happens when
@@ -1159,7 +1171,7 @@ func (e *EscState) escassign(dst, src *Node, step *EscStep) {
 
 		// A non-pointer escaping from a struct does not concern us.
 	case ODOT:
-		if src.Type != nil && !haspointers(src.Type) {
+		if src.Type != nil && !types.Haspointers(src.Type) {
 			break
 		}
 		fallthrough
@@ -1180,7 +1192,7 @@ func (e *EscState) escassign(dst, src *Node, step *EscStep) {
 
 	case ODOTTYPE,
 		ODOTTYPE2:
-		if src.Type != nil && !haspointers(src.Type) {
+		if src.Type != nil && !types.Haspointers(src.Type) {
 			break
 		}
 		e.escassign(dst, src.Left, e.stepAssign(step, originalDst, src, dstwhy))
@@ -1385,7 +1397,7 @@ func (e *EscState) addDereference(n *Node) *Node {
 	e.nodeEscState(ind).Loopdepth = e.nodeEscState(n).Loopdepth
 	ind.Pos = n.Pos
 	t := n.Type
-	if t.IsKind(Tptr) {
+	if t.IsKind(types.Tptr) {
 		// This should model our own sloppy use of OIND to encode
 		// decreasing levels of indirection; i.e., "indirecting" an array
 		// might yield the type of an element. To be enhanced...
@@ -1429,18 +1441,18 @@ func escNoteOutputParamFlow(e uint16, vargen int32, level Level) uint16 {
 	return (e &^ (bitsMaskForTag << shift)) | encodedFlow
 }
 
-func (e *EscState) initEscRetval(call *Node, fntype *Type) {
+func (e *EscState) initEscRetval(call *Node, fntype *types.Type) {
 	cE := e.nodeEscState(call)
 	cE.Retval.Set(nil) // Suspect this is not nil for indirect calls.
 	for i, f := range fntype.Results().Fields().Slice() {
-		ret := nod(ONAME, nil, nil)
 		buf := fmt.Sprintf(".out%d", i)
-		ret.Sym = lookup(buf)
+		ret := newname(lookup(buf))
+		ret.SetAddable(false) // TODO(mdempsky): Seems suspicious.
 		ret.Type = f.Type
 		ret.Class = PAUTO
 		ret.Name.Curfn = Curfn
 		e.nodeEscState(ret).Loopdepth = e.loopdepth
-		ret.Used = true
+		ret.SetUsed(true)
 		ret.Pos = call.Pos
 		cE.Retval.Append(ret)
 	}
@@ -1453,7 +1465,7 @@ func (e *EscState) initEscRetval(call *Node, fntype *Type) {
 // different for methods vs plain functions and for imported vs
 // this-package
 func (e *EscState) esccall(call *Node, parent *Node) {
-	var fntype *Type
+	var fntype *types.Type
 	var indirect bool
 	var fn *Node
 	switch call.Op {
@@ -1466,7 +1478,7 @@ func (e *EscState) esccall(call *Node, parent *Node) {
 		indirect = fn.Op != ONAME || fn.Class != PFUNC
 
 	case OCALLMETH:
-		fn = call.Left.Sym.Def
+		fn = asNode(call.Left.Sym.Def)
 		if fn != nil {
 			fntype = fn.Type
 		} else {
@@ -1503,7 +1515,7 @@ func (e *EscState) esccall(call *Node, parent *Node) {
 		if call.Op != OCALLFUNC {
 			rf := fntype.Recv()
 			r := call.Left.Left
-			if haspointers(rf.Type) {
+			if types.Haspointers(rf.Type) {
 				e.escassignSinkWhy(call, r, "receiver in indirect call")
 			}
 		} else { // indirect and OCALLFUNC = could be captured variables, too. (#14409)
@@ -1541,11 +1553,11 @@ func (e *EscState) esccall(call *Node, parent *Node) {
 					continue
 				}
 				arg := args[0]
-				if n.Isddd && !call.Isddd {
+				if n.Isddd() && !call.Isddd() {
 					// Introduce ODDDARG node to represent ... allocation.
 					arg = nod(ODDDARG, nil, nil)
-					arr := typArray(n.Type.Elem(), int64(len(args)))
-					arg.Type = ptrto(arr) // make pointer so it will be tracked
+					arr := types.NewArray(n.Type.Elem(), int64(len(args)))
+					arg.Type = types.NewPtr(arr) // make pointer so it will be tracked
 					arg.Pos = call.Pos
 					e.track(arg)
 					call.Right = arg
@@ -1592,77 +1604,64 @@ func (e *EscState) esccall(call *Node, parent *Node) {
 	if call.Op != OCALLFUNC {
 		rf := fntype.Recv()
 		r := call.Left.Left
-		if haspointers(rf.Type) {
+		if types.Haspointers(rf.Type) {
 			e.escassignfromtag(rf.Note, cE.Retval, r, call)
 		}
 	}
 
-	var arg *Node
-	var note string
-	param, it := iterFields(fntype.Params())
-	i := 0
-	for ; i < len(args); i++ {
-		arg = args[i]
-		note = param.Note
-		if param.Isddd && !call.Isddd {
+	for i, param := range fntype.Params().FieldSlice() {
+		note := param.Note
+		var arg *Node
+		if param.Isddd() && !call.Isddd() {
+			rest := args[i:]
+			if len(rest) == 0 {
+				break
+			}
+
 			// Introduce ODDDARG node to represent ... allocation.
 			arg = nod(ODDDARG, nil, nil)
 			arg.Pos = call.Pos
-			arr := typArray(param.Type.Elem(), int64(len(args)-i))
-			arg.Type = ptrto(arr) // make pointer so it will be tracked
+			arr := types.NewArray(param.Type.Elem(), int64(len(rest)))
+			arg.Type = types.NewPtr(arr) // make pointer so it will be tracked
 			e.track(arg)
 			call.Right = arg
-		}
 
-		if haspointers(param.Type) {
-			if e.escassignfromtag(note, cE.Retval, arg, call)&EscMask == EscNone && parent.Op != ODEFER && parent.Op != OPROC {
-				a := arg
-				for a.Op == OCONVNOP {
-					a = a.Left
+			// Store arguments into slice for ... arg.
+			for _, a := range rest {
+				if Debug['m'] > 3 {
+					fmt.Printf("%v::esccall:: ... <- %S\n", linestr(lineno), a)
 				}
-				switch a.Op {
-				// The callee has already been analyzed, so its arguments have esc tags.
-				// The argument is marked as not escaping at all.
-				// Record that fact so that any temporary used for
-				// synthesizing this expression can be reclaimed when
-				// the function returns.
-				// This 'noescape' is even stronger than the usual esc == EscNone.
-				// arg.Esc == EscNone means that arg does not escape the current function.
-				// arg.Noescape = true here means that arg does not escape this statement
-				// in the current function.
-				case OCALLPART,
-					OCLOSURE,
-					ODDDARG,
-					OARRAYLIT,
-					OSLICELIT,
-					OPTRLIT,
-					OSTRUCTLIT:
-					a.Noescape = true
+				if note == uintptrEscapesTag {
+					e.escassignSinkWhyWhere(arg, a, "arg to uintptrescapes ...", call)
+				} else {
+					e.escassignWhyWhere(arg, a, "arg to ...", call)
 				}
+			}
+		} else {
+			arg = args[i]
+			if note == uintptrEscapesTag {
+				e.escassignSinkWhy(arg, arg, "escaping uintptr")
 			}
 		}
 
-		if arg != args[i] {
-			// This occurs when function parameter field Isddd and call not Isddd
-			break
-		}
-
-		if note == uintptrEscapesTag {
-			e.escassignSinkWhy(arg, arg, "escaping uintptr")
-		}
-
-		param = it.Next()
-	}
-
-	// Store arguments into slice for ... arg.
-	for ; i < len(args); i++ {
-		if Debug['m'] > 3 {
-			fmt.Printf("%v::esccall:: ... <- %S\n", linestr(lineno), args[i])
-		}
-		if note == uintptrEscapesTag {
-			e.escassignSinkWhyWhere(arg, args[i], "arg to uintptrescapes ...", call)
-		} else {
-			e.escassignWhyWhere(arg, args[i], "arg to ...", call)
+		if types.Haspointers(param.Type) && e.escassignfromtag(note, cE.Retval, arg, call)&EscMask == EscNone && parent.Op != ODEFER && parent.Op != OPROC {
+			a := arg
+			for a.Op == OCONVNOP {
+				a = a.Left
+			}
+			switch a.Op {
+			// The callee has already been analyzed, so its arguments have esc tags.
+			// The argument is marked as not escaping at all.
+			// Record that fact so that any temporary used for
+			// synthesizing this expression can be reclaimed when
+			// the function returns.
+			// This 'noescape' is even stronger than the usual esc == EscNone.
+			// arg.Esc == EscNone means that arg does not escape the current function.
+			// arg.SetNoescape(true) here means that arg does not escape this statement
+			// in the current function.
+			case OCALLPART, OCLOSURE, ODDDARG, OARRAYLIT, OSLICELIT, OPTRLIT, OSTRUCTLIT:
+				a.SetNoescape(true)
+			}
 		}
 	}
 }
@@ -1675,7 +1674,10 @@ func (e *EscState) escflows(dst, src *Node, why *EscStep) {
 	}
 
 	// Don't bother building a graph for scalars.
-	if src.Type != nil && !haspointers(src.Type) {
+	if src.Type != nil && !types.Haspointers(src.Type) && !isReflectHeaderDataField(src) {
+		if Debug['m'] > 3 {
+			fmt.Printf("%v::NOT flows:: %S <- %S\n", linestr(lineno), dst, src)
+		}
 		return
 	}
 
@@ -1882,7 +1884,7 @@ func (e *EscState) escwalkBody(level Level, dst *Node, src *Node, step *EscStep,
 
 		// Treat a captured closure variable as equivalent to the
 		// original variable.
-		if src.isClosureVar() {
+		if src.IsClosureVar() {
 			if leaks && Debug['m'] != 0 {
 				Warnl(src.Pos, "leaking closure reference %S", src)
 				step.describe(src)
@@ -1933,11 +1935,11 @@ func (e *EscState) escwalkBody(level Level, dst *Node, src *Node, step *EscStep,
 		level = level.dec()
 
 	case OSLICELIT:
-		for _, n1 := range src.List.Slice() {
-			if n1.Op == OKEY {
-				n1 = n1.Right
+		for _, elt := range src.List.Slice() {
+			if elt.Op == OKEY {
+				elt = elt.Right
 			}
-			e.escwalk(level.dec(), dst, n1, e.stepWalk(dst, n1, "slice-literal-element", step))
+			e.escwalk(level.dec(), dst, elt, e.stepWalk(dst, elt, "slice-literal-element", step))
 		}
 
 		fallthrough
@@ -2035,7 +2037,7 @@ const uintptrEscapesTag = "uintptr-escapes"
 func (e *EscState) esctag(fn *Node) {
 	fn.Esc = EscFuncTagged
 
-	name := func(s *Sym, narg int) string {
+	name := func(s *types.Sym, narg int) string {
 		if s != nil {
 			return s.Name
 		}
@@ -2045,9 +2047,9 @@ func (e *EscState) esctag(fn *Node) {
 	// External functions are assumed unsafe,
 	// unless //go:noescape is given before the declaration.
 	if fn.Nbody.Len() == 0 {
-		if fn.Noescape {
+		if fn.Noescape() {
 			for _, f := range fn.Type.Params().Fields().Slice() {
-				if haspointers(f.Type) {
+				if types.Haspointers(f.Type) {
 					f.Note = mktag(EscNone)
 				}
 			}
@@ -2084,7 +2086,7 @@ func (e *EscState) esctag(fn *Node) {
 				f.Note = uintptrEscapesTag
 			}
 
-			if f.Isddd && f.Type.Elem().Etype == TUINTPTR {
+			if f.Isddd() && f.Type.Elem().Etype == TUINTPTR {
 				// final argument is ...uintptr.
 				if Debug['m'] != 0 {
 					Warnl(fn.Pos, "%v marking %v as escaping ...uintptr", funcSym(fn), name(f.Sym, narg))
@@ -2102,13 +2104,22 @@ func (e *EscState) esctag(fn *Node) {
 		switch ln.Esc & EscMask {
 		case EscNone, // not touched by escflood
 			EscReturn:
-			if haspointers(ln.Type) { // don't bother tagging for scalars
+			if types.Haspointers(ln.Type) { // don't bother tagging for scalars
 				if ln.Name.Param.Field.Note != uintptrEscapesTag {
 					ln.Name.Param.Field.Note = mktag(int(ln.Esc))
 				}
 			}
 
 		case EscHeap: // touched by escflood, moved to heap
+		}
+	}
+
+	// Unnamed parameters are unused and therefore do not escape.
+	// (Unnamed parameters are not in the Dcl list in the loop above
+	// so we need to mark them separately.)
+	for _, f := range fn.Type.Params().Fields().Slice() {
+		if f.Sym == nil || isblanksym(f.Sym) {
+			f.Note = mktag(EscNone)
 		}
 	}
 }

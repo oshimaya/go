@@ -385,7 +385,7 @@ var oprange [ALAST & obj.AMask][]Optab
 
 var xcmp [C_NCLASS][C_NCLASS]bool
 
-func spanz(ctxt *obj.Link, cursym *obj.LSym) {
+func spanz(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
 	p := cursym.Text
 	if p == nil || p.Link == nil { // handle external functions and ELF section symbols
 		return
@@ -394,7 +394,7 @@ func spanz(ctxt *obj.Link, cursym *obj.LSym) {
 	ctxt.Autosize = int32(p.To.Offset)
 
 	if oprange[AORW&obj.AMask] == nil {
-		buildop(ctxt)
+		ctxt.Diag("s390x ops not initialized, call s390x.buildop first")
 	}
 
 	buffer := make([]byte, 0)
@@ -415,8 +415,7 @@ func spanz(ctxt *obj.Link, cursym *obj.LSym) {
 			}
 			p.Pc = pc
 			ctxt.Pc = p.Pc
-			ctxt.Curp = p
-			asmout(ctxt, &buffer)
+			asmout(ctxt, p, &buffer)
 			if pc == int64(len(buffer)) {
 				switch p.As {
 				case obj.ANOP, obj.AFUNCDATA, obj.APCDATA, obj.ATEXT:
@@ -773,6 +772,13 @@ func opset(a, b obj.As) {
 }
 
 func buildop(ctxt *obj.Link) {
+	if oprange[AORW&obj.AMask] != nil {
+		// Already initialized; stop now.
+		// This happens in the cmd/asm tests,
+		// each of which re-initializes the arch.
+		return
+	}
+
 	for i := 0; i < C_NCLASS; i++ {
 		for n := 0; n < C_NCLASS; n++ {
 			if cmp(n, i) {
@@ -2549,8 +2555,7 @@ func branchMask(ctxt *obj.Link, p *obj.Prog) uint32 {
 	return 0xF
 }
 
-func asmout(ctxt *obj.Link, asm *[]byte) {
-	p := ctxt.Curp
+func asmout(ctxt *obj.Link, p *obj.Prog, asm *[]byte) {
 	o := oplook(ctxt, p)
 	ctxt.Printp = p
 

@@ -491,7 +491,7 @@ func nextFreeFast(s *mspan) gclinkptr {
 			if freeidx%64 == 0 && freeidx != s.nelems {
 				return 0
 			}
-			s.allocCache >>= (theBit + 1)
+			s.allocCache >>= uint(theBit + 1)
 			s.freeindex = freeidx
 			v := gclinkptr(result*s.elemsize + s.base())
 			s.allocCount++
@@ -764,8 +764,10 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		assistG.gcAssistBytes -= int64(size - dataSize)
 	}
 
-	if shouldhelpgc && gcShouldStart(false) {
-		gcStart(gcBackgroundMode, false)
+	if shouldhelpgc {
+		if t := (gcTrigger{kind: gcTriggerHeap}); t.test() {
+			gcStart(gcBackgroundMode, t)
+		}
 	}
 
 	return x

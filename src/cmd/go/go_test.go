@@ -2227,6 +2227,24 @@ func TestTestEmpty(t *testing.T) {
 	}
 }
 
+func TestTestRaceInstall(t *testing.T) {
+	if !canRace {
+		t.Skip("no race detector")
+	}
+
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+
+	tg.tempDir("pkg")
+	pkgdir := tg.path("pkg")
+	tg.run("install", "-race", "-pkgdir="+pkgdir, "std")
+	tg.run("test", "-race", "-pkgdir="+pkgdir, "-i", "-v", "empty/pkg")
+	if tg.getStderr() != "" {
+		t.Error("go test -i -race: rebuilds cached packages")
+	}
+}
+
 func TestBuildDryRunWithCgo(t *testing.T) {
 	if !canCgo {
 		t.Skip("skipping because cgo not enabled")
@@ -2632,8 +2650,6 @@ func TestGoGetInternalWildcard(t *testing.T) {
 }
 
 func TestGoVetWithExternalTests(t *testing.T) {
-	testenv.MustHaveExternalNetwork(t)
-
 	tg := testgo(t)
 	defer tg.cleanup()
 	tg.makeTempdir()
@@ -2644,19 +2660,36 @@ func TestGoVetWithExternalTests(t *testing.T) {
 }
 
 func TestGoVetWithTags(t *testing.T) {
-	testenv.MustHaveExternalNetwork(t)
-
 	tg := testgo(t)
 	defer tg.cleanup()
 	tg.makeTempdir()
 	tg.run("install", "cmd/vet")
 	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
 	tg.runFail("vet", "-tags", "tagtest", "vetpkg")
-	tg.grepBoth(`c\.go.*wrong number of args for format`, "go get vetpkg did not run scan tagged file")
+	tg.grepBoth(`c\.go.*wrong number of args for format`, "go vet vetpkg did not run scan tagged file")
 }
 
-// Issue 9767.
-func TestGoGetRscIoToolstash(t *testing.T) {
+func TestGoVetWithFlagsOn(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.makeTempdir()
+	tg.run("install", "cmd/vet")
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+	tg.runFail("vet", "-printf", "vetpkg")
+	tg.grepBoth("missing argument for Printf", "go vet -printf vetpkg did not find missing argument for Printf")
+}
+
+func TestGoVetWithFlagsOff(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.makeTempdir()
+	tg.run("install", "cmd/vet")
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+	tg.run("vet", "-printf=false", "vetpkg")
+}
+
+// Issue 9767, 19769.
+func TestGoGetDotSlashDownload(t *testing.T) {
 	testenv.MustHaveExternalNetwork(t)
 
 	tg := testgo(t)
@@ -2664,7 +2697,7 @@ func TestGoGetRscIoToolstash(t *testing.T) {
 	tg.tempDir("src/rsc.io")
 	tg.setenv("GOPATH", tg.path("."))
 	tg.cd(tg.path("src/rsc.io"))
-	tg.run("get", "./toolstash")
+	tg.run("get", "./pprof_mac_fix")
 }
 
 // Issue 13037: Was not parsing <meta> tags in 404 served over HTTPS
@@ -3795,6 +3828,55 @@ func TestFFLAGS(t *testing.T) {
 	`)
 	tg.tempFile("p/src/p/a.f", `! comment`)
 	tg.setenv("GOPATH", tg.path("p"))
-	tg.runFail("build", "-x", "p")
+
+	// This should normally fail because we are passing an unknown flag,
+	// but issue #19080 points to Fortran compilers that succeed anyhow.
+	// To work either way we call doRun directly rather than run or runFail.
+	tg.doRun([]string{"build", "-x", "p"})
+
 	tg.grepStderr("no-such-fortran-flag", `missing expected "-no-such-fortran-flag"`)
+}
+
+// Issue 19198.
+// This is really a cmd/link issue but this is a convenient place to test it.
+func TestDuplicateGlobalAsmSymbols(t *testing.T) {
+	if runtime.GOARCH != "386" && runtime.GOARCH != "amd64" {
+		t.Skipf("skipping test on %s", runtime.GOARCH)
+	}
+	if !canCgo {
+		t.Skip("skipping because cgo not enabled")
+	}
+
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.parallel()
+
+	asm := `
+#include "textflag.h"
+
+DATA sym<>+0x0(SB)/8,$0
+GLOBL sym<>(SB),(NOPTR+RODATA),$8
+
+TEXT ·Data(SB),NOSPLIT,$0
+	MOVB sym<>(SB), AX
+	MOVB AX, ret+0(FP)
+	RET
+`
+	tg.tempFile("go/src/a/a.s", asm)
+	tg.tempFile("go/src/a/a.go", `package a; func Data() uint8`)
+	tg.tempFile("go/src/b/b.s", asm)
+	tg.tempFile("go/src/b/b.go", `package b; func Data() uint8`)
+	tg.tempFile("go/src/p/p.go", `
+package main
+import "a"
+import "b"
+import "C"
+func main() {
+	_ = a.Data() + b.Data()
+}
+`)
+	tg.setenv("GOPATH", tg.path("go"))
+	exe := filepath.Join(tg.tempdir, "p.exe")
+	tg.creatingTemp(exe)
+	tg.run("build", "-o", exe, "p")
 }
