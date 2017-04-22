@@ -12,20 +12,6 @@ import (
 	"math"
 )
 
-var condOps = map[ssa.Op]obj.As{
-	ssa.OpPPC64Equal:        ppc64.ABEQ,
-	ssa.OpPPC64NotEqual:     ppc64.ABNE,
-	ssa.OpPPC64LessThan:     ppc64.ABLT,
-	ssa.OpPPC64GreaterEqual: ppc64.ABGE,
-	ssa.OpPPC64GreaterThan:  ppc64.ABGT,
-	ssa.OpPPC64LessEqual:    ppc64.ABLE,
-
-	ssa.OpPPC64FLessThan:     ppc64.ABLT, // 1 branch for FCMP
-	ssa.OpPPC64FGreaterThan:  ppc64.ABGT, // 1 branch for FCMP
-	ssa.OpPPC64FLessEqual:    ppc64.ABLT, // 2 branches for FCMP <=, second is BEQ
-	ssa.OpPPC64FGreaterEqual: ppc64.ABGT, // 2 branches for FCMP >=, second is BEQ
-}
-
 // iselOp encodes mapping of comparison operations onto ISEL operands
 type iselOp struct {
 	cond        int64
@@ -567,6 +553,14 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p.Reg = r1
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = r
+
+	case ssa.OpPPC64ROTLconst, ssa.OpPPC64ROTLWconst:
+		p := s.Prog(v.Op.Asm())
+		p.From.Type = obj.TYPE_CONST
+		p.From.Offset = v.AuxInt
+		p.Reg = v.Args[0].Reg()
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = v.Reg()
 
 	case ssa.OpPPC64FMADD, ssa.OpPPC64FMADDS, ssa.OpPPC64FMSUB, ssa.OpPPC64FMSUBS:
 		r := v.Reg()
@@ -1138,7 +1132,8 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		v.Fatalf("InvertFlags should never make it to codegen %v", v.LongString())
 	case ssa.OpPPC64FlagEQ, ssa.OpPPC64FlagLT, ssa.OpPPC64FlagGT:
 		v.Fatalf("Flag* ops should never make it to codegen %v", v.LongString())
-
+	case ssa.OpClobber:
+		// TODO: implement for clobberdead experiment. Nop is ok for now.
 	default:
 		v.Fatalf("genValue not implemented: %s", v.LongString())
 	}

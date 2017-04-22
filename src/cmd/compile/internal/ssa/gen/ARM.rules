@@ -34,12 +34,12 @@
 (Mul32uhilo x y) -> (MULLU x y)
 
 (Div32 x y) ->
-	(SUB (XOR <types.UInt32>                                                                  // negate the result if one operand is negative
-		(Select0 <types.UInt32> (CALLudiv {config.ctxt.Lookup("udiv", 0)}
+	(SUB (XOR <types.UInt32>                                                        // negate the result if one operand is negative
+		(Select0 <types.UInt32> (CALLudiv
 			(SUB <types.UInt32> (XOR x <types.UInt32> (Signmask x)) (Signmask x))   // negate x if negative
 			(SUB <types.UInt32> (XOR y <types.UInt32> (Signmask y)) (Signmask y)))) // negate y if negative
 		(Signmask (XOR <types.UInt32> x y))) (Signmask (XOR <types.UInt32> x y)))
-(Div32u x y) -> (Select0 <types.UInt32> (CALLudiv {config.ctxt.Lookup("udiv", 0)} x y))
+(Div32u x y) -> (Select0 <types.UInt32> (CALLudiv x y))
 (Div16 x y) -> (Div32 (SignExt16to32 x) (SignExt16to32 y))
 (Div16u x y) -> (Div32u (ZeroExt16to32 x) (ZeroExt16to32 y))
 (Div8 x y) -> (Div32 (SignExt8to32 x) (SignExt8to32 y))
@@ -48,12 +48,12 @@
 (Div64F x y) -> (DIVD x y)
 
 (Mod32 x y) ->
-	(SUB (XOR <types.UInt32>                                                                  // negate the result if x is negative
-		(Select1 <types.UInt32> (CALLudiv {config.ctxt.Lookup("udiv", 0)}
+	(SUB (XOR <types.UInt32>                                                        // negate the result if x is negative
+		(Select1 <types.UInt32> (CALLudiv
 			(SUB <types.UInt32> (XOR <types.UInt32> x (Signmask x)) (Signmask x))   // negate x if negative
 			(SUB <types.UInt32> (XOR <types.UInt32> y (Signmask y)) (Signmask y)))) // negate y if negative
 		(Signmask x)) (Signmask x))
-(Mod32u x y) -> (Select1 <types.UInt32> (CALLudiv {config.ctxt.Lookup("udiv", 0)} x y))
+(Mod32u x y) -> (Select1 <types.UInt32> (CALLudiv x y))
 (Mod16 x y) -> (Mod32 (SignExt16to32 x) (SignExt16to32 y))
 (Mod16u x y) -> (Mod32u (ZeroExt16to32 x) (ZeroExt16to32 y))
 (Mod8 x y) -> (Mod32 (SignExt8to32 x) (SignExt8to32 y))
@@ -89,10 +89,10 @@
 
 // count trailing zero for ARMv5 and ARMv6
 // 32 - CLZ(x&-x - 1)
-(Ctz32 <t> x) && obj.GOARM<=6 -> (RSBconst [32] (CLZ <t> (SUBconst <t> (AND <t> x (RSBconst <t> [0] x)) [1])))
+(Ctz32 <t> x) && objabi.GOARM<=6 -> (RSBconst [32] (CLZ <t> (SUBconst <t> (AND <t> x (RSBconst <t> [0] x)) [1])))
 
 // count trailing zero for ARMv7
-(Ctz32 <t> x) && obj.GOARM==7 -> (CLZ <t> (RBIT <t> x))
+(Ctz32 <t> x) && objabi.GOARM==7 -> (CLZ <t> (RBIT <t> x))
 
 // bit length
 (BitLen32 <t> x) -> (RSBconst [32] (CLZ <t> x))
@@ -106,13 +106,13 @@
 // t5 = x right rotate 8 bits  -- (d,   a,   b,   c  )
 // result = t4 ^ t5            -- (d,   c,   b,   a  )
 // using shifted ops this can be done in 4 instructions.
-(Bswap32 <t> x) && obj.GOARM==5 ->
+(Bswap32 <t> x) && objabi.GOARM==5 ->
 	(XOR <t>
 		(SRLconst <t> (BICconst <t> (XOR <t> x (SRRconst <t> [16] x)) [0xff0000]) [8])
 		(SRRconst <t> x [8]))
 
 // byte swap for ARMv6 and above
-(Bswap32 x) && obj.GOARM>=6 -> (REV x)
+(Bswap32 x) && objabi.GOARM>=6 -> (REV x)
 
 // boolean ops -- booleans are represented with 0=false, 1=true
 (AndB x y) -> (AND x y)

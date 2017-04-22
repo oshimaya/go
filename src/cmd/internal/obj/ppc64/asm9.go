@@ -31,6 +31,7 @@ package ppc64
 
 import (
 	"cmd/internal/obj"
+	"cmd/internal/objabi"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -565,7 +566,7 @@ var oprange [ALAST & obj.AMask][]Optab
 var xcmp [C_NCLASS][C_NCLASS]bool
 
 func span9(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
-	p := cursym.Text
+	p := cursym.Func.Text
 	if p == nil || p.Link == nil { // handle external functions and ELF section symbols
 		return
 	}
@@ -610,7 +611,7 @@ func span9(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
 	for bflag != 0 {
 		bflag = 0
 		pc = 0
-		for p = c.cursym.Text.Link; p != nil; p = p.Link {
+		for p = c.cursym.Func.Text.Link; p != nil; p = p.Link {
 			p.Pc = pc
 			o = c.oplook(p)
 
@@ -664,7 +665,7 @@ func span9(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
 	bp := c.cursym.P
 	var i int32
 	var out [6]uint32
-	for p := c.cursym.Text.Link; p != nil; p = p.Link {
+	for p := c.cursym.Func.Text.Link; p != nil; p = p.Link {
 		c.pc = p.Pc
 		o = c.oplook(p)
 		if int(o.size) > 4*len(out) {
@@ -742,7 +743,7 @@ func (c *ctxt9) aclass(a *obj.Addr) int {
 			}
 			c.instoffset = a.Offset
 			if a.Sym != nil { // use relocation
-				if a.Sym.Type == obj.STLSBSS {
+				if a.Sym.Type == objabi.STLSBSS {
 					if c.ctxt.Flag_shared {
 						return C_TLS_IE
 					} else {
@@ -809,7 +810,7 @@ func (c *ctxt9) aclass(a *obj.Addr) int {
 			if s == nil {
 				break
 			}
-			if s.Type == obj.SCONST {
+			if s.Type == objabi.SCONST {
 				c.instoffset = a.Offset
 				goto consize
 			}
@@ -1654,11 +1655,13 @@ func buildop(ctxt *obj.Link) {
 			opset(ASLWCC, r0)
 			opset(ASRW, r0)
 			opset(ASRWCC, r0)
+			opset(AROTLW, r0)
 
 		case ASLD:
 			opset(ASLDCC, r0)
 			opset(ASRD, r0)
 			opset(ASRDCC, r0)
+			opset(AROTL, r0)
 
 		case ASRAW: /* sraw Rb,Rs,Ra; srawi sh,Rs,Ra */
 			opset(ASRAWCC, r0)
@@ -1970,10 +1973,12 @@ const (
 	OP_ORI    = 24<<26 | 0<<1 | 0<<10 | 0
 	OP_ORIS   = 25<<26 | 0<<1 | 0<<10 | 0
 	OP_RLWINM = 21<<26 | 0<<1 | 0<<10 | 0
+	OP_RLWNM  = 23<<26 | 0<<1 | 0<<10 | 0
 	OP_SUBF   = 31<<26 | 40<<1 | 0<<10 | 0
 	OP_RLDIC  = 30<<26 | 4<<1 | 0<<10 | 0
 	OP_RLDICR = 30<<26 | 2<<1 | 0<<10 | 0
 	OP_RLDICL = 30<<26 | 0<<1 | 0<<10 | 0
+	OP_RLDCL  = 30<<26 | 8<<1 | 0<<10 | 0
 )
 
 func oclass(a *obj.Addr) int {
@@ -1985,29 +1990,48 @@ const (
 	DS_FORM
 )
 
-// opform returns the form (D_FORM or DS_FORM) of an instruction. Used to decide on
-// which relocation to use with a load or store and only supports the needed
-// instructions.
+// This function determines when a non-indexed load or store is D or
+// DS form for use in finding the size of the offset field in the instruction.
+// The size is needed when setting the offset value in the instruction
+// and when generating relocation for that field.
+// DS form instructions include: ld, ldu, lwa, std, stdu.  All other
+// loads and stores with an offset field are D form.  This function should
+// only be called with the same opcodes as are handled by opstore and opload.
 func (c *ctxt9) opform(insn uint32) int {
 	switch insn {
 	default:
 		c.ctxt.Diag("bad insn in loadform: %x", insn)
 	case OPVCC(58, 0, 0, 0), // ld
+		OPVCC(58, 0, 0, 1),        // ldu
 		OPVCC(58, 0, 0, 0) | 1<<1, // lwa
-		OPVCC(62, 0, 0, 0):        // std
+		OPVCC(62, 0, 0, 0),        // std
+		OPVCC(62, 0, 0, 1):        //stdu
 		return DS_FORM
 	case OP_ADDI, // add
 		OPVCC(32, 0, 0, 0), // lwz
-		OPVCC(42, 0, 0, 0), // lha
-		OPVCC(40, 0, 0, 0), // lhz
+		OPVCC(33, 0, 0, 0), // lwzu
 		OPVCC(34, 0, 0, 0), // lbz
-		OPVCC(50, 0, 0, 0), // lfd
+		OPVCC(35, 0, 0, 0), // lbzu
+		OPVCC(40, 0, 0, 0), // lhz
+		OPVCC(41, 0, 0, 0), // lhzu
+		OPVCC(42, 0, 0, 0), // lha
+		OPVCC(43, 0, 0, 0), // lhau
+		OPVCC(46, 0, 0, 0), // lmw
 		OPVCC(48, 0, 0, 0), // lfs
+		OPVCC(49, 0, 0, 0), // lfsu
+		OPVCC(50, 0, 0, 0), // lfd
+		OPVCC(51, 0, 0, 0), // lfdu
 		OPVCC(36, 0, 0, 0), // stw
-		OPVCC(44, 0, 0, 0), // sth
+		OPVCC(37, 0, 0, 0), // stwu
 		OPVCC(38, 0, 0, 0), // stb
+		OPVCC(39, 0, 0, 0), // stbu
+		OPVCC(44, 0, 0, 0), // sth
+		OPVCC(45, 0, 0, 0), // sthu
+		OPVCC(47, 0, 0, 0), // stmw
+		OPVCC(52, 0, 0, 0), // stfs
+		OPVCC(53, 0, 0, 0), // stfsu
 		OPVCC(54, 0, 0, 0), // stfd
-		OPVCC(52, 0, 0, 0): // stfs
+		OPVCC(55, 0, 0, 0): // stfdu
 		return D_FORM
 	}
 	return 0
@@ -2033,17 +2057,17 @@ func (c *ctxt9) symbolAccess(s *obj.LSym, d int64, reg int16, op uint32) (o1, o2
 	if c.ctxt.Flag_shared {
 		switch form {
 		case D_FORM:
-			rel.Type = obj.R_ADDRPOWER_TOCREL
+			rel.Type = objabi.R_ADDRPOWER_TOCREL
 		case DS_FORM:
-			rel.Type = obj.R_ADDRPOWER_TOCREL_DS
+			rel.Type = objabi.R_ADDRPOWER_TOCREL_DS
 		}
 
 	} else {
 		switch form {
 		case D_FORM:
-			rel.Type = obj.R_ADDRPOWER
+			rel.Type = objabi.R_ADDRPOWER
 		case DS_FORM:
-			rel.Type = obj.R_ADDRPOWER_DS
+			rel.Type = objabi.R_ADDRPOWER_DS
 		}
 	}
 	return
@@ -2238,7 +2262,15 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 		if r == 0 {
 			r = int(p.To.Reg)
 		}
-		o1 = LOP_RRR(c.oprrr(p.As), uint32(p.To.Reg), uint32(r), uint32(p.From.Reg))
+		// AROTL and AROTLW are extended mnemonics, which map to RLDCL and RLWNM.
+		switch p.As {
+		case AROTL:
+			o1 = AOP_RLDIC(OP_RLDCL, uint32(p.To.Reg), uint32(r), uint32(p.From.Reg), uint32(0))
+		case AROTLW:
+			o1 = OP_RLW(OP_RLWNM, uint32(p.To.Reg), uint32(r), uint32(p.From.Reg), 0, 31)
+		default:
+			o1 = LOP_RRR(c.oprrr(p.As), uint32(p.To.Reg), uint32(r), uint32(p.From.Reg))
+		}
 
 	case 7: /* mov r, soreg ==> stw o(r) */
 		r := int(p.To.Reg)
@@ -2260,15 +2292,20 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 				// that knows the name of the tls variable. Possibly
 				// we could add some assembly syntax so that the name
 				// of the variable does not have to be assumed.
-				rel.Sym = c.ctxt.Lookup("runtime.tls_g", 0)
-				rel.Type = obj.R_POWER_TLS
+				rel.Sym = c.ctxt.Lookup("runtime.tls_g")
+				rel.Type = objabi.R_POWER_TLS
 			}
 			o1 = AOP_RRR(c.opstorex(p.As), uint32(p.From.Reg), uint32(p.To.Index), uint32(r))
 		} else {
 			if int32(int16(v)) != v {
 				log.Fatalf("mishandled instruction %v", p)
 			}
-			o1 = AOP_IRR(c.opstore(p.As), uint32(p.From.Reg), uint32(r), uint32(v))
+			// Offsets in DS form stores must be a multiple of 4
+			inst := c.opstore(p.As)
+			if c.opform(inst) == DS_FORM && v&0x3 != 0 {
+				log.Fatalf("invalid offset for DS form load/store %v", p)
+			}
+			o1 = AOP_IRR(inst, uint32(p.From.Reg), uint32(r), uint32(v))
 		}
 
 	case 8: /* mov soreg, r ==> lbz/lhz/lwz o(r) */
@@ -2286,15 +2323,20 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 				rel := obj.Addrel(c.cursym)
 				rel.Off = int32(c.pc)
 				rel.Siz = 4
-				rel.Sym = c.ctxt.Lookup("runtime.tls_g", 0)
-				rel.Type = obj.R_POWER_TLS
+				rel.Sym = c.ctxt.Lookup("runtime.tls_g")
+				rel.Type = objabi.R_POWER_TLS
 			}
 			o1 = AOP_RRR(c.oploadx(p.As), uint32(p.To.Reg), uint32(p.From.Index), uint32(r))
 		} else {
 			if int32(int16(v)) != v {
 				log.Fatalf("mishandled instruction %v", p)
 			}
-			o1 = AOP_IRR(c.opload(p.As), uint32(p.To.Reg), uint32(r), uint32(v))
+			// Offsets in DS form loads must be a multiple of 4
+			inst := c.opload(p.As)
+			if c.opform(inst) == DS_FORM && v&0x3 != 0 {
+				log.Fatalf("invalid offset for DS form load/store %v", p)
+			}
+			o1 = AOP_IRR(inst, uint32(p.To.Reg), uint32(r), uint32(v))
 		}
 
 	case 9: /* movb soreg, r ==> lbz o(r),r2; extsb r2,r2 */
@@ -2350,7 +2392,7 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 			}
 
 			rel.Add = int64(v)
-			rel.Type = obj.R_CALLPOWER
+			rel.Type = objabi.R_CALLPOWER
 		}
 		o2 = 0x60000000 // nop, sometimes overwritten by ld r2, 24(r1) when dynamic linking
 
@@ -2606,32 +2648,28 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 			r = int(p.To.Reg)
 		}
 		var a int
+		op := uint32(0)
 		switch p.As {
 		case ASLD, ASLDCC:
 			a = int(63 - v)
-			o1 = OP_RLDICR
+			op = OP_RLDICR
 
 		case ASRD, ASRDCC:
 			a = int(v)
 			v = 64 - v
-			o1 = OP_RLDICL
-
+			op = OP_RLDICL
+		case AROTL:
+			a = int(0)
+			op = OP_RLDICL
 		default:
 			c.ctxt.Diag("unexpected op in sldi case\n%v", p)
 			a = 0
 			o1 = 0
 		}
 
-		o1 = AOP_RRR(o1, uint32(r), uint32(p.To.Reg), (uint32(v) & 0x1F))
-		o1 |= (uint32(a) & 31) << 6
-		if v&0x20 != 0 {
-			o1 |= 1 << 1
-		}
-		if a&0x20 != 0 {
-			o1 |= 1 << 5 /* mb[5] is top bit */
-		}
+		o1 = AOP_RLDIC(op, uint32(p.To.Reg), uint32(r), uint32(v), uint32(a))
 		if p.As == ASLDCC || p.As == ASRDCC {
-			o1 |= 1 /* Rc */
+			o1 |= 1 // Set the condition code bit
 		}
 
 	case 26: /* mov $lsext/auto/oreg,,r2 ==> addis+addi */
@@ -2758,7 +2796,7 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 			rel.Siz = 8
 			rel.Sym = p.From.Sym
 			rel.Add = p.From.Offset
-			rel.Type = obj.R_ADDR
+			rel.Type = objabi.R_ADDR
 			o2 = 0
 			o1 = o2
 		}
@@ -2789,8 +2827,13 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 		if r == 0 {
 			r = int(o.param)
 		}
+		// Offsets in DS form stores must be a multiple of 4
+		inst := c.opstore(p.As)
+		if c.opform(inst) == DS_FORM && v&0x3 != 0 {
+			log.Fatalf("invalid offset for DS form load/store %v", p)
+		}
 		o1 = AOP_IRR(OP_ADDIS, REGTMP, uint32(r), uint32(high16adjusted(v)))
-		o2 = AOP_IRR(c.opstore(p.As), uint32(p.From.Reg), REGTMP, uint32(v))
+		o2 = AOP_IRR(inst, uint32(p.From.Reg), REGTMP, uint32(v))
 
 	case 36: /* mov bz/h/hz lext/lauto/lreg,r ==> lbz/lha/lhz etc */
 		v := c.regoff(&p.From)
@@ -2943,18 +2986,18 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 			v = 32
 		}
 		var mask [2]uint8
-		if p.As == ASRW || p.As == ASRWCC { /* shift right */
-			mask[0] = uint8(v)
-			mask[1] = 31
+		switch p.As {
+		case AROTLW:
+			mask[0], mask[1] = 0, 31
+		case ASRW, ASRWCC:
+			mask[0], mask[1] = uint8(v), 31
 			v = 32 - v
-		} else {
-			mask[0] = 0
-			mask[1] = uint8(31 - v)
+		default:
+			mask[0], mask[1] = 0, uint8(31-v)
 		}
-
 		o1 = OP_RLW(OP_RLWINM, uint32(p.To.Reg), uint32(r), uint32(v), uint32(mask[0]), uint32(mask[1]))
 		if p.As == ASLWCC || p.As == ASRWCC {
-			o1 |= 1 /* Rc */
+			o1 |= 1 // set the condition code
 		}
 
 	case 58: /* logical $andcon,[s],a */
@@ -3120,19 +3163,34 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 	/* relocation operations */
 	case 74:
 		v := c.vregoff(&p.To)
-		o1, o2 = c.symbolAccess(p.To.Sym, v, p.From.Reg, c.opstore(p.As))
+		// Offsets in DS form stores must be a multiple of 4
+		inst := c.opstore(p.As)
+		if c.opform(inst) == DS_FORM && v&0x3 != 0 {
+			log.Fatalf("invalid offset for DS form load/store %v", p)
+		}
+		o1, o2 = c.symbolAccess(p.To.Sym, v, p.From.Reg, inst)
 
 	//if(dlm) reloc(&p->to, p->pc, 1);
 
 	case 75:
 		v := c.vregoff(&p.From)
-		o1, o2 = c.symbolAccess(p.From.Sym, v, p.To.Reg, c.opload(p.As))
+		// Offsets in DS form loads must be a multiple of 4
+		inst := c.opload(p.As)
+		if c.opform(inst) == DS_FORM && v&0x3 != 0 {
+			log.Fatalf("invalid offset for DS form load/store %v", p)
+		}
+		o1, o2 = c.symbolAccess(p.From.Sym, v, p.To.Reg, inst)
 
 	//if(dlm) reloc(&p->from, p->pc, 1);
 
 	case 76:
 		v := c.vregoff(&p.From)
-		o1, o2 = c.symbolAccess(p.From.Sym, v, p.To.Reg, c.opload(p.As))
+		// Offsets in DS form loads must be a multiple of 4
+		inst := c.opload(p.As)
+		if c.opform(inst) == DS_FORM && v&0x3 != 0 {
+			log.Fatalf("invalid offset for DS form load/store %v", p)
+		}
+		o1, o2 = c.symbolAccess(p.From.Sym, v, p.To.Reg, inst)
 		o3 = LOP_RRR(OP_EXTSB, uint32(p.To.Reg), uint32(p.To.Reg), 0)
 
 		//if(dlm) reloc(&p->from, p->pc, 1);
@@ -3146,7 +3204,7 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 		rel.Off = int32(c.pc)
 		rel.Siz = 4
 		rel.Sym = p.From.Sym
-		rel.Type = obj.R_POWER_TLS_LE
+		rel.Type = objabi.R_POWER_TLS_LE
 
 	case 80:
 		if p.From.Offset != 0 {
@@ -3158,7 +3216,7 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 		rel.Off = int32(c.pc)
 		rel.Siz = 8
 		rel.Sym = p.From.Sym
-		rel.Type = obj.R_POWER_TLS_IE
+		rel.Type = objabi.R_POWER_TLS_IE
 
 	case 81:
 		v := c.vregoff(&p.To)
@@ -3172,7 +3230,7 @@ func (c *ctxt9) asmout(p *obj.Prog, o *Optab, out []uint32) {
 		rel.Off = int32(c.pc)
 		rel.Siz = 8
 		rel.Sym = p.From.Sym
-		rel.Type = obj.R_ADDRPOWER_GOT
+		rel.Type = objabi.R_ADDRPOWER_GOT
 	case 82: /* vector instructions, VX-form and VC-form */
 		if p.From.Type == obj.TYPE_REG {
 			/* reg reg none OR reg reg reg */

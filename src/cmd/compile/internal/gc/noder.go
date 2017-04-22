@@ -13,7 +13,7 @@ import (
 
 	"cmd/compile/internal/syntax"
 	"cmd/compile/internal/types"
-	"cmd/internal/obj"
+	"cmd/internal/objabi"
 	"cmd/internal/src"
 )
 
@@ -36,7 +36,7 @@ func parseFiles(filenames []string) uint {
 			}
 			defer f.Close()
 
-			p.file, _ = syntax.Parse(base, f, p.error, p.pragma, 0) // errors are tracked via p.error
+			p.file, _ = syntax.Parse(base, f, p.error, p.pragma, syntax.CheckBranches) // errors are tracked via p.error
 		}(filename)
 	}
 
@@ -66,7 +66,7 @@ func yyerrorpos(pos src.Pos, format string, args ...interface{}) {
 var pathPrefix string
 
 func absFilename(name string) string {
-	return obj.AbsFile(Ctxt.Pathname, name, pathPrefix)
+	return objabi.AbsFile(Ctxt.Pathname, name, pathPrefix)
 }
 
 // noder transforms package syntax's AST into a Node tree.
@@ -725,9 +725,6 @@ func (p *noder) stmt(stmt syntax.Stmt) *Node {
 		if stmt.Label != nil {
 			n.Left = p.newname(stmt.Label)
 		}
-		if op == OGOTO {
-			n.Sym = types.Dclstack // context, for goto restriction
-		}
 		if op == OXFALL {
 			n.Xoffset = int64(types.Block)
 		}
@@ -777,14 +774,14 @@ func (p *noder) stmt(stmt syntax.Stmt) *Node {
 }
 
 func (p *noder) blockStmt(stmt *syntax.BlockStmt) []*Node {
-	types.Markdcl(lineno)
+	types.Markdcl()
 	nodes := p.stmts(stmt.List)
 	types.Popdcl()
 	return nodes
 }
 
 func (p *noder) ifStmt(stmt *syntax.IfStmt) *Node {
-	types.Markdcl(lineno)
+	types.Markdcl()
 	n := p.nod(stmt, OIF, nil, nil)
 	if stmt.Init != nil {
 		n.Ninit.Set1(p.stmt(stmt.Init))
@@ -806,7 +803,7 @@ func (p *noder) ifStmt(stmt *syntax.IfStmt) *Node {
 }
 
 func (p *noder) forStmt(stmt *syntax.ForStmt) *Node {
-	types.Markdcl(lineno)
+	types.Markdcl()
 	var n *Node
 	if r, ok := stmt.Init.(*syntax.RangeClause); ok {
 		if stmt.Cond != nil || stmt.Post != nil {
@@ -840,7 +837,7 @@ func (p *noder) forStmt(stmt *syntax.ForStmt) *Node {
 }
 
 func (p *noder) switchStmt(stmt *syntax.SwitchStmt) *Node {
-	types.Markdcl(lineno)
+	types.Markdcl()
 	n := p.nod(stmt, OSWITCH, nil, nil)
 	if stmt.Init != nil {
 		n.Ninit.Set1(p.stmt(stmt.Init))
@@ -864,7 +861,7 @@ func (p *noder) caseClauses(clauses []*syntax.CaseClause, tswitch *Node) []*Node
 	var nodes []*Node
 	for _, clause := range clauses {
 		p.lineno(clause)
-		types.Markdcl(lineno)
+		types.Markdcl()
 		n := p.nod(clause, OXCASE, nil, nil)
 		if clause.Cases != nil {
 			n.List.Set(p.exprList(clause.Cases))
@@ -894,7 +891,7 @@ func (p *noder) commClauses(clauses []*syntax.CommClause) []*Node {
 	var nodes []*Node
 	for _, clause := range clauses {
 		p.lineno(clause)
-		types.Markdcl(lineno)
+		types.Markdcl()
 		n := p.nod(clause, OXCASE, nil, nil)
 		if clause.Comm != nil {
 			n.List.Set1(p.stmt(clause.Comm))
@@ -909,7 +906,6 @@ func (p *noder) commClauses(clauses []*syntax.CommClause) []*Node {
 
 func (p *noder) labeledStmt(label *syntax.LabeledStmt) *Node {
 	lhs := p.nod(label, OLABEL, p.newname(label.Label), nil)
-	lhs.Sym = types.Dclstack // context, for goto restriction
 
 	var ls *Node
 	if label.Stmt != nil { // TODO(mdempsky): Should always be present.

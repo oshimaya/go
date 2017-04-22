@@ -6,7 +6,7 @@ package gc
 
 import (
 	"cmd/compile/internal/types"
-	"cmd/internal/obj"
+	"cmd/internal/objabi"
 	"cmd/internal/src"
 	"fmt"
 	"math"
@@ -23,11 +23,12 @@ const (
 	Ecomplit              // type in composite literal
 )
 
-// type check the whole tree of an expression.
+// type checks the whole tree of an expression.
 // calculates expression types.
 // evaluates compile time constants.
 // marks variables that escape the local frame.
-// rewrites n->op to be more specific in some cases.
+// rewrites n.Op to be more specific in some cases.
+
 var typecheckdefstack []*Node
 
 // resolve ONONAME to definition, if any.
@@ -900,7 +901,7 @@ OpSwitch:
 			checkwidth(t)
 		}
 
-		if isblanksym(n.Sym) {
+		if n.Sym.IsBlank() {
 			yyerror("cannot refer to blank field or method")
 			n.Type = nil
 			return n
@@ -2009,7 +2010,7 @@ OpSwitch:
 	case OLABEL:
 		ok |= Etop
 		decldepth++
-		if isblanksym(n.Left.Sym) {
+		if n.Left.Sym.IsBlank() {
 			// Empty identifier is valid but useless.
 			// Eliminate now to simplify life later.
 			// See issues 7538, 11589, 11593.
@@ -2180,10 +2181,6 @@ OpSwitch:
 		return n
 	}
 
-	/* TODO
-	if(n->type == T)
-		fatal("typecheck nil type");
-	*/
 	return n
 }
 
@@ -2449,8 +2446,6 @@ func lookdot(n *Node, t *types.Type, dostrcmp int) *types.Field {
 	if n.Left.Type == t || n.Left.Type.Sym == nil {
 		mt := methtype(t)
 		if mt != nil {
-			// Use f2->method, not f2->xmethod: adddot has
-			// already inserted all the necessary embedded dots.
 			f2 = lookdot1(n, s, mt, mt.Methods(), dostrcmp)
 		}
 	}
@@ -2468,7 +2463,7 @@ func lookdot(n *Node, t *types.Type, dostrcmp int) *types.Field {
 		}
 		n.Xoffset = f1.Offset
 		n.Type = f1.Type
-		if obj.Fieldtrack_enabled > 0 {
+		if objabi.Fieldtrack_enabled > 0 {
 			dotField[typeSymKey{t.Orig, s}] = f1
 		}
 		if t.IsInterface() {
@@ -2527,7 +2522,7 @@ func lookdot(n *Node, t *types.Type, dostrcmp int) *types.Field {
 		}
 		if pll.Implicit() && ll.Type.IsPtr() && ll.Type.Sym != nil && asNode(ll.Type.Sym.Def) != nil && asNode(ll.Type.Sym.Def).Op == OTYPE {
 			// It is invalid to automatically dereference a named pointer type when selecting a method.
-			// Make n->left == ll to clarify error message.
+			// Make n.Left == ll to clarify error message.
 			n.Left = ll
 			return nil
 		}
@@ -2536,7 +2531,6 @@ func lookdot(n *Node, t *types.Type, dostrcmp int) *types.Field {
 		n.Xoffset = f2.Offset
 		n.Type = f2.Type
 
-		//		print("lookdot found [%p] %T\n", f2->type, f2->type);
 		n.Op = ODOTMETH
 
 		return f2
@@ -2918,7 +2912,7 @@ func typecheckcomplit(n *Node) *Node {
 		return n
 	}
 
-	// Save original node (including n->right)
+	// Save original node (including n.Right)
 	norig := nod(n.Op, nil, nil)
 
 	*norig = *n
@@ -3103,7 +3097,7 @@ func typecheckcomplit(n *Node) *Node {
 					// the field to the right of the dot,
 					// so s will be non-nil, but an OXDOT
 					// is never a valid struct literal key.
-					if key.Sym == nil || key.Op == OXDOT || isblanksym(key.Sym) {
+					if key.Sym == nil || key.Op == OXDOT || key.Sym.IsBlank() {
 						yyerror("invalid field name %v in struct initializer", key)
 						l.Left = typecheck(l.Left, Erv)
 						continue
@@ -3734,7 +3728,7 @@ func typecheckdef(n *Node) *Node {
 			}
 			if nsavederrors+nerrors > 0 {
 				// Can have undefined variables in x := foo
-				// that make x have an n->ndefn == nil.
+				// that make x have an n.name.Defn == nil.
 				// If there are other errors anyway, don't
 				// bother adding to the noise.
 				break
@@ -3749,7 +3743,7 @@ func typecheckdef(n *Node) *Node {
 			break
 		}
 
-		n.Name.Defn = typecheck(n.Name.Defn, Etop) // fills in n->type
+		n.Name.Defn = typecheck(n.Name.Defn, Etop) // fills in n.Type
 
 	case OTYPE:
 		if p := n.Name.Param; p.Alias {
@@ -3848,13 +3842,7 @@ func markbreak(n *Node, implicit *Node) {
 				lab.SetHasBreak(true)
 			}
 		}
-
-	case OFOR,
-		OFORUNTIL,
-		OSWITCH,
-		OTYPESW,
-		OSELECT,
-		ORANGE:
+	case OFOR, OFORUNTIL, OSWITCH, OTYPESW, OSELECT, ORANGE:
 		implicit = n
 		fallthrough
 	default:
@@ -3889,8 +3877,7 @@ func markbreaklist(l Nodes, implicit *Node) {
 	}
 }
 
-// Isterminating whether the Nodes list ends with a terminating
-// statement.
+// isterminating reports whether the Nodes list ends with a terminating statement.
 func (l Nodes) isterminating() bool {
 	s := l.Slice()
 	c := len(s)
@@ -3900,7 +3887,7 @@ func (l Nodes) isterminating() bool {
 	return s[c-1].isterminating()
 }
 
-// Isterminating returns whether the node n, the last one in a
+// Isterminating reports whether the node n, the last one in a
 // statement list, is a terminating statement.
 func (n *Node) isterminating() bool {
 	switch n.Op {
@@ -3912,11 +3899,7 @@ func (n *Node) isterminating() bool {
 	case OBLOCK:
 		return n.List.isterminating()
 
-	case OGOTO,
-		ORETURN,
-		ORETJMP,
-		OPANIC,
-		OXFALL:
+	case OGOTO, ORETURN, ORETJMP, OPANIC, OXFALL:
 		return true
 
 	case OFOR, OFORUNTIL:
@@ -3954,11 +3937,35 @@ func (n *Node) isterminating() bool {
 	return false
 }
 
+// checkreturn makes sure that fn terminates appropriately.
 func checkreturn(fn *Node) {
 	if fn.Type.Results().NumFields() != 0 && fn.Nbody.Len() != 0 {
 		markbreaklist(fn.Nbody, nil)
 		if !fn.Nbody.isterminating() {
 			yyerrorl(fn.Func.Endlineno, "missing return at end of function")
 		}
+	}
+}
+
+func deadcode(fn *Node) {
+	deadcodeslice(fn.Nbody)
+}
+
+func deadcodeslice(nn Nodes) {
+	for _, n := range nn.Slice() {
+		if n == nil {
+			continue
+		}
+		if n.Op == OIF && Isconst(n.Left, CTBOOL) {
+			if n.Left.Bool() {
+				n.Rlist = Nodes{}
+			} else {
+				n.Nbody = Nodes{}
+			}
+		}
+		deadcodeslice(n.Ninit)
+		deadcodeslice(n.Nbody)
+		deadcodeslice(n.List)
+		deadcodeslice(n.Rlist)
 	}
 }

@@ -114,8 +114,6 @@ var racepkg *types.Pkg // package runtime/race
 
 var msanpkg *types.Pkg // package runtime/msan
 
-var typepkg *types.Pkg // fake package for runtime type info (headers)
-
 var unsafepkg *types.Pkg // package unsafe
 
 var trackpkg *types.Pkg // fake package for field tracking
@@ -201,7 +199,7 @@ var flag_race bool
 
 var flag_msan bool
 
-var flag_largemodel bool
+var flagDWARF bool
 
 // Whether we are adding any sort of code instrumentation, such as
 // when the race detector is enabled.
@@ -230,8 +228,9 @@ type Arch struct {
 	MAXWIDTH int64
 	Use387   bool // should 386 backend use 387 FP instructions instead of sse2.
 
-	Defframe func(*Progs, *Node, int64)
-	Ginsnop  func(*Progs)
+	PadFrame  func(int64) int64
+	ZeroRange func(*Progs, *obj.Prog, int64, int64, *uint32) *obj.Prog
+	Ginsnop   func(*Progs)
 
 	// SSAMarkMoves marks any MOVXconst ops that need to avoid clobbering flags.
 	SSAMarkMoves func(*SSAGenState, *ssa.Block)
@@ -242,6 +241,11 @@ type Arch struct {
 	// SSAGenBlock emits end-of-block Progs. SSAGenValue should be called
 	// for all values in the block before SSAGenBlock.
 	SSAGenBlock func(s *SSAGenState, b, next *ssa.Block)
+
+	// ZeroAuto emits code to zero the given auto stack variable.
+	// ZeroAuto must not use any non-temporary registers.
+	// ZeroAuto will only be called for variables which contain a pointer.
+	ZeroAuto func(*Progs, *Node)
 }
 
 var thearch Arch
@@ -265,5 +269,11 @@ var (
 	assertE2I,
 	assertE2I2,
 	assertI2I,
-	assertI2I2 *obj.LSym
+	assertI2I2,
+	goschedguarded,
+	writeBarrier,
+	writebarrierptr,
+	typedmemmove,
+	typedmemclr,
+	Udiv *obj.LSym
 )

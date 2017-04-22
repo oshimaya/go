@@ -104,7 +104,7 @@ func declare(n *Node, ctxt Class) {
 			vargen++
 			gen = vargen
 		}
-		types.Pushdcl(s, lineno)
+		types.Pushdcl(s)
 		n.Name.Curfn = Curfn
 	}
 
@@ -510,7 +510,7 @@ var funcdepth int32   // len(funcstack) during parsing, but then forced to be th
 // start the function.
 // called before funcargs; undone at end of funcbody.
 func funcstart(n *Node) {
-	types.Markdcl(lineno)
+	types.Markdcl()
 	funcstack = append(funcstack, Curfn)
 	funcdepth++
 	Curfn = n
@@ -607,7 +607,7 @@ func checkdupfields(what string, ts ...*types.Type) {
 	seen := make(map[*types.Sym]bool)
 	for _, t := range ts {
 		for _, f := range t.Fields().Slice() {
-			if f.Sym == nil || isblanksym(f.Sym) || asNode(f.Nname) == nil {
+			if f.Sym == nil || f.Sym.IsBlank() || asNode(f.Nname) == nil {
 				continue
 			}
 			if seen[f.Sym] {
@@ -916,7 +916,7 @@ func methodsym(nsym *types.Sym, t0 *types.Type, iface bool) *types.Sym {
 
 	if spkg == nil {
 		if methodsym_toppkg == nil {
-			methodsym_toppkg = mkpkg("go")
+			methodsym_toppkg = types.NewPkg("go", "")
 		}
 		spkg = methodsym_toppkg
 	}
@@ -935,7 +935,7 @@ func methodname(s *types.Sym, recv *types.Type) *types.Sym {
 	}
 
 	tsym := recv.Sym
-	if tsym == nil || isblanksym(s) {
+	if tsym == nil || s.IsBlank() {
 		return s
 	}
 
@@ -1000,7 +1000,7 @@ func addmethod(msym *types.Sym, t *types.Type, local, nointerface bool) {
 		return
 	}
 
-	if isblanksym(msym) {
+	if msym.IsBlank() {
 		return
 	}
 
@@ -1087,7 +1087,7 @@ func makefuncsym(s *types.Sym) {
 	if !Ctxt.Flag_dynlink {
 		Fatalf("makefuncsym dynlink")
 	}
-	if isblanksym(s) {
+	if s.IsBlank() {
 		return
 	}
 	if compiling_runtime && s.Name == "getg" {

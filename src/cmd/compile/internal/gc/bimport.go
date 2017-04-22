@@ -291,7 +291,7 @@ func (p *importer) pkg() *types.Pkg {
 	// add package to pkgList
 	pkg := p.imp
 	if path != "" {
-		pkg = mkpkg(path)
+		pkg = types.NewPkg(path, "")
 	}
 	if pkg.Name == "" {
 		pkg.Name = name
@@ -1091,7 +1091,7 @@ func (p *importer) node() *Node {
 		return nodl(p.pos(), op, p.expr(), nil)
 
 	case OIF:
-		types.Markdcl(lineno)
+		types.Markdcl()
 		n := nodl(p.pos(), OIF, nil, nil)
 		n.Ninit.Set(p.stmtList())
 		n.Left = p.expr()
@@ -1101,7 +1101,7 @@ func (p *importer) node() *Node {
 		return n
 
 	case OFOR:
-		types.Markdcl(lineno)
+		types.Markdcl()
 		n := nodl(p.pos(), OFOR, nil, nil)
 		n.Ninit.Set(p.stmtList())
 		n.Left, n.Right = p.exprsOrNil()
@@ -1110,7 +1110,7 @@ func (p *importer) node() *Node {
 		return n
 
 	case ORANGE:
-		types.Markdcl(lineno)
+		types.Markdcl()
 		n := nodl(p.pos(), ORANGE, nil, nil)
 		n.List.Set(p.stmtList())
 		n.Right = p.expr()
@@ -1119,7 +1119,7 @@ func (p *importer) node() *Node {
 		return n
 
 	case OSELECT, OSWITCH:
-		types.Markdcl(lineno)
+		types.Markdcl()
 		n := nodl(p.pos(), op, nil, nil)
 		n.Ninit.Set(p.stmtList())
 		n.Left, _ = p.exprsOrNil()
@@ -1131,7 +1131,7 @@ func (p *importer) node() *Node {
 	// 	unreachable - mapped to OXCASE case below by exporter
 
 	case OXCASE:
-		types.Markdcl(lineno)
+		types.Markdcl()
 		n := nodl(p.pos(), OXCASE, nil, nil)
 		n.Xoffset = int64(types.Block)
 		n.List.Set(p.exprList())
@@ -1161,9 +1161,7 @@ func (p *importer) node() *Node {
 	// 	unreachable - not emitted by exporter
 
 	case OGOTO, OLABEL:
-		n := nodl(p.pos(), op, newname(p.expr().Sym), nil)
-		n.Sym = types.Dclstack // context, for goto restrictions
-		return n
+		return nodl(p.pos(), op, newname(p.expr().Sym), nil)
 
 	case OEND:
 		return nil

@@ -512,6 +512,14 @@ const (
 	OpAMD64SARLconst
 	OpAMD64SARWconst
 	OpAMD64SARBconst
+	OpAMD64ROLQ
+	OpAMD64ROLL
+	OpAMD64ROLW
+	OpAMD64ROLB
+	OpAMD64RORQ
+	OpAMD64RORL
+	OpAMD64RORW
+	OpAMD64RORB
 	OpAMD64ROLQconst
 	OpAMD64ROLLconst
 	OpAMD64ROLWconst
@@ -1284,6 +1292,8 @@ const (
 	OpPPC64SRWconst
 	OpPPC64SLDconst
 	OpPPC64SLWconst
+	OpPPC64ROTLconst
+	OpPPC64ROTLWconst
 	OpPPC64FDIV
 	OpPPC64FDIVS
 	OpPPC64DIVD
@@ -1916,6 +1926,7 @@ const (
 	OpAtomicCompareAndSwap64
 	OpAtomicAnd8
 	OpAtomicOr8
+	OpClobber
 )
 
 var opcodeTable = [...]opInfo{
@@ -5945,6 +5956,134 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
+		name:         "ROLQ",
+		argLen:       2,
+		resultInArg0: true,
+		clobberFlags: true,
+		asm:          x86.AROLQ,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{1, 2},     // CX
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+			outputs: []outputInfo{
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:         "ROLL",
+		argLen:       2,
+		resultInArg0: true,
+		clobberFlags: true,
+		asm:          x86.AROLL,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{1, 2},     // CX
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+			outputs: []outputInfo{
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:         "ROLW",
+		argLen:       2,
+		resultInArg0: true,
+		clobberFlags: true,
+		asm:          x86.AROLW,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{1, 2},     // CX
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+			outputs: []outputInfo{
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:         "ROLB",
+		argLen:       2,
+		resultInArg0: true,
+		clobberFlags: true,
+		asm:          x86.AROLB,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{1, 2},     // CX
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+			outputs: []outputInfo{
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:         "RORQ",
+		argLen:       2,
+		resultInArg0: true,
+		clobberFlags: true,
+		asm:          x86.ARORQ,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{1, 2},     // CX
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+			outputs: []outputInfo{
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:         "RORL",
+		argLen:       2,
+		resultInArg0: true,
+		clobberFlags: true,
+		asm:          x86.ARORL,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{1, 2},     // CX
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+			outputs: []outputInfo{
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:         "RORW",
+		argLen:       2,
+		resultInArg0: true,
+		clobberFlags: true,
+		asm:          x86.ARORW,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{1, 2},     // CX
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+			outputs: []outputInfo{
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
+		name:         "RORB",
+		argLen:       2,
+		resultInArg0: true,
+		clobberFlags: true,
+		asm:          x86.ARORB,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{1, 2},     // CX
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+			outputs: []outputInfo{
+				{0, 65519}, // AX CX DX BX BP SI DI R8 R9 R10 R11 R12 R13 R14 R15
+			},
+		},
+	},
+	{
 		name:         "ROLQconst",
 		auxType:      auxInt8,
 		argLen:       1,
@@ -8015,10 +8154,8 @@ var opcodeTable = [...]opInfo{
 	},
 	{
 		name:         "CALLudiv",
-		auxType:      auxSymOff,
 		argLen:       2,
 		clobberFlags: true,
-		symEffect:    SymNone,
 		reg: regInfo{
 			inputs: []inputInfo{
 				{0, 2}, // R1
@@ -16404,6 +16541,34 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
+		name:    "ROTLconst",
+		auxType: auxInt64,
+		argLen:  1,
+		asm:     ppc64.AROTL,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, 1073733630}, // SP SB R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R14 R15 R16 R17 R18 R19 R20 R21 R22 R23 R24 R25 R26 R27 R28 R29
+			},
+			outputs: []outputInfo{
+				{0, 1073733624}, // R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R14 R15 R16 R17 R18 R19 R20 R21 R22 R23 R24 R25 R26 R27 R28 R29
+			},
+		},
+	},
+	{
+		name:    "ROTLWconst",
+		auxType: auxInt64,
+		argLen:  1,
+		asm:     ppc64.AROTLW,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, 1073733630}, // SP SB R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R14 R15 R16 R17 R18 R19 R20 R21 R22 R23 R24 R25 R26 R27 R28 R29
+			},
+			outputs: []outputInfo{
+				{0, 1073733624}, // R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R14 R15 R16 R17 R18 R19 R20 R21 R22 R23 R24 R25 R26 R27 R28 R29
+			},
+		},
+	},
+	{
 		name:   "FDIV",
 		argLen: 2,
 		asm:    ppc64.AFDIV,
@@ -22442,6 +22607,13 @@ var opcodeTable = [...]opInfo{
 		argLen:         3,
 		hasSideEffects: true,
 		generic:        true,
+	},
+	{
+		name:      "Clobber",
+		auxType:   auxSymOff,
+		argLen:    0,
+		symEffect: SymNone,
+		generic:   true,
 	},
 }
 

@@ -690,20 +690,11 @@ func (e *EscState) esc(n *Node, parent *Node) {
 		e.escassignSinkWhy(n, n, "too large for stack") // TODO category: tooLarge
 	}
 
-	if n.Op == OIF && Isconst(n.Left, CTBOOL) {
-		// Don't examine dead code.
-		if n.Left.Bool() {
-			e.esclist(n.Nbody, n)
-		} else {
-			e.esclist(n.Rlist, n)
-		}
-	} else {
-		e.esc(n.Left, n)
-		e.esc(n.Right, n)
-		e.esclist(n.Nbody, n)
-		e.esclist(n.List, n)
-		e.esclist(n.Rlist, n)
-	}
+	e.esc(n.Left, n)
+	e.esc(n.Right, n)
+	e.esclist(n.Nbody, n)
+	e.esclist(n.List, n)
+	e.esclist(n.Rlist, n)
 
 	if n.Op == OFOR || n.Op == OFORUNTIL || n.Op == ORANGE {
 		e.loopdepth--
@@ -2118,7 +2109,7 @@ func (e *EscState) esctag(fn *Node) {
 	// (Unnamed parameters are not in the Dcl list in the loop above
 	// so we need to mark them separately.)
 	for _, f := range fn.Type.Params().Fields().Slice() {
-		if f.Sym == nil || isblanksym(f.Sym) {
+		if f.Sym == nil || f.Sym.IsBlank() {
 			f.Note = mktag(EscNone)
 		}
 	}

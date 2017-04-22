@@ -6,7 +6,7 @@ package gc
 
 import (
 	"cmd/compile/internal/types"
-	"cmd/internal/obj"
+	"cmd/internal/objabi"
 	"cmd/internal/sys"
 	"fmt"
 	"strings"
@@ -502,6 +502,8 @@ opswitch:
 	case OTYPE, ONAME, OLITERAL:
 		// TODO(mdempsky): Just return n; see discussion on CL 38655.
 		// Perhaps refactor to use Node.mayBeShared for these instead.
+		// If these return early, make sure to still call
+		// stringsym for constant strings.
 
 	case ONOT, OMINUS, OPLUS, OCOM, OREAL, OIMAG, ODOTMETH, ODOTINTER,
 		OIND, OSPTR, OITAB, OIDATA, OADDR:
@@ -1653,6 +1655,11 @@ opswitch:
 	}
 	if n.Op == OLITERAL {
 		n = typecheck(n, Erv)
+		// Emit string symbol now to avoid emitting
+		// any concurrently during the backend.
+		if s, ok := n.Val().U.(string); ok {
+			_ = stringsym(s)
+		}
 	}
 
 	updateHasCall(n)
@@ -3195,7 +3202,7 @@ func walkcompare(n *Node, init *Nodes) *Node {
 	if t.IsStruct() {
 		for _, f := range t.Fields().Slice() {
 			sym := f.Sym
-			if isblanksym(sym) {
+			if sym.IsBlank() {
 				continue
 			}
 			compare(
@@ -3470,7 +3477,7 @@ func usemethod(n *Node) {
 }
 
 func usefield(n *Node) {
-	if obj.Fieldtrack_enabled == 0 {
+	if objabi.Fieldtrack_enabled == 0 {
 		return
 	}
 

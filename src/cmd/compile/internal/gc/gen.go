@@ -15,7 +15,7 @@ import (
 )
 
 func Sysfunc(name string) *obj.LSym {
-	return Linksym(Runtimepkg.Lookup(name))
+	return Runtimepkg.Lookup(name).Linksym()
 }
 
 // addrescapes tags node n as having had its address taken
@@ -192,7 +192,6 @@ func autotmpname(n int) string {
 	// Start with a buffer big enough to hold a large n.
 	b := []byte(prefix + "      ")[:len(prefix)]
 	b = strconv.AppendInt(b, int64(n), 10)
-	_ = b
 	return types.InternString(b)
 }
 

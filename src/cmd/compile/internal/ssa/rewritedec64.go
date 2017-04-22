@@ -5,129 +5,132 @@ package ssa
 
 import "math"
 import "cmd/internal/obj"
+import "cmd/internal/objabi"
 
-var _ = math.MinInt8 // in case not otherwise used
-var _ = obj.ANOP     // in case not otherwise used
+var _ = math.MinInt8  // in case not otherwise used
+var _ = obj.ANOP      // in case not otherwise used
+var _ = objabi.GOROOT // in case not otherwise used
+
 func rewriteValuedec64(v *Value) bool {
 	switch v.Op {
 	case OpAdd64:
-		return rewriteValuedec64_OpAdd64(v)
+		return rewriteValuedec64_OpAdd64_0(v)
 	case OpAnd64:
-		return rewriteValuedec64_OpAnd64(v)
+		return rewriteValuedec64_OpAnd64_0(v)
 	case OpArg:
-		return rewriteValuedec64_OpArg(v)
+		return rewriteValuedec64_OpArg_0(v)
 	case OpBitLen64:
-		return rewriteValuedec64_OpBitLen64(v)
+		return rewriteValuedec64_OpBitLen64_0(v)
 	case OpBswap64:
-		return rewriteValuedec64_OpBswap64(v)
+		return rewriteValuedec64_OpBswap64_0(v)
 	case OpCom64:
-		return rewriteValuedec64_OpCom64(v)
+		return rewriteValuedec64_OpCom64_0(v)
 	case OpConst64:
-		return rewriteValuedec64_OpConst64(v)
+		return rewriteValuedec64_OpConst64_0(v)
 	case OpCtz64:
-		return rewriteValuedec64_OpCtz64(v)
+		return rewriteValuedec64_OpCtz64_0(v)
 	case OpEq64:
-		return rewriteValuedec64_OpEq64(v)
+		return rewriteValuedec64_OpEq64_0(v)
 	case OpGeq64:
-		return rewriteValuedec64_OpGeq64(v)
+		return rewriteValuedec64_OpGeq64_0(v)
 	case OpGeq64U:
-		return rewriteValuedec64_OpGeq64U(v)
+		return rewriteValuedec64_OpGeq64U_0(v)
 	case OpGreater64:
-		return rewriteValuedec64_OpGreater64(v)
+		return rewriteValuedec64_OpGreater64_0(v)
 	case OpGreater64U:
-		return rewriteValuedec64_OpGreater64U(v)
+		return rewriteValuedec64_OpGreater64U_0(v)
 	case OpInt64Hi:
-		return rewriteValuedec64_OpInt64Hi(v)
+		return rewriteValuedec64_OpInt64Hi_0(v)
 	case OpInt64Lo:
-		return rewriteValuedec64_OpInt64Lo(v)
+		return rewriteValuedec64_OpInt64Lo_0(v)
 	case OpLeq64:
-		return rewriteValuedec64_OpLeq64(v)
+		return rewriteValuedec64_OpLeq64_0(v)
 	case OpLeq64U:
-		return rewriteValuedec64_OpLeq64U(v)
+		return rewriteValuedec64_OpLeq64U_0(v)
 	case OpLess64:
-		return rewriteValuedec64_OpLess64(v)
+		return rewriteValuedec64_OpLess64_0(v)
 	case OpLess64U:
-		return rewriteValuedec64_OpLess64U(v)
+		return rewriteValuedec64_OpLess64U_0(v)
 	case OpLoad:
-		return rewriteValuedec64_OpLoad(v)
+		return rewriteValuedec64_OpLoad_0(v)
 	case OpLsh16x64:
-		return rewriteValuedec64_OpLsh16x64(v)
+		return rewriteValuedec64_OpLsh16x64_0(v)
 	case OpLsh32x64:
-		return rewriteValuedec64_OpLsh32x64(v)
+		return rewriteValuedec64_OpLsh32x64_0(v)
 	case OpLsh64x16:
-		return rewriteValuedec64_OpLsh64x16(v)
+		return rewriteValuedec64_OpLsh64x16_0(v)
 	case OpLsh64x32:
-		return rewriteValuedec64_OpLsh64x32(v)
+		return rewriteValuedec64_OpLsh64x32_0(v)
 	case OpLsh64x64:
-		return rewriteValuedec64_OpLsh64x64(v)
+		return rewriteValuedec64_OpLsh64x64_0(v)
 	case OpLsh64x8:
-		return rewriteValuedec64_OpLsh64x8(v)
+		return rewriteValuedec64_OpLsh64x8_0(v)
 	case OpLsh8x64:
-		return rewriteValuedec64_OpLsh8x64(v)
+		return rewriteValuedec64_OpLsh8x64_0(v)
 	case OpMul64:
-		return rewriteValuedec64_OpMul64(v)
+		return rewriteValuedec64_OpMul64_0(v)
 	case OpNeg64:
-		return rewriteValuedec64_OpNeg64(v)
+		return rewriteValuedec64_OpNeg64_0(v)
 	case OpNeq64:
-		return rewriteValuedec64_OpNeq64(v)
+		return rewriteValuedec64_OpNeq64_0(v)
 	case OpOr64:
-		return rewriteValuedec64_OpOr64(v)
+		return rewriteValuedec64_OpOr64_0(v)
 	case OpRsh16Ux64:
-		return rewriteValuedec64_OpRsh16Ux64(v)
+		return rewriteValuedec64_OpRsh16Ux64_0(v)
 	case OpRsh16x64:
-		return rewriteValuedec64_OpRsh16x64(v)
+		return rewriteValuedec64_OpRsh16x64_0(v)
 	case OpRsh32Ux64:
-		return rewriteValuedec64_OpRsh32Ux64(v)
+		return rewriteValuedec64_OpRsh32Ux64_0(v)
 	case OpRsh32x64:
-		return rewriteValuedec64_OpRsh32x64(v)
+		return rewriteValuedec64_OpRsh32x64_0(v)
 	case OpRsh64Ux16:
-		return rewriteValuedec64_OpRsh64Ux16(v)
+		return rewriteValuedec64_OpRsh64Ux16_0(v)
 	case OpRsh64Ux32:
-		return rewriteValuedec64_OpRsh64Ux32(v)
+		return rewriteValuedec64_OpRsh64Ux32_0(v)
 	case OpRsh64Ux64:
-		return rewriteValuedec64_OpRsh64Ux64(v)
+		return rewriteValuedec64_OpRsh64Ux64_0(v)
 	case OpRsh64Ux8:
-		return rewriteValuedec64_OpRsh64Ux8(v)
+		return rewriteValuedec64_OpRsh64Ux8_0(v)
 	case OpRsh64x16:
-		return rewriteValuedec64_OpRsh64x16(v)
+		return rewriteValuedec64_OpRsh64x16_0(v)
 	case OpRsh64x32:
-		return rewriteValuedec64_OpRsh64x32(v)
+		return rewriteValuedec64_OpRsh64x32_0(v)
 	case OpRsh64x64:
-		return rewriteValuedec64_OpRsh64x64(v)
+		return rewriteValuedec64_OpRsh64x64_0(v)
 	case OpRsh64x8:
-		return rewriteValuedec64_OpRsh64x8(v)
+		return rewriteValuedec64_OpRsh64x8_0(v)
 	case OpRsh8Ux64:
-		return rewriteValuedec64_OpRsh8Ux64(v)
+		return rewriteValuedec64_OpRsh8Ux64_0(v)
 	case OpRsh8x64:
-		return rewriteValuedec64_OpRsh8x64(v)
+		return rewriteValuedec64_OpRsh8x64_0(v)
 	case OpSignExt16to64:
-		return rewriteValuedec64_OpSignExt16to64(v)
+		return rewriteValuedec64_OpSignExt16to64_0(v)
 	case OpSignExt32to64:
-		return rewriteValuedec64_OpSignExt32to64(v)
+		return rewriteValuedec64_OpSignExt32to64_0(v)
 	case OpSignExt8to64:
-		return rewriteValuedec64_OpSignExt8to64(v)
+		return rewriteValuedec64_OpSignExt8to64_0(v)
 	case OpStore:
-		return rewriteValuedec64_OpStore(v)
+		return rewriteValuedec64_OpStore_0(v)
 	case OpSub64:
-		return rewriteValuedec64_OpSub64(v)
+		return rewriteValuedec64_OpSub64_0(v)
 	case OpTrunc64to16:
-		return rewriteValuedec64_OpTrunc64to16(v)
+		return rewriteValuedec64_OpTrunc64to16_0(v)
 	case OpTrunc64to32:
-		return rewriteValuedec64_OpTrunc64to32(v)
+		return rewriteValuedec64_OpTrunc64to32_0(v)
 	case OpTrunc64to8:
-		return rewriteValuedec64_OpTrunc64to8(v)
+		return rewriteValuedec64_OpTrunc64to8_0(v)
 	case OpXor64:
-		return rewriteValuedec64_OpXor64(v)
+		return rewriteValuedec64_OpXor64_0(v)
 	case OpZeroExt16to64:
-		return rewriteValuedec64_OpZeroExt16to64(v)
+		return rewriteValuedec64_OpZeroExt16to64_0(v)
 	case OpZeroExt32to64:
-		return rewriteValuedec64_OpZeroExt32to64(v)
+		return rewriteValuedec64_OpZeroExt32to64_0(v)
 	case OpZeroExt8to64:
-		return rewriteValuedec64_OpZeroExt8to64(v)
+		return rewriteValuedec64_OpZeroExt8to64_0(v)
 	}
 	return false
 }
-func rewriteValuedec64_OpAdd64(v *Value) bool {
+func rewriteValuedec64_OpAdd64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -170,7 +173,7 @@ func rewriteValuedec64_OpAdd64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpAnd64(v *Value) bool {
+func rewriteValuedec64_OpAnd64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -201,7 +204,7 @@ func rewriteValuedec64_OpAnd64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpArg(v *Value) bool {
+func rewriteValuedec64_OpArg_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	config := b.Func.Config
@@ -290,7 +293,7 @@ func rewriteValuedec64_OpArg(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpBitLen64(v *Value) bool {
+func rewriteValuedec64_OpBitLen64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -322,7 +325,7 @@ func rewriteValuedec64_OpBitLen64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpBswap64(v *Value) bool {
+func rewriteValuedec64_OpBswap64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -346,7 +349,7 @@ func rewriteValuedec64_OpBswap64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpCom64(v *Value) bool {
+func rewriteValuedec64_OpCom64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -370,7 +373,7 @@ func rewriteValuedec64_OpCom64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpConst64(v *Value) bool {
+func rewriteValuedec64_OpConst64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -413,7 +416,7 @@ func rewriteValuedec64_OpConst64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpCtz64(v *Value) bool {
+func rewriteValuedec64_OpCtz64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -447,7 +450,7 @@ func rewriteValuedec64_OpCtz64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpEq64(v *Value) bool {
+func rewriteValuedec64_OpEq64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -478,7 +481,7 @@ func rewriteValuedec64_OpEq64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpGeq64(v *Value) bool {
+func rewriteValuedec64_OpGeq64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -519,7 +522,7 @@ func rewriteValuedec64_OpGeq64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpGeq64U(v *Value) bool {
+func rewriteValuedec64_OpGeq64U_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -560,7 +563,7 @@ func rewriteValuedec64_OpGeq64U(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpGreater64(v *Value) bool {
+func rewriteValuedec64_OpGreater64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -601,7 +604,7 @@ func rewriteValuedec64_OpGreater64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpGreater64U(v *Value) bool {
+func rewriteValuedec64_OpGreater64U_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -642,7 +645,7 @@ func rewriteValuedec64_OpGreater64U(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpInt64Hi(v *Value) bool {
+func rewriteValuedec64_OpInt64Hi_0(v *Value) bool {
 	// match: (Int64Hi (Int64Make hi _))
 	// cond:
 	// result: hi
@@ -659,7 +662,7 @@ func rewriteValuedec64_OpInt64Hi(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpInt64Lo(v *Value) bool {
+func rewriteValuedec64_OpInt64Lo_0(v *Value) bool {
 	// match: (Int64Lo (Int64Make _ lo))
 	// cond:
 	// result: lo
@@ -676,7 +679,7 @@ func rewriteValuedec64_OpInt64Lo(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpLeq64(v *Value) bool {
+func rewriteValuedec64_OpLeq64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -717,7 +720,7 @@ func rewriteValuedec64_OpLeq64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpLeq64U(v *Value) bool {
+func rewriteValuedec64_OpLeq64U_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -758,7 +761,7 @@ func rewriteValuedec64_OpLeq64U(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpLess64(v *Value) bool {
+func rewriteValuedec64_OpLess64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -799,7 +802,7 @@ func rewriteValuedec64_OpLess64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpLess64U(v *Value) bool {
+func rewriteValuedec64_OpLess64U_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -840,7 +843,7 @@ func rewriteValuedec64_OpLess64U(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpLoad(v *Value) bool {
+func rewriteValuedec64_OpLoad_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	config := b.Func.Config
@@ -945,7 +948,7 @@ func rewriteValuedec64_OpLoad(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpLsh16x64(v *Value) bool {
+func rewriteValuedec64_OpLsh16x64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1018,7 +1021,7 @@ func rewriteValuedec64_OpLsh16x64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpLsh32x64(v *Value) bool {
+func rewriteValuedec64_OpLsh32x64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1091,7 +1094,7 @@ func rewriteValuedec64_OpLsh32x64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpLsh64x16(v *Value) bool {
+func rewriteValuedec64_OpLsh64x16_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1142,7 +1145,7 @@ func rewriteValuedec64_OpLsh64x16(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpLsh64x32(v *Value) bool {
+func rewriteValuedec64_OpLsh64x32_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1193,7 +1196,7 @@ func rewriteValuedec64_OpLsh64x32(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpLsh64x64(v *Value) bool {
+func rewriteValuedec64_OpLsh64x64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1266,7 +1269,7 @@ func rewriteValuedec64_OpLsh64x64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpLsh64x8(v *Value) bool {
+func rewriteValuedec64_OpLsh64x8_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1317,7 +1320,7 @@ func rewriteValuedec64_OpLsh64x8(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpLsh8x64(v *Value) bool {
+func rewriteValuedec64_OpLsh8x64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1390,7 +1393,7 @@ func rewriteValuedec64_OpLsh8x64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpMul64(v *Value) bool {
+func rewriteValuedec64_OpMul64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1445,7 +1448,7 @@ func rewriteValuedec64_OpMul64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpNeg64(v *Value) bool {
+func rewriteValuedec64_OpNeg64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	// match: (Neg64 <t> x)
@@ -1462,7 +1465,7 @@ func rewriteValuedec64_OpNeg64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpNeq64(v *Value) bool {
+func rewriteValuedec64_OpNeq64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1493,7 +1496,7 @@ func rewriteValuedec64_OpNeq64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpOr64(v *Value) bool {
+func rewriteValuedec64_OpOr64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1524,7 +1527,7 @@ func rewriteValuedec64_OpOr64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpRsh16Ux64(v *Value) bool {
+func rewriteValuedec64_OpRsh16Ux64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1597,7 +1600,7 @@ func rewriteValuedec64_OpRsh16Ux64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh16x64(v *Value) bool {
+func rewriteValuedec64_OpRsh16x64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1673,7 +1676,7 @@ func rewriteValuedec64_OpRsh16x64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh32Ux64(v *Value) bool {
+func rewriteValuedec64_OpRsh32Ux64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1746,7 +1749,7 @@ func rewriteValuedec64_OpRsh32Ux64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh32x64(v *Value) bool {
+func rewriteValuedec64_OpRsh32x64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1820,7 +1823,7 @@ func rewriteValuedec64_OpRsh32x64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh64Ux16(v *Value) bool {
+func rewriteValuedec64_OpRsh64Ux16_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1871,7 +1874,7 @@ func rewriteValuedec64_OpRsh64Ux16(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh64Ux32(v *Value) bool {
+func rewriteValuedec64_OpRsh64Ux32_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1922,7 +1925,7 @@ func rewriteValuedec64_OpRsh64Ux32(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh64Ux64(v *Value) bool {
+func rewriteValuedec64_OpRsh64Ux64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -1995,7 +1998,7 @@ func rewriteValuedec64_OpRsh64Ux64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh64Ux8(v *Value) bool {
+func rewriteValuedec64_OpRsh64Ux8_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2046,7 +2049,7 @@ func rewriteValuedec64_OpRsh64Ux8(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh64x16(v *Value) bool {
+func rewriteValuedec64_OpRsh64x16_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2109,7 +2112,7 @@ func rewriteValuedec64_OpRsh64x16(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh64x32(v *Value) bool {
+func rewriteValuedec64_OpRsh64x32_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2170,7 +2173,7 @@ func rewriteValuedec64_OpRsh64x32(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh64x64(v *Value) bool {
+func rewriteValuedec64_OpRsh64x64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2253,7 +2256,7 @@ func rewriteValuedec64_OpRsh64x64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh64x8(v *Value) bool {
+func rewriteValuedec64_OpRsh64x8_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2316,7 +2319,7 @@ func rewriteValuedec64_OpRsh64x8(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh8Ux64(v *Value) bool {
+func rewriteValuedec64_OpRsh8Ux64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2389,7 +2392,7 @@ func rewriteValuedec64_OpRsh8Ux64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpRsh8x64(v *Value) bool {
+func rewriteValuedec64_OpRsh8x64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2465,7 +2468,7 @@ func rewriteValuedec64_OpRsh8x64(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpSignExt16to64(v *Value) bool {
+func rewriteValuedec64_OpSignExt16to64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2482,7 +2485,7 @@ func rewriteValuedec64_OpSignExt16to64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpSignExt32to64(v *Value) bool {
+func rewriteValuedec64_OpSignExt32to64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2500,7 +2503,7 @@ func rewriteValuedec64_OpSignExt32to64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpSignExt8to64(v *Value) bool {
+func rewriteValuedec64_OpSignExt8to64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2517,7 +2520,7 @@ func rewriteValuedec64_OpSignExt8to64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpStore(v *Value) bool {
+func rewriteValuedec64_OpStore_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	config := b.Func.Config
@@ -2586,7 +2589,7 @@ func rewriteValuedec64_OpStore(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpSub64(v *Value) bool {
+func rewriteValuedec64_OpSub64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2629,7 +2632,7 @@ func rewriteValuedec64_OpSub64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpTrunc64to16(v *Value) bool {
+func rewriteValuedec64_OpTrunc64to16_0(v *Value) bool {
 	// match: (Trunc64to16 (Int64Make _ lo))
 	// cond:
 	// result: (Trunc32to16 lo)
@@ -2645,7 +2648,7 @@ func rewriteValuedec64_OpTrunc64to16(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpTrunc64to32(v *Value) bool {
+func rewriteValuedec64_OpTrunc64to32_0(v *Value) bool {
 	// match: (Trunc64to32 (Int64Make _ lo))
 	// cond:
 	// result: lo
@@ -2662,7 +2665,7 @@ func rewriteValuedec64_OpTrunc64to32(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpTrunc64to8(v *Value) bool {
+func rewriteValuedec64_OpTrunc64to8_0(v *Value) bool {
 	// match: (Trunc64to8 (Int64Make _ lo))
 	// cond:
 	// result: (Trunc32to8 lo)
@@ -2678,7 +2681,7 @@ func rewriteValuedec64_OpTrunc64to8(v *Value) bool {
 	}
 	return false
 }
-func rewriteValuedec64_OpXor64(v *Value) bool {
+func rewriteValuedec64_OpXor64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2709,7 +2712,7 @@ func rewriteValuedec64_OpXor64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpZeroExt16to64(v *Value) bool {
+func rewriteValuedec64_OpZeroExt16to64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2726,7 +2729,7 @@ func rewriteValuedec64_OpZeroExt16to64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpZeroExt32to64(v *Value) bool {
+func rewriteValuedec64_OpZeroExt32to64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types
@@ -2744,7 +2747,7 @@ func rewriteValuedec64_OpZeroExt32to64(v *Value) bool {
 		return true
 	}
 }
-func rewriteValuedec64_OpZeroExt8to64(v *Value) bool {
+func rewriteValuedec64_OpZeroExt8to64_0(v *Value) bool {
 	b := v.Block
 	_ = b
 	types := &b.Func.Config.Types

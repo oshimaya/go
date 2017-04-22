@@ -6,12 +6,10 @@ package ssa
 
 import (
 	"cmd/internal/obj"
-	"crypto/sha1"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 func applyRewrite(f *Func, rb blockRewriter, rv valueRewriter) {
@@ -282,6 +280,20 @@ func isArg(s interface{}) bool {
 func isAuto(s interface{}) bool {
 	_, ok := s.(*AutoSymbol)
 	return ok
+}
+
+func fitsARM64Offset(off, align int64, sym interface{}) bool {
+	// only small offset (between -256 and 256) or offset that is a multiple of data size
+	// can be encoded in the instructions
+	// since this rewriting takes place before stack allocation, the offset to SP is unknown,
+	// so don't do it for args and locals with unaligned offset
+	if !is32Bit(off) {
+		return false
+	}
+	if align == 1 {
+		return true
+	}
+	return !isArg(sym) && (off%align == 0 || off < 256 && off > -256 && !isAuto(sym))
 }
 
 // isSameSym returns whether sym is the same as the given named symbol
@@ -556,20 +568,6 @@ func min(x, y int64) int64 {
 		return x
 	}
 	return y
-}
-
-func experiment(f *Func) bool {
-	hstr := ""
-	for _, b := range sha1.Sum([]byte(f.Name)) {
-		hstr += fmt.Sprintf("%08b", b)
-	}
-	r := strings.HasSuffix(hstr, "00011")
-	_ = r
-	r = f.Name == "(*fmt).fmt_integer"
-	if r {
-		fmt.Printf("             enabled for %s\n", f.Name)
-	}
-	return r
 }
 
 func isConstZero(v *Value) bool {

@@ -18,10 +18,71 @@ import (
 	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
+	"cmd/internal/objabi"
+	"cmd/internal/src"
 	"crypto/md5"
+	"crypto/sha1"
 	"fmt"
+	"os"
 	"strings"
 )
+
+// TODO(mdempsky): Update to reference OpVar{Def,Kill,Live} instead.
+
+// VARDEF is an annotation for the liveness analysis, marking a place
+// where a complete initialization (definition) of a variable begins.
+// Since the liveness analysis can see initialization of single-word
+// variables quite easy, gvardef is usually only called for multi-word
+// or 'fat' variables, those satisfying isfat(n->type).
+// However, gvardef is also called when a non-fat variable is initialized
+// via a block move; the only time this happens is when you have
+//	return f()
+// for a function with multiple return values exactly matching the return
+// types of the current function.
+//
+// A 'VARDEF x' annotation in the instruction stream tells the liveness
+// analysis to behave as though the variable x is being initialized at that
+// point in the instruction stream. The VARDEF must appear before the
+// actual (multi-instruction) initialization, and it must also appear after
+// any uses of the previous value, if any. For example, if compiling:
+//
+//	x = x[1:]
+//
+// it is important to generate code like:
+//
+//	base, len, cap = pieces of x[1:]
+//	VARDEF x
+//	x = {base, len, cap}
+//
+// If instead the generated code looked like:
+//
+//	VARDEF x
+//	base, len, cap = pieces of x[1:]
+//	x = {base, len, cap}
+//
+// then the liveness analysis would decide the previous value of x was
+// unnecessary even though it is about to be used by the x[1:] computation.
+// Similarly, if the generated code looked like:
+//
+//	base, len, cap = pieces of x[1:]
+//	x = {base, len, cap}
+//	VARDEF x
+//
+// then the liveness analysis will not preserve the new value of x, because
+// the VARDEF appears to have "overwritten" it.
+//
+// VARDEF is a bit of a kludge to work around the fact that the instruction
+// stream is working on single-word values but the liveness analysis
+// wants to work on individual variables, which might be multi-word
+// aggregates. It might make sense at some point to look into letting
+// the liveness analysis work on single-word values as well, although
+// there are complications around interface values, slices, and strings,
+// all of which cannot be treated as individual words.
+//
+// VARKILL is the opposite of VARDEF: it marks a value as no longer needed,
+// even if its address has been taken. That is, a VARKILL annotation asserts
+// that its argument is certainly dead, for use when the liveness analysis
+// would not otherwise be able to deduce that fact.
 
 // BlockEffects summarizes the liveness effects on an SSA block.
 type BlockEffects struct {
@@ -64,8 +125,7 @@ type Liveness struct {
 	// index within the stack maps.
 	stackMapIndex map[*ssa.Value]int
 
-	// An array with a bit vector for each safe point tracking
-	// live variables, indexed by bb.rpo.
+	// An array with a bit vector for each safe point tracking live variables.
 	livevars []bvec
 
 	cache progeffectscache
@@ -442,7 +502,7 @@ func onebitlivepointermap(lv *Liveness, liveout bvec, vars []*Node, args bvec, l
 // Returns true for instructions that are safe points that must be annotated
 // with liveness information.
 func issafepoint(v *ssa.Value) bool {
-	return v.Op.IsCall() || v.Op == ssa.OpARMCALLudiv
+	return v.Op.IsCall()
 }
 
 // Initializes the sets for solving the live variables. Visits all the
@@ -654,7 +714,7 @@ func livenessepilogue(lv *Liveness) {
 			}
 
 			// Annotate ambiguously live variables so that they can
-			// be zeroed at function entry.
+			// be zeroed at function entry and at VARKILL points.
 			// liveout is dead here and used as a temporary.
 			liveout.AndNot(any, all)
 			if !liveout.IsEmpty() {
@@ -736,6 +796,165 @@ func livenessepilogue(lv *Liveness) {
 			Fatalf("internal error: %v %L recorded as live on entry", lv.fn.Func.Nname, n)
 		}
 	}
+}
+
+func (lv *Liveness) clobber() {
+	// The clobberdead experiment inserts code to clobber all the dead variables (locals and args)
+	// before and after every safepoint. This experiment is useful for debugging the generation
+	// of live pointer bitmaps.
+	if objabi.Clobberdead_enabled == 0 {
+		return
+	}
+	var varSize int64
+	for _, n := range lv.vars {
+		varSize += n.Type.Size()
+	}
+	if len(lv.livevars) > 1000 || varSize > 10000 {
+		// Be careful to avoid doing too much work.
+		// Bail if >1000 safepoints or >10000 bytes of variables.
+		// Otherwise, giant functions make this experiment generate too much code.
+		return
+	}
+	if h := os.Getenv("GOCLOBBERDEADHASH"); h != "" {
+		// Clobber only functions where the hash of the function name matches a pattern.
+		// Useful for binary searching for a miscompiled function.
+		hstr := ""
+		for _, b := range sha1.Sum([]byte(lv.fn.Func.Nname.Sym.Name)) {
+			hstr += fmt.Sprintf("%08b", b)
+		}
+		if !strings.HasSuffix(hstr, h) {
+			return
+		}
+		fmt.Printf("\t\t\tCLOBBERDEAD %s\n", lv.fn.Func.Nname.Sym.Name)
+	}
+	if lv.f.Name == "forkAndExecInChild" {
+		// forkAndExecInChild calls vfork (on linux/amd64, anyway).
+		// The code we add here clobbers parts of the stack in the child.
+		// When the parent resumes, it is using the same stack frame. But the
+		// child has clobbered stack variables that the parent needs. Boom!
+		// In particular, the sys argument gets clobbered.
+		// Note to self: GOCLOBBERDEADHASH=011100101110
+		return
+	}
+
+	var oldSched []*ssa.Value
+	for _, b := range lv.f.Blocks {
+		// Copy block's values to a temporary.
+		oldSched = append(oldSched[:0], b.Values...)
+		b.Values = b.Values[:0]
+
+		// Clobber all dead variables at entry.
+		if b == lv.f.Entry {
+			for len(oldSched) > 0 && len(oldSched[0].Args) == 0 {
+				// Skip argless ops. We need to skip at least
+				// the lowered ClosurePtr op, because it
+				// really wants to be first. This will also
+				// skip ops like InitMem and SP, which are ok.
+				b.Values = append(b.Values, oldSched[0])
+				oldSched = oldSched[1:]
+			}
+			clobber(lv, b, lv.livevars[0])
+		}
+
+		// Copy values into schedule, adding clobbering around safepoints.
+		for _, v := range oldSched {
+			if !issafepoint(v) {
+				b.Values = append(b.Values, v)
+				continue
+			}
+			before := true
+			if v.Op.IsCall() && v.Aux != nil && v.Aux.(*obj.LSym) == typedmemmove {
+				// Can't put clobber code before the call to typedmemmove.
+				// The variable to-be-copied is marked as dead
+				// at the callsite. That is ok, though, as typedmemmove
+				// is marked as nosplit, and the first thing it does
+				// is to call memmove (also nosplit), after which
+				// the source value is dead.
+				// See issue 16026.
+				before = false
+			}
+			if before {
+				clobber(lv, b, lv.livevars[lv.stackMapIndex[v]])
+			}
+			b.Values = append(b.Values, v)
+			clobber(lv, b, lv.livevars[lv.stackMapIndex[v]])
+		}
+	}
+}
+
+// clobber generates code to clobber all dead variables (those not marked in live).
+// Clobbering instructions are added to the end of b.Values.
+func clobber(lv *Liveness, b *ssa.Block, live bvec) {
+	for i, n := range lv.vars {
+		if !live.Get(int32(i)) {
+			clobberVar(b, n)
+		}
+	}
+}
+
+// clobberVar generates code to trash the pointers in v.
+// Clobbering instructions are added to the end of b.Values.
+func clobberVar(b *ssa.Block, v *Node) {
+	clobberWalk(b, v, 0, v.Type)
+}
+
+// b = block to which we append instructions
+// v = variable
+// offset = offset of (sub-portion of) variable to clobber (in bytes)
+// t = type of sub-portion of v.
+func clobberWalk(b *ssa.Block, v *Node, offset int64, t *types.Type) {
+	if !types.Haspointers(t) {
+		return
+	}
+	switch t.Etype {
+	case TPTR32,
+		TPTR64,
+		TUNSAFEPTR,
+		TFUNC,
+		TCHAN,
+		TMAP:
+		clobberPtr(b, v, offset)
+
+	case TSTRING:
+		// struct { byte *str; int len; }
+		clobberPtr(b, v, offset)
+
+	case TINTER:
+		// struct { Itab *tab; void *data; }
+		// or, when isnilinter(t)==true:
+		// struct { Type *type; void *data; }
+		clobberPtr(b, v, offset)
+		clobberPtr(b, v, offset+int64(Widthptr))
+
+	case TSLICE:
+		// struct { byte *array; int len; int cap; }
+		clobberPtr(b, v, offset)
+
+	case TARRAY:
+		for i := int64(0); i < t.NumElem(); i++ {
+			clobberWalk(b, v, offset+i*t.Elem().Size(), t.Elem())
+		}
+
+	case TSTRUCT:
+		for _, t1 := range t.Fields().Slice() {
+			clobberWalk(b, v, offset+t1.Offset, t1.Type)
+		}
+
+	default:
+		Fatalf("clobberWalk: unexpected type, %v", t)
+	}
+}
+
+// clobberPtr generates a clobber of the pointer at offset offset in v.
+// The clobber instruction is added at the end of b.
+func clobberPtr(b *ssa.Block, v *Node, offset int64) {
+	var aux interface{}
+	if v.Class == PAUTO {
+		aux = &ssa.AutoSymbol{Node: v}
+	} else {
+		aux = &ssa.ArgSymbol{Node: v}
+	}
+	b.NewValue0IA(src.NoXPos, ssa.OpClobber, ssa.TypeVoid, offset, aux)
 }
 
 func (lv *Liveness) avarinitanyall(b *ssa.Block, any, all bvec) {
@@ -1051,25 +1270,11 @@ func livenessprintdebug(lv *Liveness) {
 	fmt.Printf("\n")
 }
 
-func finishgclocals(sym *types.Sym) {
-	ls := Linksym(sym)
-	ls.Name = fmt.Sprintf("gclocals·%x", md5.Sum(ls.P))
-	ls.Set(obj.AttrDuplicateOK, true)
-	sv := obj.SymVer{Name: ls.Name, Version: 0}
-	ls2, ok := Ctxt.Hash[sv]
-	if ok {
-		sym.Lsym = ls2
-	} else {
-		Ctxt.Hash[sv] = ls
-		ggloblsym(sym, int32(ls.Size), obj.RODATA)
-	}
-}
-
 // Dumps a slice of bitmaps to a symbol as a sequence of uint32 values. The
 // first word dumped is the total number of bitmaps. The second word is the
 // length of the bitmaps. All bitmaps are assumed to be of equal length. The
 // remaining bytes are the raw bitmaps.
-func livenessemit(lv *Liveness, argssym, livesym *types.Sym) {
+func livenessemit(lv *Liveness, argssym, livesym *obj.LSym) {
 	args := bvalloc(argswords(lv))
 	aoff := duint32(argssym, 0, uint32(len(lv.livevars))) // number of bitmaps
 	aoff = duint32(argssym, aoff, uint32(args.n))         // number of bits in each bitmap
@@ -1088,15 +1293,20 @@ func livenessemit(lv *Liveness, argssym, livesym *types.Sym) {
 		loff = dbvec(livesym, loff, locals)
 	}
 
-	finishgclocals(livesym)
-	finishgclocals(argssym)
+	// Give these LSyms content-addressable names,
+	// so that they can be de-duplicated.
+	// This provides significant binary size savings.
+	// It is safe to rename these LSyms because
+	// they are tracked separately from ctxt.hash.
+	argssym.Name = fmt.Sprintf("gclocals·%x", md5.Sum(argssym.P))
+	livesym.Name = fmt.Sprintf("gclocals·%x", md5.Sum(livesym.P))
 }
 
 // Entry pointer for liveness analysis. Solves for the liveness of
 // pointer variables in the function and emits a runtime data
 // structure read by the garbage collector.
 // Returns a map from GC safe points to their corresponding stack map index.
-func liveness(e *ssafn, f *ssa.Func, argssym, livesym *types.Sym) map[*ssa.Value]int {
+func liveness(e *ssafn, f *ssa.Func) map[*ssa.Value]int {
 	// Construct the global liveness state.
 	vars := getvariables(e.curfn)
 	lv := newliveness(e.curfn, f, vars, e.stkptrsize)
@@ -1106,11 +1316,14 @@ func liveness(e *ssafn, f *ssa.Func, argssym, livesym *types.Sym) map[*ssa.Value
 	livenesssolve(lv)
 	livenessepilogue(lv)
 	livenesscompact(lv)
+	lv.clobber()
 	if debuglive >= 2 {
 		livenessprintdebug(lv)
 	}
 
 	// Emit the live pointer map data structures
-	livenessemit(lv, argssym, livesym)
+	if ls := e.curfn.Func.lsym; ls != nil {
+		livenessemit(lv, &ls.Func.GCArgs, &ls.Func.GCLocals)
+	}
 	return lv.stackMapIndex
 }

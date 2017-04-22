@@ -33,14 +33,11 @@ package gc
 import (
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
+	"cmd/internal/objabi"
 	"cmd/internal/src"
 )
 
-var sharedProgArray *[10000]obj.Prog // *T instead of T to work around issue 19839
-
-func init() {
-	sharedProgArray = new([10000]obj.Prog)
-}
+var sharedProgArray *[10000]obj.Prog = new([10000]obj.Prog) // *T instead of T to work around issue 19839
 
 // Progs accumulates Progs for a function and converts them into machine code.
 type Progs struct {
@@ -144,55 +141,80 @@ func (pp *Progs) settext(fn *Node) {
 	if pp.Text != nil {
 		Fatalf("Progs.settext called twice")
 	}
-
 	ptxt := pp.Prog(obj.ATEXT)
-	if nam := fn.Func.Nname; !isblank(nam) {
-		ptxt.From.Type = obj.TYPE_MEM
-		ptxt.From.Name = obj.NAME_EXTERN
-		ptxt.From.Sym = Linksym(nam.Sym)
-		if fn.Func.Pragma&Systemstack != 0 {
-			ptxt.From.Sym.Set(obj.AttrCFunc, true)
+	pp.Text = ptxt
+
+	if fn.Func.lsym == nil {
+		// func _() { }
+		return
+	}
+
+	fn.Func.lsym.Func.Text = ptxt
+	ptxt.From.Type = obj.TYPE_MEM
+	ptxt.From.Name = obj.NAME_EXTERN
+	ptxt.From.Sym = fn.Func.lsym
+
+	p := pp.Prog(obj.AFUNCDATA)
+	Addrconst(&p.From, objabi.FUNCDATA_ArgsPointerMaps)
+	p.To.Type = obj.TYPE_MEM
+	p.To.Name = obj.NAME_EXTERN
+	p.To.Sym = &fn.Func.lsym.Func.GCArgs
+
+	p = pp.Prog(obj.AFUNCDATA)
+	Addrconst(&p.From, objabi.FUNCDATA_LocalsPointerMaps)
+	p.To.Type = obj.TYPE_MEM
+	p.To.Name = obj.NAME_EXTERN
+	p.To.Sym = &fn.Func.lsym.Func.GCLocals
+}
+
+func (f *Func) initLSym() {
+	if f.lsym != nil {
+		Fatalf("Func.initLSym called twice")
+	}
+
+	if nam := f.Nname; !isblank(nam) {
+		f.lsym = nam.Sym.Linksym()
+		if f.Pragma&Systemstack != 0 {
+			f.lsym.Set(obj.AttrCFunc, true)
 		}
 	}
 
-	ptxt.From3 = new(obj.Addr)
-	if fn.Func.Dupok() {
-		ptxt.From3.Offset |= obj.DUPOK
+	var flag int
+	if f.Dupok() {
+		flag |= obj.DUPOK
 	}
-	if fn.Func.Wrapper() {
-		ptxt.From3.Offset |= obj.WRAPPER
+	if f.Wrapper() {
+		flag |= obj.WRAPPER
 	}
-	if fn.Func.NoFramePointer() {
-		ptxt.From3.Offset |= obj.NOFRAME
+	if f.NoFramePointer() {
+		flag |= obj.NOFRAME
 	}
-	if fn.Func.Needctxt() {
-		ptxt.From3.Offset |= obj.NEEDCTXT
+	if f.Needctxt() {
+		flag |= obj.NEEDCTXT
 	}
-	if fn.Func.Pragma&Nosplit != 0 {
-		ptxt.From3.Offset |= obj.NOSPLIT
+	if f.Pragma&Nosplit != 0 {
+		flag |= obj.NOSPLIT
 	}
-	if fn.Func.ReflectMethod() {
-		ptxt.From3.Offset |= obj.REFLECTMETHOD
+	if f.ReflectMethod() {
+		flag |= obj.REFLECTMETHOD
 	}
 
 	// Clumsy but important.
 	// See test/recover.go for test cases and src/reflect/value.go
 	// for the actual functions being considered.
 	if myimportpath == "reflect" {
-		switch fn.Func.Nname.Sym.Name {
+		switch f.Nname.Sym.Name {
 		case "callReflect", "callMethod":
-			ptxt.From3.Offset |= obj.WRAPPER
+			flag |= obj.WRAPPER
 		}
 	}
 
-	Ctxt.InitTextSym(ptxt)
-
-	pp.Text = ptxt
+	Ctxt.InitTextSym(f.lsym, flag)
 }
 
 func ggloblnod(nam *Node) {
-	s := Linksym(nam.Sym)
-	s.Gotype = Linksym(ngotype(nam))
+	s := nam.Sym.Linksym()
+	s.Gotype = ngotype(nam).Linksym()
 	flags := 0
 	if nam.Name.Readonly() {
 		flags = obj.RODATA
@@ -203,11 +225,7 @@ func ggloblnod(nam *Node) {
 	Ctxt.Globl(s, nam.Type.Width, flags)
 }
 
-func ggloblsym(s *types.Sym, width int32, flags int16) {
-	ggloblLSym(Linksym(s), width, flags)
-}
-
-func ggloblLSym(s *obj.LSym, width int32, flags int16) {
+func ggloblsym(s *obj.LSym, width int32, flags int16) {
 	if flags&obj.LOCAL != 0 {
 		s.Set(obj.AttrLocal, true)
 		flags &^= obj.LOCAL
@@ -294,7 +312,7 @@ func nodarg(t interface{}, fp int) *Node {
 			}
 
 			for _, n := range Curfn.Func.Dcl {
-				if (n.Class == PPARAM || n.Class == PPARAMOUT) && !isblanksym(t.Sym) && n.Sym == t.Sym {
+				if (n.Class == PPARAM || n.Class == PPARAMOUT) && !t.Sym.IsBlank() && n.Sym == t.Sym {
 					if n != expect {
 						Fatalf("nodarg: unexpected node: %v (%p %v) vs %v (%p %v)", n, n, n.Op, asNode(t.Nname), asNode(t.Nname), asNode(t.Nname).Op)
 					}
@@ -302,7 +320,7 @@ func nodarg(t interface{}, fp int) *Node {
 				}
 			}
 
-			if !isblanksym(expect.Sym) {
+			if !expect.Sym.IsBlank() {
 				Fatalf("nodarg: did not find node in dcl list: %v", expect)
 			}
 		}

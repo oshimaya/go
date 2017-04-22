@@ -15,6 +15,7 @@ import (
 	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
+	"cmd/internal/objabi"
 	"cmd/internal/src"
 	"cmd/internal/sys"
 )
@@ -85,6 +86,12 @@ func initssaconfig() {
 	assertE2I2 = Sysfunc("assertE2I2")
 	assertI2I = Sysfunc("assertI2I")
 	assertI2I2 = Sysfunc("assertI2I2")
+	goschedguarded = Sysfunc("goschedguarded")
+	writeBarrier = Sysfunc("writeBarrier")
+	writebarrierptr = Sysfunc("writebarrierptr")
+	typedmemmove = Sysfunc("typedmemmove")
+	typedmemclr = Sysfunc("typedmemclr")
+	Udiv = Sysfunc("udiv")
 }
 
 // buildssa builds an SSA function.
@@ -755,7 +762,7 @@ func (s *state) stmt(n *Node) {
 		s.stmtList(n.List)
 		b := s.exit()
 		b.Kind = ssa.BlockRetJmp // override BlockRet
-		b.Aux = Linksym(n.Left.Sym)
+		b.Aux = n.Left.Sym.Linksym()
 
 	case OCONTINUE, OBREAK:
 		var to *ssa.Block
@@ -1380,13 +1387,13 @@ func (s *state) expr(n *Node) *ssa.Value {
 		len := s.newValue1(ssa.OpStringLen, types.Types[TINT], str)
 		return s.newValue3(ssa.OpSliceMake, n.Type, ptr, len, len)
 	case OCFUNC:
-		aux := s.lookupSymbol(n, &ssa.ExternSymbol{Typ: n.Type, Sym: Linksym(n.Left.Sym)})
+		aux := s.lookupSymbol(n, &ssa.ExternSymbol{Sym: n.Left.Sym.Linksym()})
 		return s.entryNewValue1A(ssa.OpAddr, n.Type, aux, s.sb)
 	case ONAME:
 		if n.Class == PFUNC {
 			// "value" of a function is the address of the function's closure
-			sym := Linksym(funcsym(n.Sym))
-			aux := s.lookupSymbol(n, &ssa.ExternSymbol{Typ: n.Type, Sym: sym})
+			sym := funcsym(n.Sym).Linksym()
+			aux := s.lookupSymbol(n, &ssa.ExternSymbol{Sym: sym})
 			return s.entryNewValue1A(ssa.OpAddr, types.NewPtr(n.Type), aux, s.sb)
 		}
 		if s.canSSA(n) {
@@ -2826,7 +2833,7 @@ func init() {
 		sys.ARM64)
 	makeOnesCount := func(op64 ssa.Op, op32 ssa.Op) func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 		return func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
-			aux := s.lookupSymbol(n, &ssa.ExternSymbol{Typ: types.Types[TBOOL], Sym: Linksym(syslook("support_popcnt").Sym)})
+			aux := s.lookupSymbol(n, &ssa.ExternSymbol{Sym: syslook("support_popcnt").Sym.Linksym()})
 			addr := s.entryNewValue1A(ssa.OpAddr, types.Types[TBOOL].PtrTo(), aux, s.sb)
 			v := s.newValue2(ssa.OpLoad, types.Types[TBOOL], addr, s.mem())
 			b := s.endBlock()
@@ -3124,7 +3131,7 @@ func (s *state) call(n *Node, k callKind) *ssa.Value {
 	case codeptr != nil:
 		call = s.newValue2(ssa.OpInterCall, ssa.TypeMem, codeptr, s.mem())
 	case sym != nil:
-		call = s.newValue1A(ssa.OpStaticCall, ssa.TypeMem, Linksym(sym), s.mem())
+		call = s.newValue1A(ssa.OpStaticCall, ssa.TypeMem, sym.Linksym(), s.mem())
 	default:
 		Fatalf("bad call type %v %v", n.Op, n)
 	}
@@ -3197,7 +3204,7 @@ func (s *state) addr(n *Node, bounded bool) *ssa.Value {
 		switch n.Class {
 		case PEXTERN:
 			// global variable
-			aux := s.lookupSymbol(n, &ssa.ExternSymbol{Typ: n.Type, Sym: Linksym(n.Sym)})
+			aux := s.lookupSymbol(n, &ssa.ExternSymbol{Sym: n.Sym.Linksym()})
 			v := s.entryNewValue1A(ssa.OpAddr, t, aux, s.sb)
 			// TODO: Make OpAddr use AuxInt as well as Aux.
 			if n.Xoffset != 0 {
@@ -4326,9 +4333,7 @@ func genssa(f *ssa.Func, pp *Progs) {
 	e := f.Frontend().(*ssafn)
 
 	// Generate GC bitmaps.
-	gcargs := makefuncdatasym(pp, "gcargs·", obj.FUNCDATA_ArgsPointerMaps, e.curfn)
-	gclocals := makefuncdatasym(pp, "gclocals·", obj.FUNCDATA_LocalsPointerMaps, e.curfn)
-	s.stackMapIndex = liveness(e, f, gcargs, gclocals)
+	s.stackMapIndex = liveness(e, f)
 
 	// Remember where each block starts.
 	s.bstart = make([]*obj.Prog, f.NumBlocks())
@@ -4370,8 +4375,24 @@ func genssa(f *ssa.Func, pp *Progs) {
 			case ssa.OpGetG:
 				// nothing to do when there's a g register,
 				// and checkLower complains if there's not
-			case ssa.OpVarDef, ssa.OpVarKill, ssa.OpVarLive, ssa.OpKeepAlive:
+			case ssa.OpVarDef, ssa.OpVarLive, ssa.OpKeepAlive:
 				// nothing to do; already used by liveness
+			case ssa.OpVarKill:
+				// Zero variable if it is ambiguously live.
+				// After the VARKILL anything this variable references
+				// might be collected. If it were to become live again later,
+				// the GC will see references to already-collected objects.
+				// See issue 20029.
+				n := v.Aux.(*Node)
+				if n.Name.Needzero() {
+					if n.Class != PAUTO {
+						v.Fatalf("zero of variable which isn't PAUTO %v", n)
+					}
+					if n.Type.Size()%int64(Widthptr) != 0 {
+						v.Fatalf("zero of variable not a multiple of ptr size %v", n)
+					}
+					thearch.ZeroAuto(s.pp, n)
+				}
 			case ssa.OpPhi:
 				CheckLoweredPhi(v)
 
@@ -4451,14 +4472,66 @@ func genssa(f *ssa.Func, pp *Progs) {
 		}
 	}
 
-	// Add frame prologue. Zero ambiguously live variables.
-	thearch.Defframe(s.pp, e.curfn, e.stksize+s.maxarg)
+	defframe(&s, e)
 	if Debug['f'] != 0 {
 		frame(0)
 	}
 
 	f.HTMLWriter.Close()
 	f.HTMLWriter = nil
+}
+
+func defframe(s *SSAGenState, e *ssafn) {
+	pp := s.pp
+
+	frame := Rnd(s.maxarg+e.stksize, int64(Widthreg))
+	if thearch.PadFrame != nil {
+		frame = thearch.PadFrame(frame)
+	}
+
+	// Fill in argument and frame size.
+	pp.Text.To.Type = obj.TYPE_TEXTSIZE
+	pp.Text.To.Val = int32(Rnd(e.curfn.Type.ArgWidth(), int64(Widthreg)))
+	pp.Text.To.Offset = frame
+
+	// Insert code to zero ambiguously live variables so that the
+	// garbage collector only sees initialized values when it
+	// looks for pointers.
+	p := pp.Text
+	var lo, hi int64
+
+	// Opaque state for backend to use. Current backends use it to
+	// keep track of which helper registers have been zeroed.
+	var state uint32
+
+	// Iterate through declarations. They are sorted in decreasing Xoffset order.
+	for _, n := range e.curfn.Func.Dcl {
+		if !n.Name.Needzero() {
+			continue
+		}
+		if n.Class != PAUTO {
+			Fatalf("needzero class %d", n.Class)
+		}
+		if n.Type.Size()%int64(Widthptr) != 0 || n.Xoffset%int64(Widthptr) != 0 || n.Type.Size() == 0 {
+			Fatalf("var %L has size %d offset %d", n, n.Type.Size(), n.Xoffset)
+		}
+
+		if lo != hi && n.Xoffset+n.Type.Size() >= lo-int64(2*Widthreg) {
+			// Merge with range we already have.
+			lo = n.Xoffset
+			continue
+		}
+
+		// Zero old range
+		p = thearch.ZeroRange(pp, p, frame+lo, hi-lo, &state)
+
+		// Set new range.
+		lo = n.Xoffset
+		hi = lo + n.Type.Size()
+	}
+
+	// Zero final range.
+	thearch.ZeroRange(pp, p, frame+lo, hi-lo, &state)
 }
 
 type FloatingEQNEJump struct {
@@ -4526,12 +4599,12 @@ func AddAux2(a *obj.Addr, v *ssa.Value, offset int64) {
 	case *ssa.ArgSymbol:
 		n := sym.Node.(*Node)
 		a.Name = obj.NAME_PARAM
-		a.Sym = Linksym(n.Orig.Sym)
+		a.Sym = n.Orig.Sym.Linksym()
 		a.Offset += n.Xoffset
 	case *ssa.AutoSymbol:
 		n := sym.Node.(*Node)
 		a.Name = obj.NAME_AUTO
-		a.Sym = Linksym(n.Sym)
+		a.Sym = n.Sym.Linksym()
 		a.Offset += n.Xoffset
 	default:
 		v.Fatalf("aux in %s not implemented %#v", v, v.Aux)
@@ -4633,7 +4706,7 @@ func AutoVar(v *ssa.Value) (*Node, int64) {
 func AddrAuto(a *obj.Addr, v *ssa.Value) {
 	n, off := AutoVar(v)
 	a.Type = obj.TYPE_MEM
-	a.Sym = Linksym(n.Sym)
+	a.Sym = n.Sym.Linksym()
 	a.Reg = int16(thearch.REGSP)
 	a.Offset = n.Xoffset + off
 	if n.Class == PPARAM || n.Class == PPARAMOUT {
@@ -4649,7 +4722,7 @@ func (s *SSAGenState) AddrScratch(a *obj.Addr) {
 	}
 	a.Type = obj.TYPE_MEM
 	a.Name = obj.NAME_AUTO
-	a.Sym = Linksym(s.ScratchFpMem.Sym)
+	a.Sym = s.ScratchFpMem.Sym.Linksym()
 	a.Reg = int16(thearch.REGSP)
 	a.Offset = s.ScratchFpMem.Xoffset
 }
@@ -4660,7 +4733,7 @@ func (s *SSAGenState) Call(v *ssa.Value) *obj.Prog {
 		Fatalf("missing stack map index for %v", v.LongString())
 	}
 	p := s.Prog(obj.APCDATA)
-	Addrconst(&p.From, obj.PCDATA_StackMapIndex)
+	Addrconst(&p.From, objabi.PCDATA_StackMapIndex)
 	Addrconst(&p.To, int64(idx))
 
 	if sym, _ := v.Aux.(*obj.LSym); sym == Deferreturn {
@@ -4744,7 +4817,7 @@ func (e *ssafn) StringData(s string) interface{} {
 		e.strings = make(map[string]interface{})
 	}
 	data := stringsym(s)
-	aux := &ssa.ExternSymbol{Typ: types.Idealstring, Sym: data}
+	aux := &ssa.ExternSymbol{Sym: data}
 	e.strings[s] = aux
 	return aux
 }
@@ -4944,7 +5017,20 @@ func (e *ssafn) UseWriteBarrier() bool {
 }
 
 func (e *ssafn) Syslook(name string) *obj.LSym {
-	return Linksym(syslook(name).Sym)
+	switch name {
+	case "goschedguarded":
+		return goschedguarded
+	case "writeBarrier":
+		return writeBarrier
+	case "writebarrierptr":
+		return writebarrierptr
+	case "typedmemmove":
+		return typedmemmove
+	case "typedmemclr":
+		return typedmemclr
+	}
+	Fatalf("unknown Syslook func %v", name)
+	return nil
 }
 
 func (n *Node) Typ() ssa.Type {

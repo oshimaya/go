@@ -5,7 +5,7 @@
 package ld
 
 import (
-	"cmd/internal/obj"
+	"cmd/internal/objabi"
 	"cmd/internal/sys"
 	"crypto/sha1"
 	"encoding/binary"
@@ -950,7 +950,7 @@ func Elfinit(ctxt *Link) {
 	case sys.ARM, sys.MIPS:
 		if SysArch.Family == sys.ARM {
 			// we use EABI on linux/arm, freebsd/arm, netbsd/arm.
-			if Headtype == obj.Hlinux || Headtype == obj.Hfreebsd || Headtype == obj.Hnetbsd {
+			if Headtype == objabi.Hlinux || Headtype == objabi.Hfreebsd || Headtype == objabi.Hnetbsd {
 				// We set a value here that makes no indication of which
 				// float ABI the object uses, because this is information
 				// used by the dynamic linker to compare executables and
@@ -1486,7 +1486,7 @@ func elfdynhash(ctxt *Link) {
 
 	nsym := Nelfsym
 	s := ctxt.Syms.Lookup(".hash", 0)
-	s.Type = obj.SELFROSECT
+	s.Type = objabi.SELFROSECT
 	s.Attr |= AttrReachable
 
 	i := nsym
@@ -1866,7 +1866,7 @@ func Elfemitreloc(ctxt *Link) {
 		Cput(0)
 	}
 
-	for sect := Segtext.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segtext.Sections {
 		if sect.Name == ".text" {
 			elfrelocsect(ctxt, sect, ctxt.Textp)
 		} else {
@@ -1874,16 +1874,16 @@ func Elfemitreloc(ctxt *Link) {
 		}
 	}
 
-	for sect := Segrodata.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segrodata.Sections {
 		elfrelocsect(ctxt, sect, datap)
 	}
-	for sect := Segrelrodata.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segrelrodata.Sections {
 		elfrelocsect(ctxt, sect, datap)
 	}
-	for sect := Segdata.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segdata.Sections {
 		elfrelocsect(ctxt, sect, datap)
 	}
-	for sect := Segdwarf.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segdwarf.Sections {
 		elfrelocsect(ctxt, sect, dwarfp)
 	}
 }
@@ -1891,7 +1891,7 @@ func Elfemitreloc(ctxt *Link) {
 func addgonote(ctxt *Link, sectionName string, tag uint32, desc []byte) {
 	s := ctxt.Syms.Lookup(sectionName, 0)
 	s.Attr |= AttrReachable
-	s.Type = obj.SELFROSECT
+	s.Type = objabi.SELFROSECT
 	// namesz
 	Adduint32(ctxt, s, uint32(len(ELF_NOTE_GO_NAME)))
 	// descsz
@@ -1919,7 +1919,7 @@ func (ctxt *Link) doelf() {
 	/* predefine strings we need for section headers */
 	shstrtab := ctxt.Syms.Lookup(".shstrtab", 0)
 
-	shstrtab.Type = obj.SELFROSECT
+	shstrtab.Type = objabi.SELFROSECT
 	shstrtab.Attr |= AttrReachable
 
 	Addstring(shstrtab, "")
@@ -1935,13 +1935,13 @@ func (ctxt *Link) doelf() {
 	if !*FlagD || Linkmode == LinkExternal {
 		Addstring(shstrtab, ".tbss")
 	}
-	if Headtype == obj.Hnetbsd {
+	if Headtype == objabi.Hnetbsd {
 		Addstring(shstrtab, ".note.netbsd.ident")
 		if SysArch.Family == sys.ARM {
 			Addstring(shstrtab, ".note.netbsd.march")
 		}
 	}
-	if Headtype == obj.Hopenbsd {
+	if Headtype == objabi.Hopenbsd {
 		Addstring(shstrtab, ".note.openbsd.ident")
 	}
 	if len(buildinfo) > 0 {
@@ -2030,7 +2030,7 @@ func (ctxt *Link) doelf() {
 		/* dynamic symbol table - first entry all zeros */
 		s := ctxt.Syms.Lookup(".dynsym", 0)
 
-		s.Type = obj.SELFROSECT
+		s.Type = objabi.SELFROSECT
 		s.Attr |= AttrReachable
 		if elf64 {
 			s.Size += ELF64SYMSIZE
@@ -2041,7 +2041,7 @@ func (ctxt *Link) doelf() {
 		/* dynamic string table */
 		s = ctxt.Syms.Lookup(".dynstr", 0)
 
-		s.Type = obj.SELFROSECT
+		s.Type = objabi.SELFROSECT
 		s.Attr |= AttrReachable
 		if s.Size == 0 {
 			Addstring(s, "")
@@ -2051,30 +2051,30 @@ func (ctxt *Link) doelf() {
 		/* relocation table */
 		s = ctxt.Syms.Lookup(elfRelType, 0)
 		s.Attr |= AttrReachable
-		s.Type = obj.SELFROSECT
+		s.Type = objabi.SELFROSECT
 
 		/* global offset table */
 		s = ctxt.Syms.Lookup(".got", 0)
 
 		s.Attr |= AttrReachable
-		s.Type = obj.SELFGOT // writable
+		s.Type = objabi.SELFGOT // writable
 
 		/* ppc64 glink resolver */
 		if SysArch.Family == sys.PPC64 {
 			s := ctxt.Syms.Lookup(".glink", 0)
 			s.Attr |= AttrReachable
-			s.Type = obj.SELFRXSECT
+			s.Type = objabi.SELFRXSECT
 		}
 
 		/* hash */
 		s = ctxt.Syms.Lookup(".hash", 0)
 
 		s.Attr |= AttrReachable
-		s.Type = obj.SELFROSECT
+		s.Type = objabi.SELFROSECT
 
 		s = ctxt.Syms.Lookup(".got.plt", 0)
 		s.Attr |= AttrReachable
-		s.Type = obj.SELFSECT // writable
+		s.Type = objabi.SELFSECT // writable
 
 		s = ctxt.Syms.Lookup(".plt", 0)
 
@@ -2082,30 +2082,30 @@ func (ctxt *Link) doelf() {
 		if SysArch.Family == sys.PPC64 {
 			// In the ppc64 ABI, .plt is a data section
 			// written by the dynamic linker.
-			s.Type = obj.SELFSECT
+			s.Type = objabi.SELFSECT
 		} else {
-			s.Type = obj.SELFRXSECT
+			s.Type = objabi.SELFRXSECT
 		}
 
 		Thearch.Elfsetupplt(ctxt)
 
 		s = ctxt.Syms.Lookup(elfRelType+".plt", 0)
 		s.Attr |= AttrReachable
-		s.Type = obj.SELFROSECT
+		s.Type = objabi.SELFROSECT
 
 		s = ctxt.Syms.Lookup(".gnu.version", 0)
 		s.Attr |= AttrReachable
-		s.Type = obj.SELFROSECT
+		s.Type = objabi.SELFROSECT
 
 		s = ctxt.Syms.Lookup(".gnu.version_r", 0)
 		s.Attr |= AttrReachable
-		s.Type = obj.SELFROSECT
+		s.Type = objabi.SELFROSECT
 
 		/* define dynamic elf table */
 		s = ctxt.Syms.Lookup(".dynamic", 0)
 
 		s.Attr |= AttrReachable
-		s.Type = obj.SELFSECT // writable
+		s.Type = objabi.SELFSECT // writable
 
 		/*
 		 * .dynamic table
@@ -2158,7 +2158,7 @@ func (ctxt *Link) doelf() {
 		// part of the .note.go.abihash section in data.go:func address().
 		s := ctxt.Syms.Lookup("go.link.abihashbytes", 0)
 		s.Attr |= AttrLocal
-		s.Type = obj.SRODATA
+		s.Type = objabi.SRODATA
 		s.Attr |= AttrSpecial
 		s.Attr |= AttrReachable
 		s.Size = int64(sha1.Size)
@@ -2205,7 +2205,7 @@ func Asmbelfsetup() {
 	/* This null SHdr must appear before all others */
 	elfshname("")
 
-	for sect := Segtext.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segtext.Sections {
 		// There could be multiple .text sections. Instead check the Elfsect
 		// field to determine if already has an ElfShdr and if not, create one.
 		if sect.Name == ".text" {
@@ -2216,16 +2216,16 @@ func Asmbelfsetup() {
 			elfshalloc(sect)
 		}
 	}
-	for sect := Segrodata.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segrodata.Sections {
 		elfshalloc(sect)
 	}
-	for sect := Segrelrodata.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segrelrodata.Sections {
 		elfshalloc(sect)
 	}
-	for sect := Segdata.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segdata.Sections {
 		elfshalloc(sect)
 	}
-	for sect := Segdwarf.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segdwarf.Sections {
 		elfshalloc(sect)
 	}
 }
@@ -2254,7 +2254,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 	elfreserve := int64(ELFRESERVE)
 
 	numtext := int64(0)
-	for sect := Segtext.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segtext.Sections {
 		if sect.Name == ".text" {
 			numtext++
 		}
@@ -2314,7 +2314,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 	 * segment boundaries downwards to include it.
 	 * Except on NaCl where it must not be loaded.
 	 */
-	if Headtype != obj.Hnacl {
+	if Headtype != objabi.Hnacl {
 		o := int64(Segtext.Vaddr - pph.vaddr)
 		Segtext.Vaddr -= uint64(o)
 		Segtext.Length += uint64(o)
@@ -2332,22 +2332,22 @@ func Asmbelf(ctxt *Link, symo int64) {
 		sh.addralign = 1
 		if interpreter == "" {
 			switch Headtype {
-			case obj.Hlinux:
+			case objabi.Hlinux:
 				interpreter = Thearch.Linuxdynld
 
-			case obj.Hfreebsd:
+			case objabi.Hfreebsd:
 				interpreter = Thearch.Freebsddynld
 
-			case obj.Hnetbsd:
+			case objabi.Hnetbsd:
 				interpreter = Thearch.Netbsddynld
 
-			case obj.Hopenbsd:
+			case objabi.Hopenbsd:
 				interpreter = Thearch.Openbsddynld
 
-			case obj.Hdragonfly:
+			case objabi.Hdragonfly:
 				interpreter = Thearch.Dragonflydynld
 
-			case obj.Hsolaris:
+			case objabi.Hsolaris:
 				interpreter = Thearch.Solarisdynld
 			}
 		}
@@ -2361,10 +2361,10 @@ func Asmbelf(ctxt *Link, symo int64) {
 	}
 
 	pnote = nil
-	if Headtype == obj.Hnetbsd || Headtype == obj.Hopenbsd {
+	if Headtype == objabi.Hnetbsd || Headtype == objabi.Hopenbsd {
 		var sh *ElfShdr
 		switch Headtype {
-		case obj.Hnetbsd:
+		case objabi.Hnetbsd:
 			sh = elfshname(".note.netbsd.ident")
 			resoff -= int64(elfnetbsdsig(sh, uint64(startva), uint64(resoff)))
 			if SysArch.Family == sys.ARM {
@@ -2372,7 +2372,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 				resoff -= int64(elfnetbsdarmsig(sh, uint64(startva), uint64(resoff)))
 			}
 
-		case obj.Hopenbsd:
+		case objabi.Hopenbsd:
 			sh = elfshname(".note.openbsd.ident")
 			resoff -= int64(elfopenbsdsig(sh, uint64(startva), uint64(resoff)))
 		}
@@ -2409,10 +2409,10 @@ func Asmbelf(ctxt *Link, symo int64) {
 	// Additions to the reserved area must be above this line.
 
 	elfphload(&Segtext)
-	if Segrodata.Sect != nil {
+	if len(Segrodata.Sections) > 0 {
 		elfphload(&Segrodata)
 	}
-	if Segrelrodata.Sect != nil {
+	if len(Segrelrodata.Sections) > 0 {
 		elfphload(&Segrelrodata)
 		elfphrelro(&Segrelrodata)
 	}
@@ -2565,7 +2565,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 		 * Thread-local storage segment (really just size).
 		 */
 		tlssize := uint64(0)
-		for sect := Segdata.Sect; sect != nil; sect = sect.Next {
+		for _, sect := range Segdata.Sections {
 			if sect.Name == ".tbss" {
 				tlssize = sect.Length
 			}
@@ -2579,7 +2579,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 		}
 	}
 
-	if Headtype == obj.Hlinux {
+	if Headtype == objabi.Hlinux {
 		ph := newElfPhdr()
 		ph.type_ = PT_GNU_STACK
 		ph.flags = PF_W + PF_R
@@ -2589,7 +2589,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 		ph.type_ = PT_PAX_FLAGS
 		ph.flags = 0x2a00 // mprotect, randexec, emutramp disabled
 		ph.align = uint64(SysArch.RegSize)
-	} else if Headtype == obj.Hsolaris {
+	} else if Headtype == objabi.Hsolaris {
 		ph := newElfPhdr()
 		ph.type_ = PT_SUNWSTACK
 		ph.flags = PF_W + PF_R
@@ -2608,40 +2608,40 @@ elfobj:
 		elfshname(".strtab")
 	}
 
-	for sect := Segtext.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segtext.Sections {
 		elfshbits(sect)
 	}
-	for sect := Segrodata.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segrodata.Sections {
 		elfshbits(sect)
 	}
-	for sect := Segrelrodata.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segrelrodata.Sections {
 		elfshbits(sect)
 	}
-	for sect := Segdata.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segdata.Sections {
 		elfshbits(sect)
 	}
-	for sect := Segdwarf.Sect; sect != nil; sect = sect.Next {
+	for _, sect := range Segdwarf.Sections {
 		elfshbits(sect)
 	}
 
 	if Linkmode == LinkExternal {
-		for sect := Segtext.Sect; sect != nil; sect = sect.Next {
+		for _, sect := range Segtext.Sections {
 			elfshreloc(sect)
 		}
-		for sect := Segrodata.Sect; sect != nil; sect = sect.Next {
+		for _, sect := range Segrodata.Sections {
 			elfshreloc(sect)
 		}
-		for sect := Segrelrodata.Sect; sect != nil; sect = sect.Next {
+		for _, sect := range Segrelrodata.Sections {
 			elfshreloc(sect)
 		}
-		for sect := Segdata.Sect; sect != nil; sect = sect.Next {
+		for _, sect := range Segdata.Sections {
 			elfshreloc(sect)
 		}
 		for _, s := range dwarfp {
-			if len(s.R) > 0 || s.Type == obj.SDWARFINFO {
+			if len(s.R) > 0 || s.Type == objabi.SDWARFINFO {
 				elfshreloc(s.Sect)
 			}
-			if s.Type == obj.SDWARFINFO {
+			if s.Type == objabi.SDWARFINFO {
 				break
 			}
 		}
@@ -2676,13 +2676,13 @@ elfobj:
 	eh.ident[EI_MAG1] = 'E'
 	eh.ident[EI_MAG2] = 'L'
 	eh.ident[EI_MAG3] = 'F'
-	if Headtype == obj.Hfreebsd {
+	if Headtype == objabi.Hfreebsd {
 		eh.ident[EI_OSABI] = ELFOSABI_FREEBSD
-	} else if Headtype == obj.Hnetbsd {
+	} else if Headtype == objabi.Hnetbsd {
 		eh.ident[EI_OSABI] = ELFOSABI_NETBSD
-	} else if Headtype == obj.Hopenbsd {
+	} else if Headtype == objabi.Hopenbsd {
 		eh.ident[EI_OSABI] = ELFOSABI_OPENBSD
-	} else if Headtype == obj.Hdragonfly {
+	} else if Headtype == objabi.Hdragonfly {
 		eh.ident[EI_OSABI] = ELFOSABI_NONE
 	}
 	if elf64 {
@@ -2725,10 +2725,10 @@ elfobj:
 		a += int64(elfwriteinterp())
 	}
 	if Linkmode != LinkExternal {
-		if Headtype == obj.Hnetbsd {
+		if Headtype == objabi.Hnetbsd {
 			a += int64(elfwritenetbsdsig())
 		}
-		if Headtype == obj.Hopenbsd {
+		if Headtype == objabi.Hopenbsd {
 			a += int64(elfwriteopenbsdsig())
 		}
 		if len(buildinfo) > 0 {
@@ -2757,7 +2757,7 @@ func Elfadddynsym(ctxt *Link, s *Symbol) {
 		/* type */
 		t := STB_GLOBAL << 4
 
-		if s.Attr.CgoExport() && s.Type&obj.SMASK == obj.STEXT {
+		if s.Attr.CgoExport() && s.Type&objabi.SMASK == objabi.STEXT {
 			t |= STT_FUNC
 		} else {
 			t |= STT_OBJECT
@@ -2768,14 +2768,14 @@ func Elfadddynsym(ctxt *Link, s *Symbol) {
 		Adduint8(ctxt, d, 0)
 
 		/* section where symbol is defined */
-		if s.Type == obj.SDYNIMPORT {
+		if s.Type == objabi.SDYNIMPORT {
 			Adduint16(ctxt, d, SHN_UNDEF)
 		} else {
 			Adduint16(ctxt, d, 1)
 		}
 
 		/* value */
-		if s.Type == obj.SDYNIMPORT {
+		if s.Type == objabi.SDYNIMPORT {
 			Adduint64(ctxt, d, 0)
 		} else {
 			Addaddr(ctxt, d, s)
@@ -2799,7 +2799,7 @@ func Elfadddynsym(ctxt *Link, s *Symbol) {
 		Adduint32(ctxt, d, uint32(Addstring(ctxt.Syms.Lookup(".dynstr", 0), name)))
 
 		/* value */
-		if s.Type == obj.SDYNIMPORT {
+		if s.Type == objabi.SDYNIMPORT {
 			Adduint32(ctxt, d, 0)
 		} else {
 			Addaddr(ctxt, d, s)
@@ -2812,9 +2812,9 @@ func Elfadddynsym(ctxt *Link, s *Symbol) {
 		t := STB_GLOBAL << 4
 
 		// TODO(mwhudson): presumably the behavior should actually be the same on both arm and 386.
-		if SysArch.Family == sys.I386 && s.Attr.CgoExport() && s.Type&obj.SMASK == obj.STEXT {
+		if SysArch.Family == sys.I386 && s.Attr.CgoExport() && s.Type&objabi.SMASK == objabi.STEXT {
 			t |= STT_FUNC
-		} else if SysArch.Family == sys.ARM && s.Attr.CgoExportDynamic() && s.Type&obj.SMASK == obj.STEXT {
+		} else if SysArch.Family == sys.ARM && s.Attr.CgoExportDynamic() && s.Type&objabi.SMASK == objabi.STEXT {
 			t |= STT_FUNC
 		} else {
 			t |= STT_OBJECT
@@ -2823,7 +2823,7 @@ func Elfadddynsym(ctxt *Link, s *Symbol) {
 		Adduint8(ctxt, d, 0)
 
 		/* shndx */
-		if s.Type == obj.SDYNIMPORT {
+		if s.Type == objabi.SDYNIMPORT {
 			Adduint16(ctxt, d, SHN_UNDEF)
 		} else {
 			Adduint16(ctxt, d, 1)

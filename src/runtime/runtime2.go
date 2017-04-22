@@ -490,6 +490,14 @@ type p struct {
 
 	tracebuf traceBufPtr
 
+	// traceSweep indicates the sweep events should be traced.
+	// This is used to defer the sweep start event until a span
+	// has actually been swept.
+	traceSweep bool
+	// traceSwept and traceReclaimed track the number of bytes
+	// swept and reclaimed by sweeping in the current sweep loop.
+	traceSwept, traceReclaimed uintptr
+
 	palloc persistentAlloc // per-P to avoid mutex
 
 	// Per-P GC state

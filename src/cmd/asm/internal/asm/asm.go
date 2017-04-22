@@ -13,6 +13,7 @@ import (
 	"cmd/asm/internal/flags"
 	"cmd/asm/internal/lex"
 	"cmd/internal/obj"
+	"cmd/internal/objabi"
 	"cmd/internal/sys"
 )
 
@@ -151,7 +152,7 @@ func (p *Parser) asmText(word string, operands [][]lex.Token) {
 		frameSize = -frameSize
 	}
 	op = op[1:]
-	argSize := int64(obj.ArgsSizeUnknown)
+	argSize := int64(objabi.ArgsSizeUnknown)
 	if len(op) > 0 {
 		// There is an argument size. It must be a minus sign followed by a non-negative integer literal.
 		if len(op) != 2 || op[0].ScanToken != '-' || op[1].ScanToken != scanner.Int {
@@ -160,24 +161,20 @@ func (p *Parser) asmText(word string, operands [][]lex.Token) {
 		}
 		argSize = p.positiveAtoi(op[1].String())
 	}
+	p.ctxt.InitTextSym(nameAddr.Sym, int(flag))
 	prog := &obj.Prog{
 		Ctxt: p.ctxt,
 		As:   obj.ATEXT,
 		Pos:  p.pos(),
 		From: nameAddr,
-		From3: &obj.Addr{
-			Type:   obj.TYPE_CONST,
-			Offset: flag,
-		},
 		To: obj.Addr{
 			Type:   obj.TYPE_TEXTSIZE,
 			Offset: frameSize,
 			// Argsize set below.
 		},
 	}
+	nameAddr.Sym.Func.Text = prog
 	prog.To.Val = int32(argSize)
-	p.ctxt.InitTextSym(prog)
-
 	p.append(prog, "", true)
 }
 

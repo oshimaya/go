@@ -31,6 +31,7 @@ package s390x
 
 import (
 	"cmd/internal/obj"
+	"cmd/internal/objabi"
 	"log"
 	"math"
 	"sort"
@@ -201,6 +202,8 @@ var optab = []Optab{
 	Optab{AFMOVD, C_FREG, C_NONE, C_NONE, C_LOREG, 35, 0},
 	Optab{AFMOVD, C_FREG, C_NONE, C_NONE, C_ADDR, 74, 0},
 	Optab{AFMOVD, C_ZCON, C_NONE, C_NONE, C_FREG, 67, 0},
+	Optab{ALDGR, C_REG, C_NONE, C_NONE, C_FREG, 81, 0},
+	Optab{ALGDR, C_FREG, C_NONE, C_NONE, C_REG, 81, 0},
 	Optab{ACEFBRA, C_REG, C_NONE, C_NONE, C_FREG, 82, 0},
 	Optab{ACFEBRA, C_FREG, C_NONE, C_NONE, C_REG, 83, 0},
 	Optab{AFIEBR, C_SCON, C_FREG, C_NONE, C_FREG, 48, 0},
@@ -266,7 +269,7 @@ var optab = []Optab{
 	Optab{ADWORD, C_DCON, C_NONE, C_NONE, C_NONE, 31, 0},
 
 	// fast synchronization
-	Optab{ASYNC, C_NONE, C_NONE, C_NONE, C_NONE, 81, 0},
+	Optab{ASYNC, C_NONE, C_NONE, C_NONE, C_NONE, 80, 0},
 
 	// store clock
 	Optab{ASTCK, C_NONE, C_NONE, C_NONE, C_SAUTO, 88, REGSP},
@@ -398,7 +401,7 @@ var oprange [ALAST & obj.AMask][]Optab
 var xcmp [C_NCLASS][C_NCLASS]bool
 
 func spanz(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
-	p := cursym.Text
+	p := cursym.Func.Text
 	if p == nil || p.Link == nil { // handle external functions and ELF section symbols
 		return
 	}
@@ -420,7 +423,7 @@ func spanz(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
 		changed = false
 		buffer = buffer[:0]
 		c.cursym.R = make([]obj.Reloc, 0)
-		for p := c.cursym.Text; p != nil; p = p.Link {
+		for p := c.cursym.Func.Text; p != nil; p = p.Link {
 			pc := int64(len(buffer))
 			if pc != p.Pc {
 				changed = true
@@ -485,7 +488,7 @@ func (c *ctxtz) aclass(a *obj.Addr) int {
 				break
 			}
 			c.instoffset = a.Offset
-			if a.Sym.Type == obj.STLSBSS {
+			if a.Sym.Type == objabi.STLSBSS {
 				if c.ctxt.Flag_shared {
 					return C_TLS_IE // initial exec model
 				}
@@ -555,7 +558,7 @@ func (c *ctxtz) aclass(a *obj.Addr) int {
 				break
 			}
 			c.instoffset = a.Offset
-			if s.Type == obj.SCONST {
+			if s.Type == objabi.SCONST {
 				goto consize
 			}
 
@@ -2506,7 +2509,7 @@ func (c *ctxtz) addrilreloc(sym *obj.LSym, add int64) *obj.Reloc {
 	rel.Siz = 4
 	rel.Sym = sym
 	rel.Add = add + offset + int64(rel.Siz)
-	rel.Type = obj.R_PCRELDBL
+	rel.Type = objabi.R_PCRELDBL
 	return rel
 }
 
@@ -2520,7 +2523,7 @@ func (c *ctxtz) addrilrelocoffset(sym *obj.LSym, add, offset int64) *obj.Reloc {
 	rel.Siz = 4
 	rel.Sym = sym
 	rel.Add = add + offset + int64(rel.Siz)
-	rel.Type = obj.R_PCRELDBL
+	rel.Type = objabi.R_PCRELDBL
 	return rel
 }
 
@@ -2536,7 +2539,7 @@ func (c *ctxtz) addcallreloc(sym *obj.LSym, add int64) *obj.Reloc {
 	rel.Siz = 4
 	rel.Sym = sym
 	rel.Add = add + offset + int64(rel.Siz)
-	rel.Type = obj.R_CALL
+	rel.Type = objabi.R_CALL
 	return rel
 }
 
@@ -3474,8 +3477,16 @@ func (c *ctxtz) asmout(p *obj.Prog, asm *[]byte) {
 			zRSY(op_CSG, uint32(p.From.Reg), uint32(p.Reg), uint32(p.To.Reg), uint32(v), asm)
 		}
 
-	case 81: // sync
+	case 80: // sync
 		zRR(op_BCR, 0xE, 0, asm)
+
+	case 81: // float to fixed and fixed to float moves (no conversion)
+		switch p.As {
+		case ALDGR:
+			zRRE(op_LDGR, uint32(p.To.Reg), uint32(p.From.Reg), asm)
+		case ALGDR:
+			zRRE(op_LGDR, uint32(p.To.Reg), uint32(p.From.Reg), asm)
+		}
 
 	case 82: // fixed to float conversion
 		var opcode uint32
@@ -3706,7 +3717,7 @@ func (c *ctxtz) asmout(p *obj.Prog, asm *[]byte) {
 		rel.Off = int32(c.pc + 2)
 		rel.Siz = 4
 		rel.Sym = p.From.Sym
-		rel.Type = obj.R_GOTPCREL
+		rel.Type = objabi.R_GOTPCREL
 		rel.Add = 2 + int64(rel.Siz)
 
 	case 94: // TLS local exec model
@@ -3718,7 +3729,7 @@ func (c *ctxtz) asmout(p *obj.Prog, asm *[]byte) {
 		rel.Off = int32(c.pc + sizeRIL + sizeRXY + sizeRI)
 		rel.Siz = 8
 		rel.Sym = p.From.Sym
-		rel.Type = obj.R_TLS_LE
+		rel.Type = objabi.R_TLS_LE
 		rel.Add = 0
 
 	case 95: // TLS initial exec model
@@ -3738,7 +3749,7 @@ func (c *ctxtz) asmout(p *obj.Prog, asm *[]byte) {
 		ieent.Off = int32(c.pc + 2)
 		ieent.Siz = 4
 		ieent.Sym = p.From.Sym
-		ieent.Type = obj.R_TLS_IE
+		ieent.Type = objabi.R_TLS_IE
 		ieent.Add = 2 + int64(ieent.Siz)
 
 		// R_390_TLS_LOAD

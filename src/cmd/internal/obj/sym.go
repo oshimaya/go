@@ -32,60 +32,66 @@
 package obj
 
 import (
+	"cmd/internal/objabi"
 	"fmt"
 	"log"
 	"math"
-	"os"
-	"path/filepath"
 )
-
-// WorkingDir returns the current working directory
-// (or "/???" if the directory cannot be identified),
-// with "/" as separator.
-func WorkingDir() string {
-	var path string
-	path, _ = os.Getwd()
-	if path == "" {
-		path = "/???"
-	}
-	return filepath.ToSlash(path)
-}
 
 func Linknew(arch *LinkArch) *Link {
 	ctxt := new(Link)
-	ctxt.Hash = make(map[SymVer]*LSym)
+	ctxt.hash = make(map[string]*LSym)
+	ctxt.statichash = make(map[string]*LSym)
 	ctxt.Arch = arch
-	ctxt.Version = 0
-	ctxt.Pathname = WorkingDir()
+	ctxt.Pathname = objabi.WorkingDir()
 
-	ctxt.Headtype.Set(GOOS)
+	ctxt.Headtype.Set(objabi.GOOS)
 	if ctxt.Headtype < 0 {
-		log.Fatalf("unknown goos %s", GOOS)
+		log.Fatalf("unknown goos %s", objabi.GOOS)
 	}
 
 	ctxt.Flag_optimize = true
-	ctxt.Framepointer_enabled = Framepointer_enabled(GOOS, arch.Name)
+	ctxt.Framepointer_enabled = objabi.Framepointer_enabled(objabi.GOOS, arch.Name)
 	return ctxt
 }
 
-// Lookup looks up the symbol with name name and version v.
-// If it does not exist, it creates it.
-func (ctxt *Link) Lookup(name string, v int) *LSym {
-	return ctxt.LookupInit(name, v, nil)
+// LookupDerived looks up or creates the symbol with name name derived from symbol s.
+// The resulting symbol will be static iff s is.
+func (ctxt *Link) LookupDerived(s *LSym, name string) *LSym {
+	if s.Static() {
+		return ctxt.LookupStatic(name)
+	}
+	return ctxt.Lookup(name)
 }
 
-// LookupInit looks up the symbol with name name and version v.
-// If it does not exist, it creates it and passes it to initfn for one-time initialization.
-func (ctxt *Link) LookupInit(name string, v int, init func(s *LSym)) *LSym {
-	s := ctxt.Hash[SymVer{name, v}]
-	if s != nil {
-		return s
+// LookupStatic looks up the static symbol with name name.
+// If it does not exist, it creates it.
+func (ctxt *Link) LookupStatic(name string) *LSym {
+	s := ctxt.statichash[name]
+	if s == nil {
+		s = &LSym{Name: name, Attribute: AttrStatic}
+		ctxt.statichash[name] = s
 	}
+	return s
+}
 
-	s = &LSym{Name: name, Version: int16(v)}
-	ctxt.Hash[SymVer{name, v}] = s
-	if init != nil {
-		init(s)
+// Lookup looks up the symbol with name name.
+// If it does not exist, it creates it.
+func (ctxt *Link) Lookup(name string) *LSym {
+	return ctxt.LookupInit(name, nil)
+}
+
+// LookupInit looks up the symbol with name name.
+// If it does not exist, it creates it and
+// passes it to init for one-time initialization.
+func (ctxt *Link) LookupInit(name string, init func(s *LSym)) *LSym {
+	s := ctxt.hash[name]
+	if s == nil {
+		s = &LSym{Name: name}
+		ctxt.hash[name] = s
+		if init != nil {
+			init(s)
+		}
 	}
 	return s
 }
@@ -93,7 +99,7 @@ func (ctxt *Link) LookupInit(name string, v int, init func(s *LSym)) *LSym {
 func (ctxt *Link) Float32Sym(f float32) *LSym {
 	i := math.Float32bits(f)
 	name := fmt.Sprintf("$f32.%08x", i)
-	return ctxt.LookupInit(name, 0, func(s *LSym) {
+	return ctxt.LookupInit(name, func(s *LSym) {
 		s.Size = 4
 		s.Set(AttrLocal, true)
 	})
@@ -102,7 +108,7 @@ func (ctxt *Link) Float32Sym(f float32) *LSym {
 func (ctxt *Link) Float64Sym(f float64) *LSym {
 	i := math.Float64bits(f)
 	name := fmt.Sprintf("$f64.%016x", i)
-	return ctxt.LookupInit(name, 0, func(s *LSym) {
+	return ctxt.LookupInit(name, func(s *LSym) {
 		s.Size = 8
 		s.Set(AttrLocal, true)
 	})
@@ -110,15 +116,8 @@ func (ctxt *Link) Float64Sym(f float64) *LSym {
 
 func (ctxt *Link) Int64Sym(i int64) *LSym {
 	name := fmt.Sprintf("$i64.%016x", uint64(i))
-	return ctxt.LookupInit(name, 0, func(s *LSym) {
+	return ctxt.LookupInit(name, func(s *LSym) {
 		s.Size = 8
 		s.Set(AttrLocal, true)
 	})
-}
-
-func Linksymfmt(s *LSym) string {
-	if s == nil {
-		return "<nil>"
-	}
-	return s.Name
 }
