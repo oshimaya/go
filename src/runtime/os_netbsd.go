@@ -171,9 +171,13 @@ func newosproc(mp *m, stk unsafe.Pointer) {
 	uc.uc_link = nil
 	uc.uc_sigmask = sigset_all
 
+	var oset sigset
+	sigprocmask(_SIG_SETMASK, &sigset_all, &oset)
+
 	lwp_mcontext_init(&uc.uc_mcontext, stk, mp, mp.g0, funcPC(netbsdMstart))
 
 	ret := lwp_create(unsafe.Pointer(&uc), 0, unsafe.Pointer(&mp.procid))
+	sigprocmask(_SIG_SETMASK, &oset, nil)
 	if ret < 0 {
 		print("runtime: failed to create new OS thread (have ", mcount()-1, " already; errno=", -ret, ")\n")
 		if ret == -_EAGAIN {
