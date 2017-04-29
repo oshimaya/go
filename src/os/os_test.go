@@ -712,55 +712,58 @@ func TestSymlink(t *testing.T) {
 	Remove(from) // Just in case.
 	file, err := Create(to)
 	if err != nil {
-		t.Fatalf("open %q failed: %v", to, err)
+		t.Fatalf("Create(%q) failed: %v", to, err)
 	}
 	defer Remove(to)
 	if err = file.Close(); err != nil {
-		t.Errorf("close %q failed: %v", to, err)
+		t.Errorf("Close(%q) failed: %v", to, err)
 	}
 	err = Symlink(to, from)
 	if err != nil {
-		t.Fatalf("symlink %q, %q failed: %v", to, from, err)
+		t.Fatalf("Symlink(%q, %q) failed: %v", to, from, err)
 	}
 	defer Remove(from)
 	tostat, err := Lstat(to)
 	if err != nil {
-		t.Fatalf("stat %q failed: %v", to, err)
+		t.Fatalf("Lstat(%q) failed: %v", to, err)
 	}
 	if tostat.Mode()&ModeSymlink != 0 {
-		t.Fatalf("stat %q claims to have found a symlink", to)
+		t.Fatalf("Lstat(%q).Mode()&ModeSymlink = %v, want 0", to, tostat.Mode()&ModeSymlink)
 	}
 	fromstat, err := Stat(from)
 	if err != nil {
-		t.Fatalf("stat %q failed: %v", from, err)
+		t.Fatalf("Stat(%q) failed: %v", from, err)
 	}
 	if !SameFile(tostat, fromstat) {
-		t.Errorf("symlink %q, %q did not create symlink", to, from)
+		t.Errorf("Symlink(%q, %q) did not create symlink", to, from)
 	}
 	fromstat, err = Lstat(from)
 	if err != nil {
-		t.Fatalf("lstat %q failed: %v", from, err)
+		t.Fatalf("Lstat(%q) failed: %v", from, err)
 	}
 	if fromstat.Mode()&ModeSymlink == 0 {
-		t.Fatalf("symlink %q, %q did not create symlink", to, from)
+		t.Fatalf("Lstat(%q).Mode()&ModeSymlink = 0, want %v", from, ModeSymlink)
 	}
 	fromstat, err = Stat(from)
 	if err != nil {
-		t.Fatalf("stat %q failed: %v", from, err)
+		t.Fatalf("Stat(%q) failed: %v", from, err)
+	}
+	if fromstat.Name() != from {
+		t.Errorf("Stat(%q).Name() = %q, want %q", from, fromstat.Name(), from)
 	}
 	if fromstat.Mode()&ModeSymlink != 0 {
-		t.Fatalf("stat %q did not follow symlink", from)
+		t.Fatalf("Stat(%q).Mode()&ModeSymlink = %v, want 0", from, fromstat.Mode()&ModeSymlink)
 	}
 	s, err := Readlink(from)
 	if err != nil {
-		t.Fatalf("readlink %q failed: %v", from, err)
+		t.Fatalf("Readlink(%q) failed: %v", from, err)
 	}
 	if s != to {
-		t.Fatalf("after symlink %q != %q", s, to)
+		t.Fatalf("Readlink(%q) = %q, want %q", from, s, to)
 	}
 	file, err = Open(from)
 	if err != nil {
-		t.Fatalf("open %q failed: %v", from, err)
+		t.Fatalf("Open(%q) failed: %v", from, err)
 	}
 	file.Close()
 }
@@ -2173,5 +2176,25 @@ func TestPipeThreads(t *testing.T) {
 		if err := r[i].Close(); err != nil {
 			t.Error(err)
 		}
+	}
+}
+
+func TestDoubleCloseError(t *testing.T) {
+	path := sfdir + "/" + sfname
+	file, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("unexpected error from Close: %v", err)
+	}
+	if err := file.Close(); err == nil {
+		t.Error("second Close did not fail")
+	} else if pe, ok := err.(*PathError); !ok {
+		t.Errorf("second Close returned unexpected error type %T; expected os.PathError", pe)
+	} else if pe.Err != ErrClosed {
+		t.Errorf("second Close returned %q, wanted %q", err, ErrClosed)
+	} else {
+		t.Logf("second close returned expected error %q", err)
 	}
 }

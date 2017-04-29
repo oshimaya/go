@@ -104,7 +104,7 @@ func findShlibSection(ctxt *Link, path string, addr uint64) *elf.Section {
 
 // Type.commonType.gc
 func decodetypeGcprog(ctxt *Link, s *Symbol) []byte {
-	if s.Type == objabi.SDYNIMPORT {
+	if s.Type == SDYNIMPORT {
 		addr := decodetypeGcprogShlib(ctxt, s)
 		sect := findShlibSection(ctxt, s.File, addr)
 		if sect != nil {
@@ -135,7 +135,7 @@ func decodetypeGcprogShlib(ctxt *Link, s *Symbol) uint64 {
 }
 
 func decodetypeGcmask(ctxt *Link, s *Symbol) []byte {
-	if s.Type == objabi.SDYNIMPORT {
+	if s.Type == SDYNIMPORT {
 		addr := decodetypeGcprogShlib(ctxt, s)
 		ptrdata := decodetypePtrdata(ctxt.Arch, s)
 		sect := findShlibSection(ctxt, s.File, addr)
@@ -214,7 +214,7 @@ func decodetypeStructFieldCount(arch *sys.Arch, s *Symbol) int {
 }
 
 func decodetypeStructFieldArrayOff(s *Symbol, i int) int {
-	off := commonsize() + 2*SysArch.PtrSize + 2*SysArch.PtrSize
+	off := commonsize() + 4*SysArch.PtrSize
 	if decodetypeHasUncommon(s) {
 		off += uncommonSize()
 	}
@@ -254,8 +254,12 @@ func decodetypeStructFieldType(s *Symbol, i int) *Symbol {
 }
 
 func decodetypeStructFieldOffs(arch *sys.Arch, s *Symbol, i int) int64 {
+	return decodetypeStructFieldOffsAnon(arch, s, i) >> 1
+}
+
+func decodetypeStructFieldOffsAnon(arch *sys.Arch, s *Symbol, i int) int64 {
 	off := decodetypeStructFieldArrayOff(s, i)
-	return int64(decodeInuxi(arch, s.P[off+2*SysArch.PtrSize:], SysArch.PtrSize) >> 1)
+	return int64(decodeInuxi(arch, s.P[off+2*SysArch.PtrSize:], SysArch.PtrSize))
 }
 
 // InterfaceType.methods.length
@@ -342,7 +346,7 @@ func decodetypeMethods(arch *sys.Arch, s *Symbol) []methodsig {
 	off := commonsize() // reflect.rtype
 	switch decodetypeKind(s) & kindMask {
 	case kindStruct: // reflect.structType
-		off += 2*SysArch.PtrSize + 2*SysArch.PtrSize
+		off += 4 * SysArch.PtrSize
 	case kindPtr: // reflect.ptrType
 		off += SysArch.PtrSize
 	case kindFunc: // reflect.funcType
@@ -356,7 +360,7 @@ func decodetypeMethods(arch *sys.Arch, s *Symbol) []methodsig {
 	case kindMap: // reflect.mapType
 		off += 4*SysArch.PtrSize + 8
 	case kindInterface: // reflect.interfaceType
-		off += SysArch.PtrSize + 2*SysArch.PtrSize
+		off += 3 * SysArch.PtrSize
 	default:
 		// just Sizeof(rtype)
 	}

@@ -155,10 +155,15 @@ func (r *objReader) readSlices() {
 const symPrefix = 0xfe
 
 func (r *objReader) readSym() {
-	if c, err := r.rd.ReadByte(); c != symPrefix || err != nil {
+	var c byte
+	var err error
+	if c, err = r.rd.ReadByte(); c != symPrefix || err != nil {
 		log.Fatalln("readSym out of sync")
 	}
-	t := objabi.SymKind(r.readInt())
+	if c, err = r.rd.ReadByte(); err != nil {
+		log.Fatalln("error reading input: ", err)
+	}
+	t := abiSymKindToSymKind[c]
 	s := r.readSymIndex()
 	flags := r.readInt()
 	dupok := flags&1 != 0
@@ -172,8 +177,8 @@ func (r *objReader) readSym() {
 	isdup := false
 
 	var dup *Symbol
-	if s.Type != 0 && s.Type != objabi.SXREF {
-		if (t == objabi.SDATA || t == objabi.SBSS || t == objabi.SNOPTRBSS) && len(data) == 0 && nreloc == 0 {
+	if s.Type != 0 && s.Type != SXREF {
+		if (t == SDATA || t == SBSS || t == SNOPTRBSS) && len(data) == 0 && nreloc == 0 {
 			if s.Size < int64(size) {
 				s.Size = int64(size)
 			}
@@ -183,10 +188,10 @@ func (r *objReader) readSym() {
 			return
 		}
 
-		if (s.Type == objabi.SDATA || s.Type == objabi.SBSS || s.Type == objabi.SNOPTRBSS) && len(s.P) == 0 && len(s.R) == 0 {
+		if (s.Type == SDATA || s.Type == SBSS || s.Type == SNOPTRBSS) && len(s.P) == 0 && len(s.R) == 0 {
 			goto overwrite
 		}
-		if s.Type != objabi.SBSS && s.Type != objabi.SNOPTRBSS && !dupok && !s.Attr.DuplicateOK() {
+		if s.Type != SBSS && s.Type != SNOPTRBSS && !dupok && !s.Attr.DuplicateOK() {
 			log.Fatalf("duplicate symbol %s (types %d and %d) in %s and %s", s.Name, s.Type, t, s.File, r.pn)
 		}
 		if len(s.P) > 0 {
@@ -201,13 +206,13 @@ overwrite:
 	if dupok {
 		s.Attr |= AttrDuplicateOK
 	}
-	if t == objabi.SXREF {
+	if t == SXREF {
 		log.Fatalf("bad sxref")
 	}
 	if t == 0 {
 		log.Fatalf("missing type for %s in %s", s.Name, r.pn)
 	}
-	if t == objabi.SBSS && (s.Type == objabi.SRODATA || s.Type == objabi.SNOPTRBSS) {
+	if t == SBSS && (s.Type == SRODATA || s.Type == SNOPTRBSS) {
 		t = s.Type
 	}
 	s.Type = t
@@ -240,7 +245,7 @@ overwrite:
 		}
 	}
 
-	if s.Type == objabi.STEXT {
+	if s.Type == STEXT {
 		s.FuncInfo = new(FuncInfo)
 		pc := s.FuncInfo
 
@@ -326,7 +331,7 @@ overwrite:
 			}
 		}
 	}
-	if s.Type == objabi.SDWARFINFO {
+	if s.Type == SDWARFINFO {
 		r.patchDWARFName(s)
 	}
 }
@@ -389,7 +394,7 @@ func (r *objReader) readRef() {
 		if err != nil {
 			log.Panicf("failed to parse $-symbol %s: %v", s.Name, err)
 		}
-		s.Type = objabi.SRODATA
+		s.Type = SRODATA
 		s.Attr |= AttrLocal
 		switch s.Name[:5] {
 		case "$f32.":

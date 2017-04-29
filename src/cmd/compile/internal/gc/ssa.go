@@ -21,7 +21,7 @@ import (
 )
 
 var ssaConfig *ssa.Config
-var ssaCache *ssa.Cache
+var ssaCaches []ssa.Cache
 
 func initssaconfig() {
 	types_ := ssa.Types{
@@ -67,7 +67,7 @@ func initssaconfig() {
 	if thearch.LinkArch.Name == "386" {
 		ssaConfig.Set387(thearch.Use387)
 	}
-	ssaCache = new(ssa.Cache)
+	ssaCaches = make([]ssa.Cache, nBackendWorkers)
 
 	// Set up some runtime functions we'll need to call.
 	Newproc = Sysfunc("newproc")
@@ -94,9 +94,10 @@ func initssaconfig() {
 	Udiv = Sysfunc("udiv")
 }
 
-// buildssa builds an SSA function.
-func buildssa(fn *Node) *ssa.Func {
-	name := fn.Func.Nname.Sym.Name
+// buildssa builds an SSA function for fn.
+// worker indicates which of the backend workers is doing the processing.
+func buildssa(fn *Node, worker int) *ssa.Func {
+	name := fn.funcname()
 	printssa := name == os.Getenv("GOSSAFUNC")
 	if printssa {
 		fmt.Println("generating SSA for", name)
@@ -123,7 +124,7 @@ func buildssa(fn *Node) *ssa.Func {
 	s.f = ssa.NewFunc(&fe)
 	s.config = ssaConfig
 	s.f.Config = ssaConfig
-	s.f.Cache = ssaCache
+	s.f.Cache = &ssaCaches[worker]
 	s.f.Cache.Reset()
 	s.f.DebugTest = s.f.DebugHashMatch("GOSSAHASH", name)
 	s.f.Name = name
@@ -162,11 +163,11 @@ func buildssa(fn *Node) *ssa.Func {
 	// Generate addresses of local declarations
 	s.decladdrs = map[*Node]*ssa.Value{}
 	for _, n := range fn.Func.Dcl {
-		switch n.Class {
+		switch n.Class() {
 		case PPARAM, PPARAMOUT:
 			aux := s.lookupSymbol(n, &ssa.ArgSymbol{Node: n})
 			s.decladdrs[n] = s.entryNewValue1A(ssa.OpAddr, types.NewPtr(n.Type), aux, s.sp)
-			if n.Class == PPARAMOUT && s.canSSA(n) {
+			if n.Class() == PPARAMOUT && s.canSSA(n) {
 				// Save ssa-able PPARAMOUT variables so we can
 				// store them back to the stack at the end of
 				// the function.
@@ -180,13 +181,13 @@ func buildssa(fn *Node) *ssa.Func {
 		case PFUNC:
 			// local function - already handled by frontend
 		default:
-			s.Fatalf("local variable with class %s unimplemented", classnames[n.Class])
+			s.Fatalf("local variable with class %s unimplemented", classnames[n.Class()])
 		}
 	}
 
 	// Populate SSAable arguments.
 	for _, n := range fn.Func.Dcl {
-		if n.Class == PPARAM && s.canSSA(n) {
+		if n.Class() == PPARAM && s.canSSA(n) {
 			s.vars[n] = s.newValue0A(ssa.OpArg, n.Type, n)
 		}
 	}
@@ -306,15 +307,15 @@ func (s *state) Debug_checknil() bool                                { return s.
 
 var (
 	// dummy node for the memory variable
-	memVar = Node{Op: ONAME, Class: Pxxx, Sym: &types.Sym{Name: "mem"}}
+	memVar = Node{Op: ONAME, Sym: &types.Sym{Name: "mem"}}
 
 	// dummy nodes for temporary variables
-	ptrVar    = Node{Op: ONAME, Class: Pxxx, Sym: &types.Sym{Name: "ptr"}}
-	lenVar    = Node{Op: ONAME, Class: Pxxx, Sym: &types.Sym{Name: "len"}}
-	newlenVar = Node{Op: ONAME, Class: Pxxx, Sym: &types.Sym{Name: "newlen"}}
-	capVar    = Node{Op: ONAME, Class: Pxxx, Sym: &types.Sym{Name: "cap"}}
-	typVar    = Node{Op: ONAME, Class: Pxxx, Sym: &types.Sym{Name: "typ"}}
-	okVar     = Node{Op: ONAME, Class: Pxxx, Sym: &types.Sym{Name: "ok"}}
+	ptrVar    = Node{Op: ONAME, Sym: &types.Sym{Name: "ptr"}}
+	lenVar    = Node{Op: ONAME, Sym: &types.Sym{Name: "len"}}
+	newlenVar = Node{Op: ONAME, Sym: &types.Sym{Name: "newlen"}}
+	capVar    = Node{Op: ONAME, Sym: &types.Sym{Name: "cap"}}
+	typVar    = Node{Op: ONAME, Sym: &types.Sym{Name: "typ"}}
+	okVar     = Node{Op: ONAME, Sym: &types.Sym{Name: "ok"}}
 )
 
 // startBlock sets the current block we're generating code in to b.
@@ -541,7 +542,7 @@ func (s *state) stmt(n *Node) {
 
 	case OCALLMETH, OCALLINTER:
 		s.call(n, callNormal)
-		if n.Op == OCALLFUNC && n.Left.Op == ONAME && n.Left.Class == PFUNC {
+		if n.Op == OCALLFUNC && n.Left.Op == ONAME && n.Left.Class() == PFUNC {
 			if fn := n.Left.Sym.Name; compiling_runtime && fn == "throw" ||
 				n.Left.Sym.Pkg == Runtimepkg && (fn == "throwinit" || fn == "gopanic" || fn == "panicwrap" || fn == "block") {
 				m := s.mem()
@@ -592,7 +593,7 @@ func (s *state) stmt(n *Node) {
 		return
 
 	case ODCL:
-		if n.Left.Class == PAUTOHEAP {
+		if n.Left.Class() == PAUTOHEAP {
 			Fatalf("DCL %v", n)
 		}
 
@@ -641,13 +642,6 @@ func (s *state) stmt(n *Node) {
 			return
 		}
 
-		var t *types.Type
-		if n.Right != nil {
-			t = n.Right.Type
-		} else {
-			t = n.Left.Type
-		}
-
 		// Evaluate RHS.
 		rhs := n.Right
 		if rhs != nil {
@@ -681,6 +675,23 @@ func (s *state) stmt(n *Node) {
 				}
 			}
 		}
+
+		if isblank(n.Left) {
+			// _ = rhs
+			// Just evaluate rhs for side-effects.
+			if rhs != nil {
+				s.expr(rhs)
+			}
+			return
+		}
+
+		var t *types.Type
+		if n.Right != nil {
+			t = n.Right.Type
+		} else {
+			t = n.Left.Type
+		}
+
 		var r *ssa.Value
 		deref := !canSSAType(t)
 		if deref {
@@ -733,11 +744,15 @@ func (s *state) stmt(n *Node) {
 		bThen := s.f.NewBlock(ssa.BlockPlain)
 		bEnd := s.f.NewBlock(ssa.BlockPlain)
 		var bElse *ssa.Block
+		var likely int8
+		if n.Likely() {
+			likely = 1
+		}
 		if n.Rlist.Len() != 0 {
 			bElse = s.f.NewBlock(ssa.BlockPlain)
-			s.condBranch(n.Left, bThen, bElse, n.Likely)
+			s.condBranch(n.Left, bThen, bElse, likely)
 		} else {
-			s.condBranch(n.Left, bThen, bEnd, n.Likely)
+			s.condBranch(n.Left, bThen, bEnd, likely)
 		}
 
 		s.startBlock(bThen)
@@ -1390,7 +1405,7 @@ func (s *state) expr(n *Node) *ssa.Value {
 		aux := s.lookupSymbol(n, &ssa.ExternSymbol{Sym: n.Left.Sym.Linksym()})
 		return s.entryNewValue1A(ssa.OpAddr, n.Type, aux, s.sb)
 	case ONAME:
-		if n.Class == PFUNC {
+		if n.Class() == PFUNC {
 			// "value" of a function is the address of the function's closure
 			sym := funcsym(n.Sym).Linksym()
 			aux := s.lookupSymbol(n, &ssa.ExternSymbol{Sym: sym})
@@ -1602,12 +1617,12 @@ func (s *state) expr(n *Node) *ssa.Value {
 
 		if ft.IsFloat() || tt.IsFloat() {
 			conv, ok := fpConvOpToSSA[twoTypes{s.concreteEtype(ft), s.concreteEtype(tt)}]
-			if s.config.PtrSize == 4 && thearch.LinkArch.Name != "amd64p32" && thearch.LinkArch.Family != sys.MIPS {
+			if s.config.RegSize == 4 && thearch.LinkArch.Family != sys.MIPS {
 				if conv1, ok1 := fpConvOpToSSA32[twoTypes{s.concreteEtype(ft), s.concreteEtype(tt)}]; ok1 {
 					conv = conv1
 				}
 			}
-			if thearch.LinkArch.Name == "arm64" {
+			if thearch.LinkArch.Family == sys.ARM64 {
 				if conv1, ok1 := uint64fpConvOpToSSA[twoTypes{s.concreteEtype(ft), s.concreteEtype(tt)}]; ok1 {
 					conv = conv1
 				}
@@ -2494,17 +2509,10 @@ func init() {
 	intrinsics = map[intrinsicKey]intrinsicBuilder{}
 
 	var all []*sys.Arch
-	var i4 []*sys.Arch
-	var i8 []*sys.Arch
 	var p4 []*sys.Arch
 	var p8 []*sys.Arch
 	for _, a := range sys.Archs {
 		all = append(all, a)
-		if a.PtrSize == 4 {
-			i4 = append(i4, a)
-		} else {
-			i8 = append(i8, a)
-		}
 		if a.PtrSize == 4 {
 			p4 = append(p4, a)
 		} else {
@@ -2689,8 +2697,8 @@ func init() {
 
 	alias("runtime/internal/atomic", "Loadint64", "runtime/internal/atomic", "Load64", all...)
 	alias("runtime/internal/atomic", "Xaddint64", "runtime/internal/atomic", "Xadd64", all...)
-	alias("runtime/internal/atomic", "Loaduint", "runtime/internal/atomic", "Load", i4...)
-	alias("runtime/internal/atomic", "Loaduint", "runtime/internal/atomic", "Load64", i8...)
+	alias("runtime/internal/atomic", "Loaduint", "runtime/internal/atomic", "Load", p4...)
+	alias("runtime/internal/atomic", "Loaduint", "runtime/internal/atomic", "Load64", p8...)
 	alias("runtime/internal/atomic", "Loaduintptr", "runtime/internal/atomic", "Load", p4...)
 	alias("runtime/internal/atomic", "Loaduintptr", "runtime/internal/atomic", "Load64", p8...)
 	alias("runtime/internal/atomic", "Storeuintptr", "runtime/internal/atomic", "Store", p4...)
@@ -3043,7 +3051,7 @@ func (s *state) call(n *Node, k callKind) *ssa.Value {
 	fn := n.Left
 	switch n.Op {
 	case OCALLFUNC:
-		if k == callNormal && fn.Op == ONAME && fn.Class == PFUNC {
+		if k == callNormal && fn.Op == ONAME && fn.Class() == PFUNC {
 			sym = fn.Sym
 			break
 		}
@@ -3063,7 +3071,7 @@ func (s *state) call(n *Node, k callKind) *ssa.Value {
 		// We can then pass that to defer or go.
 		n2 := newnamel(fn.Pos, fn.Sym)
 		n2.Name.Curfn = s.curfn
-		n2.Class = PFUNC
+		n2.SetClass(PFUNC)
 		n2.Pos = fn.Pos
 		n2.Type = types.Types[TUINT8] // dummy type for a static closure. Could use runtime.funcval if we had it.
 		closure = s.expr(n2)
@@ -3201,7 +3209,7 @@ func (s *state) addr(n *Node, bounded bool) *ssa.Value {
 	t := types.NewPtr(n.Type)
 	switch n.Op {
 	case ONAME:
-		switch n.Class {
+		switch n.Class() {
 		case PEXTERN:
 			// global variable
 			aux := s.lookupSymbol(n, &ssa.ExternSymbol{Sym: n.Sym.Linksym()})
@@ -3233,7 +3241,7 @@ func (s *state) addr(n *Node, bounded bool) *ssa.Value {
 			aux := s.lookupSymbol(n, &ssa.ArgSymbol{Node: n})
 			return s.newValue1A(ssa.OpAddr, t, aux, s.sp)
 		default:
-			s.Fatalf("variable address class %v not implemented", classnames[n.Class])
+			s.Fatalf("variable address class %v not implemented", classnames[n.Class()])
 			return nil
 		}
 	case OINDREGSP:
@@ -3310,10 +3318,10 @@ func (s *state) canSSA(n *Node) bool {
 	if n.isParamHeapCopy() {
 		return false
 	}
-	if n.Class == PAUTOHEAP {
+	if n.Class() == PAUTOHEAP {
 		Fatalf("canSSA of PAUTOHEAP %v", n)
 	}
-	switch n.Class {
+	switch n.Class() {
 	case PEXTERN:
 		return false
 	case PPARAMOUT:
@@ -3331,7 +3339,7 @@ func (s *state) canSSA(n *Node) bool {
 			return false
 		}
 	}
-	if n.Class == PPARAM && n.Sym != nil && n.Sym.Name == ".this" {
+	if n.Class() == PPARAM && n.Sym != nil && n.Sym.Name == ".this" {
 		// wrappers generated by genwrapper need to update
 		// the .this pointer in place.
 		// TODO: treat as a PPARMOUT?
@@ -3476,11 +3484,7 @@ func (s *state) rtcall(fn *obj.LSym, returns bool, results []*types.Type, args .
 		s.vars[&memVar] = s.newValue3A(ssa.OpStore, ssa.TypeMem, t, ptr, arg, s.mem())
 		off += size
 	}
-	off = Rnd(off, int64(Widthptr))
-	if thearch.LinkArch.Name == "amd64p32" {
-		// amd64p32 wants 8-byte alignment of the start of the return values.
-		off = Rnd(off, 8)
-	}
+	off = Rnd(off, int64(Widthreg))
 
 	// Issue call
 	call := s.newValue1A(ssa.OpStaticCall, ssa.TypeMem, fn, s.mem())
@@ -4182,7 +4186,7 @@ func (s *state) dottype(n *Node, commaok bool) (res, resok *ssa.Value) {
 	bEnd := s.f.NewBlock(ssa.BlockPlain)
 	// Note that we need a new valVar each time (unlike okVar where we can
 	// reuse the variable) because it might have a different type every time.
-	valVar := &Node{Op: ONAME, Class: Pxxx, Sym: &types.Sym{Name: "val"}}
+	valVar := &Node{Op: ONAME, Sym: &types.Sym{Name: "val"}}
 
 	// type assertion succeeded
 	s.startBlock(bOk)
@@ -4258,7 +4262,7 @@ func (s *state) mem() *ssa.Value {
 }
 
 func (s *state) addNamedValue(n *Node, v *ssa.Value) {
-	if n.Class == Pxxx {
+	if n.Class() == Pxxx {
 		// Don't track our dummy nodes (&memVar etc.).
 		return
 	}
@@ -4266,12 +4270,12 @@ func (s *state) addNamedValue(n *Node, v *ssa.Value) {
 		// Don't track temporary variables.
 		return
 	}
-	if n.Class == PPARAMOUT {
+	if n.Class() == PPARAMOUT {
 		// Don't track named output values.  This prevents return values
 		// from being assigned too early. See #14591 and #14762. TODO: allow this.
 		return
 	}
-	if n.Class == PAUTO && n.Xoffset != 0 {
+	if n.Class() == PAUTO && n.Xoffset != 0 {
 		s.Fatalf("AUTO var with offset %v %d", n, n.Xoffset)
 	}
 	loc := ssa.LocalSlot{N: n, Type: n.Type, Off: 0}
@@ -4385,7 +4389,7 @@ func genssa(f *ssa.Func, pp *Progs) {
 				// See issue 20029.
 				n := v.Aux.(*Node)
 				if n.Name.Needzero() {
-					if n.Class != PAUTO {
+					if n.Class() != PAUTO {
 						v.Fatalf("zero of variable which isn't PAUTO %v", n)
 					}
 					if n.Type.Size()%int64(Widthptr) != 0 {
@@ -4509,8 +4513,8 @@ func defframe(s *SSAGenState, e *ssafn) {
 		if !n.Name.Needzero() {
 			continue
 		}
-		if n.Class != PAUTO {
-			Fatalf("needzero class %d", n.Class)
+		if n.Class() != PAUTO {
+			Fatalf("needzero class %d", n.Class())
 		}
 		if n.Type.Size()%int64(Widthptr) != 0 || n.Xoffset%int64(Widthptr) != 0 || n.Type.Size() == 0 {
 			Fatalf("var %L has size %d offset %d", n, n.Type.Size(), n.Xoffset)
@@ -4709,7 +4713,7 @@ func AddrAuto(a *obj.Addr, v *ssa.Value) {
 	a.Sym = n.Sym.Linksym()
 	a.Reg = int16(thearch.REGSP)
 	a.Offset = n.Xoffset + off
-	if n.Class == PPARAM || n.Class == PPARAMOUT {
+	if n.Class() == PPARAM || n.Class() == PPARAMOUT {
 		a.Name = obj.NAME_PARAM
 	} else {
 		a.Name = obj.NAME_AUTO
@@ -4831,7 +4835,7 @@ func (e *ssafn) SplitString(name ssa.LocalSlot) (ssa.LocalSlot, ssa.LocalSlot) {
 	n := name.N.(*Node)
 	ptrType := types.NewPtr(types.Types[TUINT8])
 	lenType := types.Types[TINT]
-	if n.Class == PAUTO && !n.Addrtaken() {
+	if n.Class() == PAUTO && !n.Addrtaken() {
 		// Split this string up into two separate variables.
 		p := e.namedAuto(n.Sym.Name+".ptr", ptrType, n.Pos)
 		l := e.namedAuto(n.Sym.Name+".len", lenType, n.Pos)
@@ -4844,7 +4848,7 @@ func (e *ssafn) SplitString(name ssa.LocalSlot) (ssa.LocalSlot, ssa.LocalSlot) {
 func (e *ssafn) SplitInterface(name ssa.LocalSlot) (ssa.LocalSlot, ssa.LocalSlot) {
 	n := name.N.(*Node)
 	t := types.NewPtr(types.Types[TUINT8])
-	if n.Class == PAUTO && !n.Addrtaken() {
+	if n.Class() == PAUTO && !n.Addrtaken() {
 		// Split this interface up into two separate variables.
 		f := ".itab"
 		if n.Type.IsEmptyInterface() {
@@ -4862,7 +4866,7 @@ func (e *ssafn) SplitSlice(name ssa.LocalSlot) (ssa.LocalSlot, ssa.LocalSlot, ss
 	n := name.N.(*Node)
 	ptrType := types.NewPtr(name.Type.ElemType().(*types.Type))
 	lenType := types.Types[TINT]
-	if n.Class == PAUTO && !n.Addrtaken() {
+	if n.Class() == PAUTO && !n.Addrtaken() {
 		// Split this slice up into three separate variables.
 		p := e.namedAuto(n.Sym.Name+".ptr", ptrType, n.Pos)
 		l := e.namedAuto(n.Sym.Name+".len", lenType, n.Pos)
@@ -4884,7 +4888,7 @@ func (e *ssafn) SplitComplex(name ssa.LocalSlot) (ssa.LocalSlot, ssa.LocalSlot) 
 	} else {
 		t = types.Types[TFLOAT32]
 	}
-	if n.Class == PAUTO && !n.Addrtaken() {
+	if n.Class() == PAUTO && !n.Addrtaken() {
 		// Split this complex up into two separate variables.
 		c := e.namedAuto(n.Sym.Name+".real", t, n.Pos)
 		d := e.namedAuto(n.Sym.Name+".imag", t, n.Pos)
@@ -4902,7 +4906,7 @@ func (e *ssafn) SplitInt64(name ssa.LocalSlot) (ssa.LocalSlot, ssa.LocalSlot) {
 	} else {
 		t = types.Types[TUINT32]
 	}
-	if n.Class == PAUTO && !n.Addrtaken() {
+	if n.Class() == PAUTO && !n.Addrtaken() {
 		// Split this int64 up into two separate variables.
 		h := e.namedAuto(n.Sym.Name+".hi", t, n.Pos)
 		l := e.namedAuto(n.Sym.Name+".lo", types.Types[TUINT32], n.Pos)
@@ -4919,7 +4923,7 @@ func (e *ssafn) SplitStruct(name ssa.LocalSlot, i int) ssa.LocalSlot {
 	n := name.N.(*Node)
 	st := name.Type
 	ft := st.FieldType(i)
-	if n.Class == PAUTO && !n.Addrtaken() {
+	if n.Class() == PAUTO && !n.Addrtaken() {
 		// Note: the _ field may appear several times.  But
 		// have no fear, identically-named but distinct Autos are
 		// ok, albeit maybe confusing for a debugger.
@@ -4936,7 +4940,7 @@ func (e *ssafn) SplitArray(name ssa.LocalSlot) ssa.LocalSlot {
 		Fatalf("bad array size")
 	}
 	et := at.ElemType()
-	if n.Class == PAUTO && !n.Addrtaken() {
+	if n.Class() == PAUTO && !n.Addrtaken() {
 		x := e.namedAuto(n.Sym.Name+"[0]", et, n.Pos)
 		return ssa.LocalSlot{N: x, Type: et, Off: 0}
 	}
@@ -4960,15 +4964,14 @@ func (e *ssafn) namedAuto(name string, typ ssa.Type, pos src.XPos) ssa.GCNode {
 	n.Orig = n
 
 	s.Def = asTypesNode(n)
-	asNode(s.Def).SetUsed(true)
+	asNode(s.Def).Name.SetUsed(true)
 	n.Sym = s
 	n.Type = t
-	n.Class = PAUTO
+	n.SetClass(PAUTO)
 	n.SetAddable(true)
 	n.Esc = EscNever
 	n.Name.Curfn = e.curfn
 	e.curfn.Func.Dcl = append(e.curfn.Func.Dcl, n)
-
 	dowidth(t)
 	return n
 }

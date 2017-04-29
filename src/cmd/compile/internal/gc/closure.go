@@ -121,7 +121,7 @@ func typecheckclosure(func_ *Node, top int) {
 	}
 
 	for _, ln := range func_.Func.Dcl {
-		if ln.Op == ONAME && (ln.Class == PPARAM || ln.Class == PPARAMOUT) {
+		if ln.Op == ONAME && (ln.Class() == PPARAM || ln.Class() == PPARAMOUT) {
 			ln.Name.Decldepth = 1
 		}
 	}
@@ -173,7 +173,7 @@ func closurename(n *Node) *types.Sym {
 		gen = closurename_closgen
 	case n.Func.Outerfunc.Op == ODCLFUNC:
 		// The outermost closure inside of a named function.
-		outer = n.Func.Outerfunc.Func.Nname.Sym.Name
+		outer = n.Func.Outerfunc.funcname()
 
 		prefix = "func"
 
@@ -275,7 +275,7 @@ func capturevars(xfunc *Node) {
 		outermost := v.Name.Defn
 
 		// out parameters will be assigned to implicitly upon return.
-		if outer.Class != PPARAMOUT && !outermost.Addrtaken() && !outermost.Assigned() && v.Type.Width <= 128 {
+		if outer.Class() != PPARAMOUT && !outermost.Addrtaken() && !outermost.Assigned() && v.Type.Width <= 128 {
 			v.Name.SetByval(true)
 		} else {
 			outermost.SetAddrtaken(true)
@@ -319,7 +319,7 @@ func transformclosure(xfunc *Node) {
 		//		byref++
 		//	}(42)
 		// becomes:
-		//	func(a int, byval int, &byref *int) {
+		//	func(byval int, &byref *int, a int) {
 		//		println(byval)
 		//		(*&byref)++
 		//	}(byval, &byref, 42)
@@ -338,7 +338,7 @@ func transformclosure(xfunc *Node) {
 			fld.Funarg = types.FunargParams
 			if v.Name.Byval() {
 				// If v is captured by value, we merely downgrade it to PPARAM.
-				v.Class = PPARAM
+				v.SetClass(PPARAM)
 				fld.Nname = asTypesNode(v)
 			} else {
 				// If v of type T is captured by reference,
@@ -347,7 +347,7 @@ func transformclosure(xfunc *Node) {
 				// (accesses will implicitly deref &v).
 				addr := newname(lookup("&" + v.Sym.Name))
 				addr.Type = types.NewPtr(v.Type)
-				addr.Class = PPARAM
+				addr.SetClass(PPARAM)
 				v.Name.Param.Heapaddr = addr
 				fld.Nname = asTypesNode(addr)
 			}
@@ -389,7 +389,7 @@ func transformclosure(xfunc *Node) {
 
 			if v.Name.Byval() && v.Type.Width <= int64(2*Widthptr) {
 				// If it is a small variable captured by value, downgrade it to PAUTO.
-				v.Class = PAUTO
+				v.SetClass(PAUTO)
 				xfunc.Func.Dcl = append(xfunc.Func.Dcl, v)
 				body = append(body, nod(OAS, v, cv))
 			} else {
@@ -397,8 +397,8 @@ func transformclosure(xfunc *Node) {
 				// and initialize in entry prologue.
 				addr := newname(lookup("&" + v.Sym.Name))
 				addr.Type = types.NewPtr(v.Type)
-				addr.Class = PAUTO
-				addr.SetUsed(true)
+				addr.SetClass(PAUTO)
+				addr.Name.SetUsed(true)
 				addr.Name.Curfn = xfunc
 				xfunc.Func.Dcl = append(xfunc.Func.Dcl, addr)
 				v.Name.Param.Heapaddr = addr
@@ -579,7 +579,7 @@ func makepartialcall(fn *Node, t0 *types.Type, meth *types.Sym) *Node {
 	Curfn = xfunc
 	for i, t := range t0.Params().Fields().Slice() {
 		n := newname(lookupN("a", i))
-		n.Class = PPARAM
+		n.SetClass(PPARAM)
 		xfunc.Func.Dcl = append(xfunc.Func.Dcl, n)
 		callargs = append(callargs, n)
 		fld := nod(ODCLFIELD, n, typenod(t.Type))
@@ -596,7 +596,7 @@ func makepartialcall(fn *Node, t0 *types.Type, meth *types.Sym) *Node {
 	var retargs []*Node
 	for i, t := range t0.Results().Fields().Slice() {
 		n := newname(lookupN("r", i))
-		n.Class = PPARAMOUT
+		n.SetClass(PPARAMOUT)
 		xfunc.Func.Dcl = append(xfunc.Func.Dcl, n)
 		retargs = append(retargs, n)
 		l = append(l, nod(ODCLFIELD, n, typenod(t.Type)))
@@ -621,8 +621,8 @@ func makepartialcall(fn *Node, t0 *types.Type, meth *types.Sym) *Node {
 		cv.Xoffset = int64(cv.Type.Align)
 	}
 	ptr := newname(lookup("rcvr"))
-	ptr.Class = PAUTO
-	ptr.SetUsed(true)
+	ptr.SetClass(PAUTO)
+	ptr.Name.SetUsed(true)
 	ptr.Name.Curfn = xfunc
 	xfunc.Func.Dcl = append(xfunc.Func.Dcl, ptr)
 	var body []*Node

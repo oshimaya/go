@@ -447,11 +447,11 @@ func (n *Node) jconv(s fmt.State, flag FmtFlag) {
 		fmt.Fprintf(s, " x(%d)", n.Xoffset)
 	}
 
-	if n.Class != 0 {
-		if int(n.Class) < len(classnames) {
-			fmt.Fprintf(s, " class(%s)", classnames[n.Class])
+	if n.Class() != 0 {
+		if int(n.Class()) < len(classnames) {
+			fmt.Fprintf(s, " class(%s)", classnames[n.Class()])
 		} else {
-			fmt.Fprintf(s, " class(%d?)", n.Class)
+			fmt.Fprintf(s, " class(%d?)", n.Class())
 		}
 	}
 
@@ -489,8 +489,8 @@ func (n *Node) jconv(s fmt.State, flag FmtFlag) {
 		fmt.Fprintf(s, " ld(%d)", e.Loopdepth)
 	}
 
-	if c == 0 && n.Typecheck != 0 {
-		fmt.Fprintf(s, " tc(%d)", n.Typecheck)
+	if c == 0 && n.Typecheck() != 0 {
+		fmt.Fprintf(s, " tc(%d)", n.Typecheck())
 	}
 
 	if n.Isddd() {
@@ -501,8 +501,8 @@ func (n *Node) jconv(s fmt.State, flag FmtFlag) {
 		fmt.Fprintf(s, " implicit(%v)", n.Implicit())
 	}
 
-	if n.Embedded != 0 {
-		fmt.Fprintf(s, " embedded(%d)", n.Embedded)
+	if n.Embedded() {
+		fmt.Fprintf(s, " embedded")
 	}
 
 	if n.Addrtaken() {
@@ -520,11 +520,11 @@ func (n *Node) jconv(s fmt.State, flag FmtFlag) {
 	}
 
 	if c == 0 && n.HasCall() {
-		fmt.Fprintf(s, " hascall")
+		fmt.Fprint(s, " hascall")
 	}
 
-	if c == 0 && n.Used() {
-		fmt.Fprintf(s, " used(%v)", n.Used())
+	if c == 0 && n.Name != nil && n.Name.Used() {
+		fmt.Fprint(s, " used")
 	}
 }
 

@@ -144,7 +144,7 @@ func typecheck(n *Node, top int) *Node {
 
 	// Skip typecheck if already done.
 	// But re-typecheck ONAME/OTYPE/OLITERAL/OPACK node in case context has changed.
-	if n.Typecheck == 1 {
+	if n.Typecheck() == 1 {
 		switch n.Op {
 		case ONAME, OTYPE, OLITERAL, OPACK:
 			break
@@ -155,7 +155,7 @@ func typecheck(n *Node, top int) *Node {
 		}
 	}
 
-	if n.Typecheck == 2 {
+	if n.Typecheck() == 2 {
 		// Typechecking loop. Trying printing a meaningful message,
 		// otherwise a stack trace of typechecking.
 		switch n.Op {
@@ -195,12 +195,12 @@ func typecheck(n *Node, top int) *Node {
 		return n
 	}
 
-	n.Typecheck = 2
+	n.SetTypecheck(2)
 
 	typecheck_tcstack = append(typecheck_tcstack, n)
 	n = typecheck1(n, top)
 
-	n.Typecheck = 1
+	n.SetTypecheck(1)
 
 	last := len(typecheck_tcstack) - 1
 	typecheck_tcstack[last] = nil
@@ -323,7 +323,7 @@ OpSwitch:
 				return n
 			}
 
-			n.SetUsed(true)
+			n.Name.SetUsed(true)
 		}
 
 		ok |= Erv
@@ -633,7 +633,7 @@ OpSwitch:
 					if r.Type.IsInterface() == l.Type.IsInterface() || l.Type.Width >= 1<<16 {
 						l = nod(aop, l, nil)
 						l.Type = r.Type
-						l.Typecheck = 1
+						l.SetTypecheck(1)
 						n.Left = l
 					}
 
@@ -655,7 +655,7 @@ OpSwitch:
 					if r.Type.IsInterface() == l.Type.IsInterface() || r.Type.Width >= 1<<16 {
 						r = nod(aop, r, nil)
 						r.Type = l.Type
-						r.Typecheck = 1
+						r.SetTypecheck(1)
 						n.Right = r
 					}
 
@@ -886,7 +886,7 @@ OpSwitch:
 			n.Right = newname(n.Sym)
 			n.Type = methodfunc(n.Type, n.Left.Type)
 			n.Xoffset = 0
-			n.Class = PFUNC
+			n.SetClass(PFUNC)
 			ok = Erv
 			break OpSwitch
 		}
@@ -1621,6 +1621,7 @@ OpSwitch:
 					continue
 				}
 				as[i] = assignconv(n, t.Elem(), "append")
+				checkwidth(as[i].Type) // ensure width is calculated for backend
 			}
 		}
 
@@ -1691,6 +1692,7 @@ OpSwitch:
 	case OCONV:
 		ok |= Erv
 		saveorignode(n)
+		checkwidth(n.Type) // ensure width is calculated for backend
 		n.Left = typecheck(n.Left, Erv)
 		n.Left = convlit1(n.Left, n.Type, true, noReuse)
 		t := n.Left.Type
@@ -3149,10 +3151,10 @@ func typecheckcomplit(n *Node) *Node {
 	n.Orig = norig
 	if n.Type.IsPtr() {
 		n = nod(OPTRLIT, n, nil)
-		n.Typecheck = 1
+		n.SetTypecheck(1)
 		n.Type = n.Left.Type
 		n.Left.Type = t
-		n.Left.Typecheck = 1
+		n.Left.SetTypecheck(1)
 	}
 
 	n.Orig = norig
@@ -3177,7 +3179,7 @@ func islvalue(n *Node) bool {
 		return islvalue(n.Left)
 
 	case ONAME:
-		if n.Class == PFUNC {
+		if n.Class() == PFUNC {
 			return false
 		}
 		return true
@@ -3302,10 +3304,13 @@ func typecheckas(n *Node) {
 	// second half of dance.
 	// now that right is done, typecheck the left
 	// just to get it over with.  see dance above.
-	n.Typecheck = 1
+	n.SetTypecheck(1)
 
-	if n.Left.Typecheck == 0 {
+	if n.Left.Typecheck() == 0 {
 		n.Left = typecheck(n.Left, Erv|Easgn)
+	}
+	if !isblank(n.Left) {
+		checkwidth(n.Left.Type) // ensure width is calculated for backend
 	}
 }
 
@@ -3431,10 +3436,10 @@ mismatch:
 
 	// second half of dance
 out:
-	n.Typecheck = 1
+	n.SetTypecheck(1)
 	ls = n.List.Slice()
 	for i1, n1 := range ls {
-		if n1.Typecheck == 0 {
+		if n1.Typecheck() == 0 {
 			ls[i1] = typecheck(ls[i1], Erv|Easgn)
 		}
 	}
@@ -3443,7 +3448,7 @@ out:
 // type check function definition
 func typecheckfunc(n *Node) {
 	for _, ln := range n.Func.Dcl {
-		if ln.Op == ONAME && (ln.Class == PPARAM || ln.Class == PPARAMOUT) {
+		if ln.Op == ONAME && (ln.Class() == PPARAM || ln.Class() == PPARAMOUT) {
 			ln.Name.Decldepth = 1
 		}
 	}
@@ -3571,7 +3576,7 @@ func typecheckdeftype(n *Node) {
 	lno := lineno
 	setlineno(n)
 	n.Type.Sym = n.Sym
-	n.Typecheck = 1
+	n.SetTypecheck(1)
 	n.Name.Param.Ntype = typecheck(n.Name.Param.Ntype, Etype)
 	t := n.Name.Param.Ntype.Type
 	if t == nil {
@@ -3628,12 +3633,12 @@ func typecheckdef(n *Node) *Node {
 		return n
 	}
 
-	if n.Walkdef == 1 {
+	if n.Walkdef() == 1 {
 		return n
 	}
 
 	typecheckdefstack = append(typecheckdefstack, n)
-	if n.Walkdef == 2 {
+	if n.Walkdef() == 2 {
 		flusherrors()
 		fmt.Printf("typecheckdef loop:")
 		for i := len(typecheckdefstack) - 1; i >= 0; i-- {
@@ -3644,7 +3649,7 @@ func typecheckdef(n *Node) *Node {
 		Fatalf("typecheckdef loop")
 	}
 
-	n.Walkdef = 2
+	n.SetWalkdef(2)
 
 	if n.Type != nil || n.Sym == nil { // builtin or no name
 		goto ret
@@ -3766,7 +3771,7 @@ func typecheckdef(n *Node) *Node {
 		if Curfn != nil {
 			defercheckwidth()
 		}
-		n.Walkdef = 1
+		n.SetWalkdef(1)
 		n.Type = types.New(TFORW)
 		n.Type.Nod = asTypesNode(n)
 		n.Type.Sym = n.Sym // TODO(gri) this also happens in typecheckdeftype(n) - where should it happen?
@@ -3794,7 +3799,7 @@ ret:
 	typecheckdefstack = typecheckdefstack[:last]
 
 	lineno = lno
-	n.Walkdef = 1
+	n.SetWalkdef(1)
 	return n
 }
 

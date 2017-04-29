@@ -124,7 +124,7 @@ func caninl(fn *Node) {
 		return
 	}
 
-	if fn.Typecheck == 0 {
+	if fn.Typecheck() == 0 {
 		Fatalf("caninl on non-typechecked function %v", fn)
 	}
 
@@ -216,7 +216,7 @@ func (v *hairyVisitor) visit(n *Node) bool {
 		}
 		// Functions that call runtime.getcaller{pc,sp} can not be inlined
 		// because getcaller{pc,sp} expect a pointer to the caller's first argument.
-		if n.Left.Op == ONAME && n.Left.Class == PFUNC && isRuntimePkg(n.Left.Sym.Pkg) {
+		if n.Left.Op == ONAME && n.Left.Class() == PFUNC && isRuntimePkg(n.Left.Sym.Pkg) {
 			fn := n.Left.Sym.Name
 			if fn == "getcallerpc" || fn == "getcallersp" {
 				v.reason = "call to " + fn
@@ -478,7 +478,7 @@ func inlnode(n *Node) *Node {
 	if n.Op == OAS2FUNC && n.Rlist.First().Op == OINLCALL {
 		n.Rlist.Set(inlconv2list(n.Rlist.First()))
 		n.Op = OAS2
-		n.Typecheck = 0
+		n.SetTypecheck(0)
 		n = typecheck(n, Etop)
 	} else {
 		s := n.Rlist.Slice()
@@ -621,14 +621,14 @@ func mkinlcall1(n *Node, fn *Node, isddd bool) *Node {
 		if ln.Op != ONAME {
 			continue
 		}
-		if ln.Class == PPARAMOUT { // return values handled below.
+		if ln.Class() == PPARAMOUT { // return values handled below.
 			continue
 		}
 		if ln.isParamStackCopy() { // ignore the on-stack copy of a parameter that moved to the heap
 			continue
 		}
 		inlvars[ln] = typecheck(inlvar(ln), Erv)
-		if ln.Class == PPARAM || ln.Name.Param.Stackcopy != nil && ln.Name.Param.Stackcopy.Class == PPARAM {
+		if ln.Class() == PPARAM || ln.Name.Param.Stackcopy != nil && ln.Name.Param.Stackcopy.Class() == PPARAM {
 			ninit.Append(nod(ODCL, inlvars[ln], nil))
 		}
 	}
@@ -745,7 +745,6 @@ func mkinlcall1(n *Node, fn *Node, isddd bool) *Node {
 	body := subst.list(fn.Func.Inl)
 
 	lab := nod(OLABEL, retlabel, nil)
-	lab.SetUsed(true) // avoid 'not used' when function doesn't have return
 	body = append(body, lab)
 
 	typecheckslice(body, Etop)
@@ -757,7 +756,7 @@ func mkinlcall1(n *Node, fn *Node, isddd bool) *Node {
 	call.Nbody.Set(body)
 	call.Rlist.Set(retvars)
 	call.Type = n.Type
-	call.Typecheck = 1
+	call.SetTypecheck(1)
 
 	// Hide the args from setPos -- the parameters to the inlined
 	// call already have good line numbers that should be preserved.
@@ -816,8 +815,8 @@ func inlvar(var_ *Node) *Node {
 
 	n := newname(var_.Sym)
 	n.Type = var_.Type
-	n.Class = PAUTO
-	n.SetUsed(true)
+	n.SetClass(PAUTO)
+	n.Name.SetUsed(true)
 	n.Name.Curfn = Curfn // the calling function, not the called one
 	n.SetAddrtaken(var_.Addrtaken())
 
@@ -829,8 +828,8 @@ func inlvar(var_ *Node) *Node {
 func retvar(t *types.Field, i int) *Node {
 	n := newname(lookupN("~r", i))
 	n.Type = t.Type
-	n.Class = PAUTO
-	n.SetUsed(true)
+	n.SetClass(PAUTO)
+	n.Name.SetUsed(true)
 	n.Name.Curfn = Curfn // the calling function, not the called one
 	Curfn.Func.Dcl = append(Curfn.Func.Dcl, n)
 	return n
@@ -841,8 +840,8 @@ func retvar(t *types.Field, i int) *Node {
 func argvar(t *types.Type, i int) *Node {
 	n := newname(lookupN("~arg", i))
 	n.Type = t.Elem()
-	n.Class = PAUTO
-	n.SetUsed(true)
+	n.SetClass(PAUTO)
+	n.Name.SetUsed(true)
 	n.Name.Curfn = Curfn // the calling function, not the called one
 	Curfn.Func.Dcl = append(Curfn.Func.Dcl, n)
 	return n

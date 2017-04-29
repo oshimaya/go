@@ -9,11 +9,12 @@ import (
 	"fmt"
 )
 
-// static initialization
+// Static initialization ordering state.
+// These values are stored in two bits in Node.flags.
 const (
-	InitNotStarted = 0
-	InitDone       = 1
-	InitPending    = 2
+	InitNotStarted = iota
+	InitDone
+	InitPending
 )
 
 type InitEntry struct {
@@ -43,7 +44,7 @@ func init1(n *Node, out *[]*Node) {
 		init1(n1, out)
 	}
 
-	if n.Left != nil && n.Type != nil && n.Left.Op == OTYPE && n.Class == PFUNC {
+	if n.Left != nil && n.Type != nil && n.Left.Op == OTYPE && n.Class() == PFUNC {
 		// Methods called as Type.Method(receiver, ...).
 		// Definitions for method expressions are stored in type->nname.
 		init1(asNode(n.Type.FuncType().Nname), out)
@@ -52,10 +53,10 @@ func init1(n *Node, out *[]*Node) {
 	if n.Op != ONAME {
 		return
 	}
-	switch n.Class {
+	switch n.Class() {
 	case PEXTERN, PFUNC:
 	default:
-		if isblank(n) && n.Name.Curfn == nil && n.Name.Defn != nil && n.Name.Defn.Initorder == InitNotStarted {
+		if isblank(n) && n.Name.Curfn == nil && n.Name.Defn != nil && n.Name.Defn.Initorder() == InitNotStarted {
 			// blank names initialization is part of init() but not
 			// when they are inside a function.
 			break
@@ -63,10 +64,10 @@ func init1(n *Node, out *[]*Node) {
 		return
 	}
 
-	if n.Initorder == InitDone {
+	if n.Initorder() == InitDone {
 		return
 	}
-	if n.Initorder == InitPending {
+	if n.Initorder() == InitPending {
 		// Since mutually recursive sets of functions are allowed,
 		// we don't necessarily raise an error if n depends on a node
 		// which is already waiting for its dependencies to be visited.
@@ -76,7 +77,7 @@ func init1(n *Node, out *[]*Node) {
 		// Conversely, if there exists an initialization cycle involving
 		// a variable in the program, the tree walk will reach a cycle
 		// involving that variable.
-		if n.Class != PFUNC {
+		if n.Class() != PFUNC {
 			foundinitloop(n, n)
 		}
 
@@ -85,7 +86,7 @@ func init1(n *Node, out *[]*Node) {
 			if x == n {
 				break
 			}
-			if x.Class != PFUNC {
+			if x.Class() != PFUNC {
 				foundinitloop(n, x)
 			}
 		}
@@ -95,7 +96,7 @@ func init1(n *Node, out *[]*Node) {
 	}
 
 	// reached a new unvisited node.
-	n.Initorder = InitPending
+	n.SetInitorder(InitPending)
 	initlist = append(initlist, n)
 
 	// make sure that everything n depends on is initialized.
@@ -133,10 +134,10 @@ func init1(n *Node, out *[]*Node) {
 			}
 
 		case OAS2FUNC, OAS2MAPR, OAS2DOTTYPE, OAS2RECV:
-			if defn.Initorder == InitDone {
+			if defn.Initorder() == InitDone {
 				break
 			}
-			defn.Initorder = InitPending
+			defn.SetInitorder(InitPending)
 			for _, n2 := range defn.Rlist.Slice() {
 				init1(n2, out)
 			}
@@ -144,7 +145,7 @@ func init1(n *Node, out *[]*Node) {
 				Dump("nonstatic", defn)
 			}
 			*out = append(*out, defn)
-			defn.Initorder = InitDone
+			defn.SetInitorder(InitDone)
 		}
 	}
 
@@ -155,7 +156,7 @@ func init1(n *Node, out *[]*Node) {
 	initlist[last] = nil // allow GC
 	initlist = initlist[:last]
 
-	n.Initorder = InitDone
+	n.SetInitorder(InitDone)
 	return
 }
 
@@ -197,7 +198,7 @@ func foundinitloop(node, visited *Node) {
 
 // recurse over n, doing init1 everywhere.
 func init2(n *Node, out *[]*Node) {
-	if n == nil || n.Initorder == InitDone {
+	if n == nil || n.Initorder() == InitDone {
 		return
 	}
 
@@ -257,7 +258,7 @@ func initfix(l []*Node) []*Node {
 // compilation of top-level (static) assignments
 // into DATA statements if at all possible.
 func staticinit(n *Node, out *[]*Node) bool {
-	if n.Op != ONAME || n.Class != PEXTERN || n.Name.Defn == nil || n.Name.Defn.Op != OAS {
+	if n.Op != ONAME || n.Class() != PEXTERN || n.Name.Defn == nil || n.Name.Defn.Op != OAS {
 		Fatalf("staticinit")
 	}
 
@@ -273,11 +274,11 @@ func staticcopy(l *Node, r *Node, out *[]*Node) bool {
 	if r.Op != ONAME {
 		return false
 	}
-	if r.Class == PFUNC {
+	if r.Class() == PFUNC {
 		gdata(l, r, Widthptr)
 		return true
 	}
-	if r.Class != PEXTERN || r.Sym.Pkg != localpkg {
+	if r.Class() != PEXTERN || r.Sym.Pkg != localpkg {
 		return false
 	}
 	if r.Name.Defn == nil { // probably zeroed but perhaps supplied externally and of unknown value
@@ -417,7 +418,7 @@ func staticassign(l *Node, r *Node, out *[]*Node) bool {
 		//dump("not static ptrlit", r);
 
 	case OSTRARRAYBYTE:
-		if l.Class == PEXTERN && r.Left.Op == OLITERAL {
+		if l.Class() == PEXTERN && r.Left.Op == OLITERAL {
 			sval := r.Left.Val().U.(string)
 			slicebytes(l, sval, len(sval))
 			return true
@@ -591,7 +592,7 @@ func isliteral(n *Node) bool {
 }
 
 func (n *Node) isSimpleName() bool {
-	return n.Op == ONAME && n.Addable() && n.Class != PAUTOHEAP && n.Class != PEXTERN
+	return n.Op == ONAME && n.Addable() && n.Class() != PAUTOHEAP && n.Class() != PEXTERN
 }
 
 func litas(l *Node, r *Node, init *Nodes) {
@@ -787,7 +788,7 @@ func slicelit(ctxt initContext, n *Node, var_ *Node, init *Nodes) {
 		// copy static to slice
 		var_ = typecheck(var_, Erv|Easgn)
 		var nam Node
-		if !stataddr(&nam, var_) || nam.Class != PEXTERN {
+		if !stataddr(&nam, var_) || nam.Class() != PEXTERN {
 			Fatalf("slicelit: %v", var_)
 		}
 
@@ -1083,7 +1084,7 @@ func anylit(n *Node, var_ *Node, init *Nodes) {
 			r = typecheck(r, Erv)
 		} else {
 			r = nod(ONEW, nil, nil)
-			r.Typecheck = 1
+			r.SetTypecheck(1)
 			r.Type = t
 			r.Esc = n.Esc
 		}
@@ -1354,7 +1355,7 @@ func genAsStatic(as *Node) {
 	}
 
 	var nam Node
-	if !stataddr(&nam, as.Left) || (nam.Class != PEXTERN && as.Left != nblank) {
+	if !stataddr(&nam, as.Left) || (nam.Class() != PEXTERN && as.Left != nblank) {
 		Fatalf("genAsStatic: lhs %v", as.Left)
 	}
 

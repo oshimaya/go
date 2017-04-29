@@ -7,6 +7,7 @@ package ssa
 import (
 	"cmd/internal/obj"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -561,7 +562,7 @@ func logRule(s string) {
 	}
 }
 
-var ruleFile *os.File
+var ruleFile io.Writer
 
 func min(x, y int64) int64 {
 	if x < y {
@@ -622,4 +623,16 @@ func reciprocalExact32(c float32) bool {
 	default:
 		return true
 	}
+}
+
+// check if an immediate can be directly encoded into an ARM's instruction
+func isARMImmRot(v uint32) bool {
+	for i := 0; i < 16; i++ {
+		if v&^0xff == 0 {
+			return true
+		}
+		v = v<<2 | v>>30
+	}
+
+	return false
 }

@@ -342,8 +342,8 @@ func (p *noder) funcDecl(fun *syntax.FuncDecl) *Node {
 		lineno = Ctxt.PosTable.XPos(fun.Body.Rbrace)
 		f.Func.Endlineno = lineno
 	} else {
-		if pure_go || strings.HasPrefix(f.Func.Nname.Sym.Name, "init.") {
-			yyerrorl(f.Pos, "missing function body for %q", f.Func.Nname.Sym.Name)
+		if pure_go || strings.HasPrefix(f.funcname(), "init.") {
+			yyerrorl(f.Pos, "missing function body for %q", f.funcname())
 		}
 	}
 
@@ -449,7 +449,7 @@ func (p *noder) expr(expr syntax.Expr) *Node {
 		// parser.new_dotname
 		obj := p.expr(expr.X)
 		if obj.Op == OPACK {
-			obj.SetUsed(true)
+			obj.Name.SetUsed(true)
 			return oldname(restrictlookup(expr.Sel.Value, obj.Name.Pkg))
 		}
 		return p.setlineno(expr, nodSym(OXDOT, obj, p.name(expr.Sel)))
@@ -594,7 +594,7 @@ func (p *noder) interfaceType(expr *syntax.InterfaceType) *Node {
 		} else {
 			mname := p.newname(method.Name)
 			sig := p.typeExpr(method.Type)
-			sig.Left = fakethis()
+			sig.Left = fakeRecv()
 			n = p.nod(method, ODCLFIELD, mname, sig)
 			ifacedcl(n)
 		}
@@ -611,7 +611,7 @@ func (p *noder) packname(expr syntax.Expr) *types.Sym {
 	case *syntax.Name:
 		name := p.name(expr)
 		if n := oldname(name); n.Name != nil && n.Name.Pack != nil {
-			n.Name.Pack.SetUsed(true)
+			n.Name.Pack.Name.SetUsed(true)
 		}
 		return name
 	case *syntax.SelectorExpr:
@@ -621,7 +621,7 @@ func (p *noder) packname(expr syntax.Expr) *types.Sym {
 			yyerror("%v is not a package", name)
 			pkg = localpkg
 		} else {
-			asNode(name.Def).SetUsed(true)
+			asNode(name.Def).Name.SetUsed(true)
 			pkg = asNode(name.Def).Name.Pkg
 		}
 		return restrictlookup(expr.Sel.Value, pkg)
@@ -749,10 +749,10 @@ func (p *noder) stmt(stmt syntax.Stmt) *Node {
 		n.List.Set(results)
 		if n.List.Len() == 0 && Curfn != nil {
 			for _, ln := range Curfn.Func.Dcl {
-				if ln.Class == PPARAM {
+				if ln.Class() == PPARAM {
 					continue
 				}
-				if ln.Class != PPARAMOUT {
+				if ln.Class() != PPARAMOUT {
 					break
 				}
 				if asNode(ln.Sym.Def) != ln {
@@ -1125,7 +1125,7 @@ func (p *noder) pragma(pos src.Pos, text string) syntax.Pragma {
 func mkname(sym *types.Sym) *Node {
 	n := oldname(sym)
 	if n.Name != nil && n.Name.Pack != nil {
-		n.Name.Pack.SetUsed(true)
+		n.Name.Pack.Name.SetUsed(true)
 	}
 	return n
 }

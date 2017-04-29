@@ -313,6 +313,9 @@ func BuildModeInit() {
 		pkgsFilter = pkgsMain
 		ldBuildmode = "exe"
 	case "pie":
+		if cfg.BuildRace {
+			base.Fatalf("-buildmode=pie not supported when -race is enabled")
+		}
 		if gccgo {
 			base.Fatalf("-buildmode=pie not supported by gccgo")
 		} else {
@@ -1098,6 +1101,12 @@ func (b *Builder) Do(root *Action) {
 	if _, ok := cfg.OSArchSupportsCgo[cfg.Goos+"/"+cfg.Goarch]; !ok && cfg.BuildContext.Compiler == "gc" {
 		fmt.Fprintf(os.Stderr, "cmd/go: unsupported GOOS/GOARCH pair %s/%s\n", cfg.Goos, cfg.Goarch)
 		os.Exit(2)
+	}
+	for _, tag := range cfg.BuildContext.BuildTags {
+		if strings.Contains(tag, ",") {
+			fmt.Fprintf(os.Stderr, "cmd/go: -tags space-separated list contains comma\n")
+			os.Exit(2)
+		}
 	}
 
 	// Build list of all actions, assigning depth-first post-order priority.
@@ -2977,7 +2986,10 @@ func (b *Builder) gfortran(p *load.Package, out string, flags []string, ffile st
 func (b *Builder) ccompile(p *load.Package, outfile string, flags []string, file string, compiler []string) error {
 	file = mkAbs(p.Dir, file)
 	desc := p.ImportPath
-	output, err := b.runOut(p.Dir, desc, nil, compiler, flags, "-o", outfile, "-c", file)
+	if !filepath.IsAbs(outfile) {
+		outfile = filepath.Join(p.Dir, outfile)
+	}
+	output, err := b.runOut(filepath.Dir(file), desc, nil, compiler, flags, "-o", outfile, "-c", filepath.Base(file))
 	if len(output) > 0 {
 		// On FreeBSD 11, when we pass -g to clang 3.8 it
 		// invokes its internal assembler with -dwarf-version=2.

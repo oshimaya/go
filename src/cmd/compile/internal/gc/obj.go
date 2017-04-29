@@ -136,8 +136,12 @@ func dumpobj1(outfile string, mode int) {
 	externs := len(externdcl)
 
 	dumpglobls()
-	dumpptabs()
-	dumptypestructs()
+	addptabs()
+	addsignats(externdcl)
+	dumpsignats()
+	dumptabs()
+	dumpimportstrings()
+	dumpbasictypes()
 
 	// Dump extra globals.
 	tmp := externdcl
@@ -171,7 +175,7 @@ func dumpobj1(outfile string, mode int) {
 	bout.Close()
 }
 
-func dumpptabs() {
+func addptabs() {
 	if !Ctxt.Flag_dynlink || localpkg.Name != "main" {
 		return
 	}
@@ -190,7 +194,7 @@ func dumpptabs() {
 		if s.Pkg.Name != "main" {
 			continue
 		}
-		if n.Type.Etype == TFUNC && n.Class == PFUNC {
+		if n.Type.Etype == TFUNC && n.Class() == PFUNC {
 			// function
 			ptabs = append(ptabs, ptabEntry{s: s, t: asNode(s.Def).Type})
 		} else {
@@ -210,7 +214,7 @@ func dumpglobls() {
 		if n.Type == nil {
 			Fatalf("external %v nil type\n", n)
 		}
-		if n.Class == PFUNC {
+		if n.Class() == PFUNC {
 			continue
 		}
 		if n.Sym.Pkg != localpkg {
@@ -220,6 +224,9 @@ func dumpglobls() {
 		ggloblnod(n)
 	}
 
+	obj.SortSlice(funcsyms, func(i, j int) bool {
+		return funcsyms[i].LinksymName() < funcsyms[j].LinksymName()
+	})
 	for _, s := range funcsyms {
 		sf := s.Pkg.Lookup(funcsymname(s)).Linksym()
 		dsymptr(sf, 0, s.Linksym(), 0)
@@ -419,8 +426,8 @@ func gdata(nam *Node, nr *Node, wid int) {
 		s.WriteAddr(Ctxt, nam.Xoffset, wid, to.Sym.Linksym(), to.Xoffset)
 
 	case ONAME:
-		if nr.Class != PFUNC {
-			Fatalf("gdata NAME not PFUNC %d", nr.Class)
+		if nr.Class() != PFUNC {
+			Fatalf("gdata NAME not PFUNC %d", nr.Class())
 		}
 		s.WriteAddr(Ctxt, nam.Xoffset, wid, funcsym(nr.Sym).Linksym(), nr.Xoffset)
 

@@ -14,19 +14,16 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 )
 
 type itabEntry struct {
 	t, itype *types.Type
-	sym      *types.Sym
-
-	// symbol of the itab itself;
-	// filled in lazily after typecheck
-	lsym *obj.LSym
+	lsym     *obj.LSym // symbol of the itab itself
 
 	// symbols of each method in
 	// the itab, sorted by byte offset;
-	// filled in at the same time as lsym
+	// filled in by peekitabs
 	entries []*obj.LSym
 }
 
@@ -36,9 +33,13 @@ type ptabEntry struct {
 }
 
 // runtime interface and reflection data structures
-var signatlist = make(map[*types.Type]bool)
-var itabs []itabEntry
-var ptabs []ptabEntry
+var (
+	signatlistmu sync.Mutex // protects signatlist
+	signatlist   = make(map[*types.Type]bool)
+
+	itabs []itabEntry
+	ptabs []ptabEntry
+)
 
 type Sig struct {
 	name   string
@@ -905,8 +906,22 @@ func typesymname(t *types.Type) string {
 	return name
 }
 
+// Fake package for runtime type info (headers)
+// Don't access directly, use typeLookup below.
+var (
+	typepkgmu sync.Mutex // protects typepkg lookups
+	typepkg   = types.NewPkg("type", "type")
+)
+
+func typeLookup(name string) *types.Sym {
+	typepkgmu.Lock()
+	s := typepkg.Lookup(name)
+	typepkgmu.Unlock()
+	return s
+}
+
 func typesym(t *types.Type) *types.Sym {
-	return types.TypePkgLookup(typesymname(t))
+	return typeLookup(typesymname(t))
 }
 
 // tracksym returns the symbol for tracking use of field/method f, assumed
@@ -917,7 +932,7 @@ func tracksym(t *types.Type, f *types.Field) *types.Sym {
 
 func typesymprefix(prefix string, t *types.Type) *types.Sym {
 	p := prefix + "." + t.ShortString()
-	s := types.TypePkgLookup(p)
+	s := typeLookup(p)
 
 	//print("algsym: %s -> %+S\n", p, s);
 
@@ -929,7 +944,9 @@ func typenamesym(t *types.Type) *types.Sym {
 		Fatalf("typenamesym %v", t)
 	}
 	s := typesym(t)
+	signatlistmu.Lock()
 	addsignat(t)
+	signatlistmu.Unlock()
 	return s
 }
 
@@ -938,15 +955,15 @@ func typename(t *types.Type) *Node {
 	if s.Def == nil {
 		n := newnamel(src.NoXPos, s)
 		n.Type = types.Types[TUINT8]
-		n.Class = PEXTERN
-		n.Typecheck = 1
+		n.SetClass(PEXTERN)
+		n.SetTypecheck(1)
 		s.Def = asTypesNode(n)
 	}
 
 	n := nod(OADDR, asNode(s.Def), nil)
 	n.Type = types.NewPtr(asNode(s.Def).Type)
 	n.SetAddable(true)
-	n.Typecheck = 1
+	n.SetTypecheck(1)
 	return n
 }
 
@@ -958,17 +975,16 @@ func itabname(t, itype *types.Type) *Node {
 	if s.Def == nil {
 		n := newname(s)
 		n.Type = types.Types[TUINT8]
-		n.Class = PEXTERN
-		n.Typecheck = 1
+		n.SetClass(PEXTERN)
+		n.SetTypecheck(1)
 		s.Def = asTypesNode(n)
-
-		itabs = append(itabs, itabEntry{t: t, itype: itype, sym: s})
+		itabs = append(itabs, itabEntry{t: t, itype: itype, lsym: s.Linksym()})
 	}
 
 	n := nod(OADDR, asNode(s.Def), nil)
 	n.Type = types.NewPtr(asNode(s.Def).Type)
 	n.SetAddable(true)
-	n.Typecheck = 1
+	n.SetTypecheck(1)
 	return n
 }
 
@@ -1185,7 +1201,7 @@ ok:
 		}
 		ot = dgopkgpath(lsym, ot, tpkg)
 
-		ot = dsymptr(lsym, ot, lsym, ot+Widthptr+2*Widthptr+uncommonSize(t))
+		ot = dsymptr(lsym, ot, lsym, ot+3*Widthptr+uncommonSize(t))
 		ot = duintptr(lsym, ot, uint64(n))
 		ot = duintptr(lsym, ot, uint64(n))
 		dataAdd := imethodSize() * n
@@ -1277,7 +1293,7 @@ ok:
 			}
 		}
 		ot = dgopkgpath(lsym, ot, pkg)
-		ot = dsymptr(lsym, ot, lsym, ot+Widthptr+2*Widthptr+uncommonSize(t))
+		ot = dsymptr(lsym, ot, lsym, ot+3*Widthptr+uncommonSize(t))
 		ot = duintptr(lsym, ot, uint64(n))
 		ot = duintptr(lsym, ot, uint64(n))
 
@@ -1333,7 +1349,6 @@ func peekitabs() {
 		if len(methods) == 0 {
 			continue
 		}
-		tab.lsym = tab.sym.Linksym()
 		tab.entries = methods
 	}
 }
@@ -1400,14 +1415,16 @@ func addsignat(t *types.Type) {
 	signatlist[formalType(t)] = true
 }
 
-func dumptypestructs() {
-	// copy types from externdcl list to signatlist
-	for _, n := range externdcl {
+func addsignats(dcls []*Node) {
+	// copy types from dcl list to signatlist
+	for _, n := range dcls {
 		if n.Op == OTYPE {
 			addsignat(n.Type)
 		}
 	}
+}
 
+func dumpsignats() {
 	// Process signatlist. Use a loop, as dtypesym adds
 	// entries to signatlist while it is being processed.
 	signats := make([]typeAndStr, len(signatlist))
@@ -1427,7 +1444,9 @@ func dumptypestructs() {
 			}
 		}
 	}
+}
 
+func dumptabs() {
 	// process itabs
 	for _, i := range itabs {
 		// dump empty itab symbol into i.sym
@@ -1441,19 +1460,18 @@ func dumptypestructs() {
 		//   unused [2]byte
 		//   fun    [1]uintptr // variable sized
 		// }
-		ilsym := i.sym.Linksym()
-		o := dsymptr(ilsym, 0, dtypesym(i.itype).Linksym(), 0)
-		o = dsymptr(ilsym, o, dtypesym(i.t).Linksym(), 0)
+		o := dsymptr(i.lsym, 0, dtypesym(i.itype).Linksym(), 0)
+		o = dsymptr(i.lsym, o, dtypesym(i.t).Linksym(), 0)
 		o += Widthptr                          // skip link field
-		o = duint32(ilsym, o, typehash(i.t))   // copy of type hash
+		o = duint32(i.lsym, o, typehash(i.t))  // copy of type hash
 		o += 4                                 // skip bad/inhash/unused fields
 		o += len(imethods(i.itype)) * Widthptr // skip fun method pointers
 		// at runtime the itab will contain pointers to types, other itabs and
 		// method functions. None are allocated on heap, so we can use obj.NOPTR.
-		ggloblsym(ilsym, int32(o), int16(obj.DUPOK|obj.NOPTR))
+		ggloblsym(i.lsym, int32(o), int16(obj.DUPOK|obj.NOPTR))
 
 		ilink := itablinkpkg.Lookup(i.t.ShortString() + "," + i.itype.ShortString()).Linksym()
-		dsymptr(ilink, 0, ilsym, 0)
+		dsymptr(ilink, 0, i.lsym, 0)
 		ggloblsym(ilink, int32(Widthptr), int16(obj.DUPOK|obj.RODATA))
 	}
 
@@ -1481,18 +1499,22 @@ func dumptypestructs() {
 		}
 		ggloblsym(s, int32(ot), int16(obj.RODATA))
 	}
+}
 
+func dumpimportstrings() {
 	// generate import strings for imported packages
 	for _, p := range types.ImportedPkgList() {
 		dimportpath(p)
 	}
+}
 
+func dumpbasictypes() {
 	// do basic types if compiling package runtime.
 	// they have to be in at least one package,
 	// and runtime is always loaded implicitly,
 	// so this is as good as any.
 	// another possible choice would be package main,
-	// but using runtime means fewer copies in .6 files.
+	// but using runtime means fewer copies in object files.
 	if myimportpath == "runtime" {
 		for i := types.EType(1); i <= TBOOL; i++ {
 			dtypesym(types.NewPtr(types.Types[i]))
@@ -1542,7 +1564,7 @@ func dalgsym(t *types.Type) *obj.LSym {
 		// we use one algorithm table for all AMEM types of a given size
 		p := fmt.Sprintf(".alg%d", t.Width)
 
-		s := types.TypePkgLookup(p)
+		s := typeLookup(p)
 		lsym = s.Linksym()
 		if s.AlgGen() {
 			return lsym
@@ -1557,7 +1579,7 @@ func dalgsym(t *types.Type) *obj.LSym {
 		// make hash closure
 		p = fmt.Sprintf(".hashfunc%d", t.Width)
 
-		hashfunc = types.TypePkgLookup(p).Linksym()
+		hashfunc = typeLookup(p).Linksym()
 
 		ot := 0
 		ot = dsymptr(hashfunc, ot, memhashvarlen, 0)
@@ -1567,7 +1589,7 @@ func dalgsym(t *types.Type) *obj.LSym {
 		// make equality closure
 		p = fmt.Sprintf(".eqfunc%d", t.Width)
 
-		eqfunc = types.TypePkgLookup(p).Linksym()
+		eqfunc = typeLookup(p).Linksym()
 
 		ot = 0
 		ot = dsymptr(eqfunc, ot, memequalvarlen, 0)
@@ -1812,13 +1834,13 @@ func zeroaddr(size int64) *Node {
 	if s.Def == nil {
 		x := newname(s)
 		x.Type = types.Types[TUINT8]
-		x.Class = PEXTERN
-		x.Typecheck = 1
+		x.SetClass(PEXTERN)
+		x.SetTypecheck(1)
 		s.Def = asTypesNode(x)
 	}
 	z := nod(OADDR, asNode(s.Def), nil)
 	z.Type = types.NewPtr(types.Types[TUINT8])
 	z.SetAddable(true)
-	z.Typecheck = 1
+	z.SetTypecheck(1)
 	return z
 }

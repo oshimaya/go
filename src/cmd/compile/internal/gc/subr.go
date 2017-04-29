@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -27,7 +28,10 @@ type Error struct {
 
 var errors []Error
 
-var largeStackFrames []src.XPos // positions of functions whose stack frames are too large (rare)
+var (
+	largeStackFramesMu sync.Mutex // protects largeStackFrames
+	largeStackFrames   []src.XPos // positions of functions whose stack frames are too large (rare)
+)
 
 func errorexit() {
 	flusherrors()
@@ -965,7 +969,7 @@ func assignconvfn(n *Node, t *types.Type, context func() string) *Node {
 		if n.Op == ONAME || n.Op == OLITERAL {
 			r := nod(OCONVNOP, n, nil)
 			r.Type = types.Types[TBOOL]
-			r.Typecheck = 1
+			r.SetTypecheck(1)
 			r.SetImplicit(true)
 			n = r
 		}
@@ -986,7 +990,7 @@ func assignconvfn(n *Node, t *types.Type, context func() string) *Node {
 
 	r := nod(op, n, nil)
 	r.Type = t
-	r.Typecheck = 1
+	r.SetTypecheck(1)
 	r.SetImplicit(true)
 	r.Orig = n.Orig
 	return r
@@ -1799,7 +1803,7 @@ func hashmem(t *types.Type) *Node {
 	sym := Runtimepkg.Lookup("memhash")
 
 	n := newname(sym)
-	n.Class = PFUNC
+	n.SetClass(PFUNC)
 	tfn := nod(OTFUNC, nil, nil)
 	tfn.List.Append(anonfield(types.NewPtr(t)))
 	tfn.List.Append(anonfield(types.Types[TUINTPTR]))
@@ -1965,7 +1969,7 @@ func addinit(n *Node, init []*Node) *Node {
 		// Introduce OCONVNOP to hold init list.
 		n = nod(OCONVNOP, n, nil)
 		n.Type = n.Left.Type
-		n.Typecheck = 1
+		n.SetTypecheck(1)
 	}
 
 	n.Ninit.Prepend(init...)
@@ -2029,7 +2033,7 @@ func checknil(x *Node, init *Nodes) {
 	}
 
 	n := nod(OCHECKNIL, x, nil)
-	n.Typecheck = 1
+	n.SetTypecheck(1)
 	init.Append(n)
 }
 
@@ -2061,7 +2065,7 @@ func isdirectiface(t *types.Type) bool {
 func itabType(itab *Node) *Node {
 	typ := nodSym(ODOTPTR, itab, nil)
 	typ.Type = types.NewPtr(types.Types[TUINT8])
-	typ.Typecheck = 1
+	typ.SetTypecheck(1)
 	typ.Xoffset = int64(Widthptr) // offset of _type in runtime.itab
 	typ.SetBounded(true)          // guaranteed not to fault
 	return typ
@@ -2074,14 +2078,14 @@ func ifaceData(n *Node, t *types.Type) *Node {
 	ptr := nodSym(OIDATA, n, nil)
 	if isdirectiface(t) {
 		ptr.Type = t
-		ptr.Typecheck = 1
+		ptr.SetTypecheck(1)
 		return ptr
 	}
 	ptr.Type = types.NewPtr(t)
 	ptr.SetBounded(true)
-	ptr.Typecheck = 1
+	ptr.SetTypecheck(1)
 	ind := nod(OIND, ptr, nil)
 	ind.Type = t
-	ind.Typecheck = 1
+	ind.SetTypecheck(1)
 	return ind
 }

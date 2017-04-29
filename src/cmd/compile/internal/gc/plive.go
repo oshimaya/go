@@ -117,6 +117,7 @@ type Liveness struct {
 	fn         *Node
 	f          *ssa.Func
 	vars       []*Node
+	idx        map[*Node]int32
 	stkptrsize int64
 
 	be []BlockEffects
@@ -145,34 +146,23 @@ type progeffectscache struct {
 // nor do we care about empty structs (handled by the pointer check),
 // nor do we care about the fake PAUTOHEAP variables.
 func livenessShouldTrack(n *Node) bool {
-	return n.Op == ONAME && (n.Class == PAUTO || n.Class == PPARAM || n.Class == PPARAMOUT) && types.Haspointers(n.Type)
+	return n.Op == ONAME && (n.Class() == PAUTO || n.Class() == PPARAM || n.Class() == PPARAMOUT) && types.Haspointers(n.Type)
 }
 
-// getvariables returns the list of on-stack variables that we need to track.
-func getvariables(fn *Node) []*Node {
+// getvariables returns the list of on-stack variables that we need to track
+// and a map for looking up indices by *Node.
+func getvariables(fn *Node) ([]*Node, map[*Node]int32) {
 	var vars []*Node
 	for _, n := range fn.Func.Dcl {
-		if n.Op == ONAME {
-			// The Node.opt field is available for use by optimization passes.
-			// We use it to hold the index of the node in the variables array
-			// (nil means the Node is not in the variables array).
-			// The Node.curfn field is supposed to be set to the current function
-			// already, but for some compiler-introduced names it seems not to be,
-			// so fix that here.
-			// Later, when we want to find the index of a node in the variables list,
-			// we will check that n.Curfn == lv.fn and n.Opt() != nil. Then n.Opt().(int32)
-			// is the index in the variables list.
-			n.SetOpt(nil)
-			n.Name.Curfn = fn
-		}
-
 		if livenessShouldTrack(n) {
-			n.SetOpt(int32(len(vars)))
 			vars = append(vars, n)
 		}
 	}
-
-	return vars
+	idx := make(map[*Node]int32, len(vars))
+	for i, n := range vars {
+		idx[n] = int32(i)
+	}
+	return vars, idx
 }
 
 func (lv *Liveness) initcache() {
@@ -183,7 +173,7 @@ func (lv *Liveness) initcache() {
 	lv.cache.initialized = true
 
 	for i, node := range lv.vars {
-		switch node.Class {
+		switch node.Class() {
 		case PPARAM:
 			// A return instruction with a p.to is a tail return, which brings
 			// the stack pointer back up (if it ever went down) and then jumps
@@ -238,9 +228,9 @@ const (
 // valueEffects returns the index of a variable in lv.vars and the
 // liveness effects v has on that variable.
 // If v does not affect any tracked variables, it returns -1, 0.
-func (lv *Liveness) valueEffects(v *ssa.Value) (pos int32, effect liveEffect) {
+func (lv *Liveness) valueEffects(v *ssa.Value) (int32, liveEffect) {
 	n, e := affectedNode(v)
-	if e == 0 {
+	if e == 0 || n == nil || n.Op != ONAME { // cheapest checks first
 		return -1, 0
 	}
 
@@ -250,16 +240,12 @@ func (lv *Liveness) valueEffects(v *ssa.Value) (pos int32, effect liveEffect) {
 	// variable" ICEs (issue 19632).
 	switch v.Op {
 	case ssa.OpVarDef, ssa.OpVarKill, ssa.OpVarLive, ssa.OpKeepAlive:
-		if !n.Used() {
+		if !n.Name.Used() {
 			return -1, 0
 		}
 	}
 
-	pos = lv.liveIndex(n)
-	if pos < 0 {
-		return -1, 0
-	}
-
+	var effect liveEffect
 	if n.Addrtaken() {
 		if v.Op != ssa.OpVarKill {
 			effect |= avarinit
@@ -283,7 +269,14 @@ func (lv *Liveness) valueEffects(v *ssa.Value) (pos int32, effect liveEffect) {
 		}
 	}
 
-	return
+	if effect == 0 {
+		return -1, 0
+	}
+
+	if pos, ok := lv.idx[n]; ok {
+		return pos, effect
+	}
+	return -1, 0
 }
 
 // affectedNode returns the *Node affected by v
@@ -326,32 +319,15 @@ func affectedNode(v *ssa.Value) (*Node, ssa.SymEffect) {
 	return n, e
 }
 
-// liveIndex returns the index of n in the set of tracked vars.
-// If n is not a tracked var, liveIndex returns -1.
-// If n is not a tracked var but should be tracked, liveIndex crashes.
-func (lv *Liveness) liveIndex(n *Node) int32 {
-	if n == nil || n.Name.Curfn != lv.fn || !livenessShouldTrack(n) {
-		return -1
-	}
-
-	pos, ok := n.Opt().(int32) // index in vars
-	if !ok {
-		Fatalf("lost track of variable in liveness: %v (%p, %p)", n, n, n.Orig)
-	}
-	if pos >= int32(len(lv.vars)) || lv.vars[pos] != n {
-		Fatalf("bad bookkeeping in liveness: %v (%p, %p)", n, n, n.Orig)
-	}
-	return pos
-}
-
 // Constructs a new liveness structure used to hold the global state of the
 // liveness computation. The cfg argument is a slice of *BasicBlocks and the
 // vars argument is a slice of *Nodes.
-func newliveness(fn *Node, f *ssa.Func, vars []*Node, stkptrsize int64) *Liveness {
+func newliveness(fn *Node, f *ssa.Func, vars []*Node, idx map[*Node]int32, stkptrsize int64) *Liveness {
 	lv := &Liveness{
 		fn:         fn,
 		f:          f,
 		vars:       vars,
+		idx:        idx,
 		stkptrsize: stkptrsize,
 		be:         make([]BlockEffects, f.NumBlocks()),
 	}
@@ -487,7 +463,7 @@ func onebitlivepointermap(lv *Liveness, liveout bvec, vars []*Node, args bvec, l
 			break
 		}
 		node := vars[i]
-		switch node.Class {
+		switch node.Class() {
 		case PAUTO:
 			xoffset = node.Xoffset + lv.stkptrsize
 			onebitwalktype1(node.Type, &xoffset, locals)
@@ -658,7 +634,7 @@ func livenessepilogue(lv *Liveness) {
 	// don't need to keep the stack copy live?
 	if lv.fn.Func.HasDefer() {
 		for i, n := range lv.vars {
-			if n.Class == PPARAMOUT {
+			if n.Class() == PPARAMOUT {
 				if n.IsOutputParamHeapAddr() {
 					// Just to be paranoid.  Heap addresses are PAUTOs.
 					Fatalf("variable %v both output param and heap output param", n)
@@ -792,7 +768,7 @@ func livenessepilogue(lv *Liveness) {
 	// the only things that can possibly be live are the
 	// input parameters.
 	for j, n := range lv.vars {
-		if n.Class != PPARAM && lv.livevars[0].Get(int32(j)) {
+		if n.Class() != PPARAM && lv.livevars[0].Get(int32(j)) {
 			Fatalf("internal error: %v %L recorded as live on entry", lv.fn.Func.Nname, n)
 		}
 	}
@@ -819,13 +795,13 @@ func (lv *Liveness) clobber() {
 		// Clobber only functions where the hash of the function name matches a pattern.
 		// Useful for binary searching for a miscompiled function.
 		hstr := ""
-		for _, b := range sha1.Sum([]byte(lv.fn.Func.Nname.Sym.Name)) {
+		for _, b := range sha1.Sum([]byte(lv.fn.funcname())) {
 			hstr += fmt.Sprintf("%08b", b)
 		}
 		if !strings.HasSuffix(hstr, h) {
 			return
 		}
-		fmt.Printf("\t\t\tCLOBBERDEAD %s\n", lv.fn.Func.Nname.Sym.Name)
+		fmt.Printf("\t\t\tCLOBBERDEAD %s\n", lv.fn.funcname())
 	}
 	if lv.f.Name == "forkAndExecInChild" {
 		// forkAndExecInChild calls vfork (on linux/amd64, anyway).
@@ -949,7 +925,7 @@ func clobberWalk(b *ssa.Block, v *Node, offset int64, t *types.Type) {
 // The clobber instruction is added at the end of b.
 func clobberPtr(b *ssa.Block, v *Node, offset int64) {
 	var aux interface{}
-	if v.Class == PAUTO {
+	if v.Class() == PAUTO {
 		aux = &ssa.AutoSymbol{Node: v}
 	} else {
 		aux = &ssa.ArgSymbol{Node: v}
@@ -1087,7 +1063,7 @@ Outer:
 }
 
 func (lv *Liveness) showlive(v *ssa.Value, live bvec) {
-	if debuglive == 0 || lv.fn.Func.Nname.Sym.Name == "init" || strings.HasPrefix(lv.fn.Func.Nname.Sym.Name, ".") {
+	if debuglive == 0 || lv.fn.funcname() == "init" || strings.HasPrefix(lv.fn.funcname(), ".") {
 		return
 	}
 	if live.IsEmpty() {
@@ -1101,7 +1077,7 @@ func (lv *Liveness) showlive(v *ssa.Value, live bvec) {
 
 	s := "live at "
 	if v == nil {
-		s += fmt.Sprintf("entry to %s:", lv.fn.Func.Nname.Sym.Name)
+		s += fmt.Sprintf("entry to %s:", lv.fn.funcname())
 	} else if sym, ok := v.Aux.(*obj.LSym); ok {
 		fn := sym.Name
 		if pos := strings.Index(fn, "."); pos >= 0 {
@@ -1163,7 +1139,7 @@ func (lv *Liveness) printeffect(printed bool, name string, pos int32, x bool) bo
 // This format synthesizes the information used during the multiple passes
 // into a single presentation.
 func livenessprintdebug(lv *Liveness) {
-	fmt.Printf("liveness: %s\n", lv.fn.Func.Nname.Sym.Name)
+	fmt.Printf("liveness: %s\n", lv.fn.funcname())
 
 	pcdata := 0
 	for i, b := range lv.f.Blocks {
@@ -1308,8 +1284,8 @@ func livenessemit(lv *Liveness, argssym, livesym *obj.LSym) {
 // Returns a map from GC safe points to their corresponding stack map index.
 func liveness(e *ssafn, f *ssa.Func) map[*ssa.Value]int {
 	// Construct the global liveness state.
-	vars := getvariables(e.curfn)
-	lv := newliveness(e.curfn, f, vars, e.stkptrsize)
+	vars, idx := getvariables(e.curfn)
+	lv := newliveness(e.curfn, f, vars, idx, e.stkptrsize)
 
 	// Run the dataflow framework.
 	livenessprologue(lv)

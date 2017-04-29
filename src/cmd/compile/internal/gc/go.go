@@ -10,6 +10,7 @@ import (
 	"cmd/internal/bio"
 	"cmd/internal/obj"
 	"cmd/internal/src"
+	"sync"
 )
 
 const (
@@ -31,16 +32,24 @@ func isRuntimePkg(p *types.Pkg) bool {
 type Class uint8
 
 const (
-	Pxxx      Class = iota
-	PEXTERN         // global variable
-	PAUTO           // local variables
-	PAUTOHEAP       // local variable or parameter moved to heap
-	PPARAM          // input arguments
-	PPARAMOUT       // output results
-	PFUNC           // global function
+	Pxxx      Class = iota // no class; used during ssa conversion to indicate pseudo-variables
+	PEXTERN                // global variable
+	PAUTO                  // local variables
+	PAUTOHEAP              // local variable or parameter moved to heap
+	PPARAM                 // input arguments
+	PPARAMOUT              // output results
+	PFUNC                  // global function
 
 	PDISCARD // discard during parse of duplicate import
+	// Careful: Class is stored in three bits in Node.flags.
+	// Adding a new Class will overflow that.
 )
+
+func init() {
+	if PDISCARD != 7 {
+		panic("PDISCARD changed; does all Class values still fit in three bits?")
+	}
+}
 
 // note this is the runtime representation
 // of the compilers arrays.
@@ -169,7 +178,10 @@ var exportlist []*Node
 
 var importlist []*Node // imported functions and methods with inlinable bodies
 
-var funcsyms []*types.Sym
+var (
+	funcsymsmu sync.Mutex // protects funcsyms and associated package lookups (see func funcsym)
+	funcsyms   []*types.Sym
+)
 
 var dclcontext Class // PEXTERN/PAUTO
 
