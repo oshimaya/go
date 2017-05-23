@@ -31,6 +31,7 @@ func isRuntimePkg(p *types.Pkg) bool {
 // called declaration contexts.
 type Class uint8
 
+//go:generate stringer -type=Class
 const (
 	Pxxx      Class = iota // no class; used during ssa conversion to indicate pseudo-variables
 	PEXTERN                // global variable
@@ -214,6 +215,9 @@ var flagDWARF bool
 // Whether we are adding any sort of code instrumentation, such as
 // when the race detector is enabled.
 var instrumenting bool
+
+// Whether we are tracking lexical scopes for DWARF.
+var trackScopes bool
 
 var debuglive int
 

@@ -429,6 +429,8 @@ func TestDirectorySymbolicLink(t *testing.T) {
 func TestNetworkSymbolicLink(t *testing.T) {
 	testenv.MustHaveSymlink(t)
 
+	const _NERR_ServerNotStarted = syscall.Errno(2114)
+
 	dir, err := ioutil.TempDir("", "TestNetworkSymbolicLink")
 	if err != nil {
 		t.Fatal(err)
@@ -478,6 +480,9 @@ func TestNetworkSymbolicLink(t *testing.T) {
 	if err != nil {
 		if err == syscall.ERROR_ACCESS_DENIED {
 			t.Skip("you don't have enough privileges to add network share")
+		}
+		if err == _NERR_ServerNotStarted {
+			t.Skip(_NERR_ServerNotStarted.Error())
 		}
 		t.Fatal(err)
 	}
@@ -662,8 +667,8 @@ func TestStatSymlinkLoop(t *testing.T) {
 	defer os.Remove("x")
 
 	_, err = os.Stat("x")
-	if perr, ok := err.(*os.PathError); !ok || perr.Err != syscall.ELOOP {
-		t.Errorf("expected *PathError with ELOOP, got %T: %v\n", err, err)
+	if _, ok := err.(*os.PathError); !ok {
+		t.Errorf("expected *PathError, got %T: %v\n", err, err)
 	}
 }
 

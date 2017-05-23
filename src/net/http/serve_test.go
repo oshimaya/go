@@ -3702,8 +3702,8 @@ func testTransportAndServerSharedBodyRace(t *testing.T, h2 bool) {
 
 // Test that a hanging Request.Body.Read from another goroutine can't
 // cause the Handler goroutine's Request.Body.Close to block.
+// See issue 7121.
 func TestRequestBodyCloseDoesntBlock(t *testing.T) {
-	t.Skipf("Skipping known issue; see golang.org/issue/7121")
 	if testing.Short() {
 		t.Skip("skipping in -short mode")
 	}
@@ -5536,6 +5536,48 @@ func TestServerValidatesMethod(t *testing.T) {
 		}
 		if res.StatusCode != tt.want {
 			t.Errorf("For %s, Status = %d; want %d", tt.method, res.StatusCode, tt.want)
+		}
+	}
+}
+
+// Test that the special cased "/route" redirect
+// implicitly created by a registered "/route/"
+// properly sets the query string in the redirect URL.
+// See Issue 17841.
+func TestServeWithSlashRedirectKeepsQueryString(t *testing.T) {
+	setParallel(t)
+	defer afterTest(t)
+
+	writeBackQuery := func(w ResponseWriter, r *Request) {
+		fmt.Fprintf(w, "%s", r.URL.RawQuery)
+	}
+
+	mux := NewServeMux()
+	mux.HandleFunc("/testOne", writeBackQuery)
+	mux.HandleFunc("/testTwo/", writeBackQuery)
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	tests := [...]struct {
+		path string
+		want string
+	}{
+		0: {"/testOne?this=that", "this=that"},
+		1: {"/testTwo?foo=bar", "foo=bar"},
+		2: {"/testTwo?a=1&b=2&a=3", "a=1&b=2&a=3"},
+		3: {"/testTwo?", ""},
+	}
+
+	for i, tt := range tests {
+		res, err := ts.Client().Get(ts.URL + tt.path)
+		if err != nil {
+			continue
+		}
+		slurp, _ := ioutil.ReadAll(res.Body)
+		res.Body.Close()
+		if got, want := string(slurp), tt.want; got != want {
+			t.Errorf("#%d: got = %q; want = %q", i, got, want)
 		}
 	}
 }

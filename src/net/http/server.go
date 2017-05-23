@@ -623,7 +623,6 @@ type connReader struct {
 	mu      sync.Mutex // guards following
 	hasByte bool
 	byteBuf [1]byte
-	bgErr   error // non-nil means error happened on background read
 	cond    *sync.Cond
 	inRead  bool
 	aborted bool  // set true before conn.rwc deadline is set to past
@@ -731,11 +730,6 @@ func (cr *connReader) Read(p []byte) (n int, err error) {
 	if cr.hitReadLimit() {
 		cr.unlock()
 		return 0, io.EOF
-	}
-	if cr.bgErr != nil {
-		err = cr.bgErr
-		cr.unlock()
-		return 0, err
 	}
 	if len(p) == 0 {
 		cr.unlock()
@@ -1969,6 +1963,7 @@ func StripPrefix(prefix string, h Handler) Handler {
 // The provided code should be in the 3xx range and is usually
 // StatusMovedPermanently, StatusFound or StatusSeeOther.
 func Redirect(w ResponseWriter, r *Request, urlStr string, code int) {
+	queryAlreadySet := false
 	if u, err := url.Parse(urlStr); err == nil {
 		// If url was relative, make absolute by
 		// combining with request path.
@@ -2011,7 +2006,15 @@ func Redirect(w ResponseWriter, r *Request, urlStr string, code int) {
 				urlStr += "/"
 			}
 			urlStr += query
+			queryAlreadySet = len(query) != 0
 		}
+	}
+
+	// We should make sure not to lose the query string of
+	// the original request when doing a redirect, if not already set.
+	// See Issue 17841.
+	if !queryAlreadySet && len(r.URL.RawQuery) != 0 {
+		urlStr += "?" + r.URL.RawQuery
 	}
 
 	w.Header().Set("Location", hexEscapeNonASCII(urlStr))
@@ -2926,7 +2929,10 @@ func (srv *Server) onceSetNextProtoDefaults() {
 	// Enable HTTP/2 by default if the user hasn't otherwise
 	// configured their TLSNextProto map.
 	if srv.TLSNextProto == nil {
-		srv.nextProtoErr = http2ConfigureServer(srv, nil)
+		conf := &http2Server{
+			NewWriteScheduler: func() http2WriteScheduler { return http2NewPriorityWriteScheduler(nil) },
+		}
+		srv.nextProtoErr = http2ConfigureServer(srv, conf)
 	}
 }
 
