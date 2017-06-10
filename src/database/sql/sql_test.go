@@ -439,6 +439,35 @@ func TestTxContextWait(t *testing.T) {
 	waitForFree(t, db, 5*time.Second, 0)
 }
 
+// TestTxUsesContext tests the transaction behavior when the tx was created by context,
+// but for query execution used methods without context
+func TestTxUsesContext(t *testing.T) {
+	db := newTestDB(t, "people")
+	defer closeDB(t, db)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		// Guard against the context being canceled before BeginTx completes.
+		if err == context.DeadlineExceeded {
+			t.Skip("tx context canceled prior to first use")
+		}
+		t.Fatal(err)
+	}
+
+	// This will trigger the *fakeConn.Prepare method which will take time
+	// performing the query. The ctxDriverPrepare func will check the context
+	// after this and close the rows and return an error.
+	_, err = tx.Query("WAIT|1s|SELECT|people|age,name|")
+	if err != context.DeadlineExceeded {
+		t.Fatalf("expected QueryContext to error with context deadline exceeded but returned %v", err)
+	}
+
+	waitForFree(t, db, 5*time.Second, 0)
+}
+
 func TestMultiResultSetQuery(t *testing.T) {
 	db := newTestDB(t, "people")
 	defer closeDB(t, db)
@@ -2464,6 +2493,32 @@ func TestManyErrBadConn(t *testing.T) {
 	err = db.PingContext(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestIssue20575 ensures the Rows from query does not block
+// closing a transaction. Ensure Rows is closed while closing a trasaction.
+func TestIssue20575(t *testing.T) {
+	db := newTestDB(t, "people")
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err = tx.QueryContext(ctx, "SELECT|people|age,name|")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Do not close Rows from QueryContext.
+	err = tx.Rollback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	default:
+	case <-ctx.Done():
+		t.Fatal("timeout: failed to rollback query without closing rows:", ctx.Err())
 	}
 }
 

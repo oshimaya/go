@@ -25,8 +25,8 @@ var CmdEnv = &base.Command{
 Env prints Go environment information.
 
 By default env prints information as a shell script
-(on Windows, a batch file).  If one or more variable
-names is given as arguments,  env prints the value of
+(on Windows, a batch file). If one or more variable
+names is given as arguments, env prints the value of
 each named variable on its own line.
 
 The -json flag prints the environment in JSON format
@@ -68,9 +68,9 @@ func MkEnv() []cfg.EnvVar {
 
 	switch cfg.Goarch {
 	case "arm":
-		env = append(env, cfg.EnvVar{Name: "GOARM", Value: os.Getenv("GOARM")})
+		env = append(env, cfg.EnvVar{Name: "GOARM", Value: cfg.GOARM})
 	case "386":
-		env = append(env, cfg.EnvVar{Name: "GO386", Value: os.Getenv("GO386")})
+		env = append(env, cfg.EnvVar{Name: "GO386", Value: cfg.GO386})
 	}
 
 	cmd := b.GccCmd(".")

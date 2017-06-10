@@ -167,6 +167,12 @@ func newosproc(mp *m, stk unsafe.Pointer) {
 	var uc ucontextt
 	getcontext(unsafe.Pointer(&uc))
 
+	// _UC_SIGMASK does not seem to work here.
+	// It would be nice if _UC_SIGMASK and _UC_STACK
+	// worked so that we could do all the work setting
+	// the sigmask and the stack here, instead of setting
+	// the mask here and the stack in netbsdMstart.
+	// For now do the blocking manually.
 	uc.uc_flags = _UC_SIGMASK | _UC_CPU
 	uc.uc_link = nil
 	uc.uc_sigmask = sigset_all
