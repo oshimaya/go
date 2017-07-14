@@ -9,6 +9,7 @@ package runtime_test
 import (
 	"bytes"
 	"internal/testenv"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -153,6 +154,78 @@ func loop(i int, c chan bool) {
 }
 `
 
+func TestPanicSystemstack(t *testing.T) {
+	// Test that GOTRACEBACK=crash prints both the system and user
+	// stack of other threads.
+
+	// The GOTRACEBACK=crash handler takes 0.1 seconds even if
+	// it's not writing a core file and potentially much longer if
+	// it is. Skip in short mode.
+	if testing.Short() {
+		t.Skip("Skipping in short mode (GOTRACEBACK=crash is slow)")
+	}
+
+	t.Parallel()
+	cmd := exec.Command(os.Args[0], "testPanicSystemstackInternal")
+	cmd = testEnv(cmd)
+	cmd.Env = append(cmd.Env, "GOTRACEBACK=crash")
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal("creating pipe: ", err)
+	}
+	cmd.Stderr = pw
+	if err := cmd.Start(); err != nil {
+		t.Fatal("starting command: ", err)
+	}
+	defer cmd.Process.Wait()
+	defer cmd.Process.Kill()
+	if err := pw.Close(); err != nil {
+		t.Log("closing write pipe: ", err)
+	}
+	defer pr.Close()
+
+	// Wait for "x\nx\n" to indicate readiness.
+	buf := make([]byte, 4)
+	_, err = io.ReadFull(pr, buf)
+	if err != nil || string(buf) != "x\nx\n" {
+		t.Fatal("subprocess failed; output:\n", string(buf))
+	}
+
+	// Send SIGQUIT.
+	if err := cmd.Process.Signal(syscall.SIGQUIT); err != nil {
+		t.Fatal("signaling subprocess: ", err)
+	}
+
+	// Get traceback.
+	tb, err := ioutil.ReadAll(pr)
+	if err != nil {
+		t.Fatal("reading traceback from pipe: ", err)
+	}
+
+	// Traceback should have two testPanicSystemstackInternal's
+	// and two blockOnSystemStackInternal's.
+	if bytes.Count(tb, []byte("testPanicSystemstackInternal")) != 2 {
+		t.Fatal("traceback missing user stack:\n", string(tb))
+	} else if bytes.Count(tb, []byte("blockOnSystemStackInternal")) != 2 {
+		t.Fatal("traceback missing system stack:\n", string(tb))
+	}
+}
+
+func init() {
+	if len(os.Args) >= 2 && os.Args[1] == "testPanicSystemstackInternal" {
+		// Get two threads running on the system stack with
+		// something recognizable in the stack trace.
+		runtime.GOMAXPROCS(2)
+		go testPanicSystemstackInternal()
+		testPanicSystemstackInternal()
+	}
+}
+
+func testPanicSystemstackInternal() {
+	runtime.BlockOnSystemStack()
+	os.Exit(1) // Should be unreachable.
+}
+
 func TestSignalExitStatus(t *testing.T) {
 	testenv.MustHaveGoBuild(t)
 	exe, err := buildTestProg(t, "testprog")
@@ -173,6 +246,19 @@ func TestSignalExitStatus(t *testing.T) {
 
 func TestSignalIgnoreSIGTRAP(t *testing.T) {
 	output := runTestProg(t, "testprognet", "SignalIgnoreSIGTRAP")
+	want := "OK\n"
+	if output != want {
+		t.Fatalf("want %s, got %s\n", want, output)
+	}
+}
+
+func TestSignalDuringExec(t *testing.T) {
+	switch runtime.GOOS {
+	case "darwin", "dragonfly", "freebsd", "linux", "netbsd", "openbsd":
+	default:
+		t.Skipf("skipping test on %s", runtime.GOOS)
+	}
+	output := runTestProg(t, "testprognet", "SignalDuringExec")
 	want := "OK\n"
 	if output != want {
 		t.Fatalf("want %s, got %s\n", want, output)
