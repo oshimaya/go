@@ -288,7 +288,7 @@ func BuildModeInit() {
 		cfg.ExeSuffix = ".a"
 		ldBuildmode = "c-archive"
 	case "c-shared":
-		pkgsFilter = pkgsMain
+		pkgsFilter = oneMainPkg
 		if gccgo {
 			codegenArg = "-fPIC"
 		} else {
@@ -396,7 +396,7 @@ func BuildModeInit() {
 			cfg.BuildContext.InstallSuffix += codegenArg[1:]
 		}
 	}
-	if strings.HasPrefix(runtimeVersion, "go1") {
+	if strings.HasPrefix(runtimeVersion, "go1") && !strings.Contains(os.Args[0], "go_bootstrap") {
 		buildGcflags = append(buildGcflags, "-goversion", runtimeVersion)
 	}
 }
@@ -545,6 +545,8 @@ func libname(args []string, pkgs []*load.Package) (string, error) {
 }
 
 func runInstall(cmd *base.Command, args []string) {
+	InstrumentInit()
+	BuildModeInit()
 	InstallPackages(args, false)
 }
 
@@ -553,8 +555,6 @@ func InstallPackages(args []string, forGet bool) {
 		base.Fatalf("cannot install, GOBIN must be an absolute path")
 	}
 
-	InstrumentInit()
-	BuildModeInit()
 	pkgs := pkgsFilter(load.PackagesForBuild(args))
 
 	for _, p := range pkgs {
@@ -576,8 +576,6 @@ func InstallPackages(args []string, forGet bool) {
 
 	var b Builder
 	b.Init()
-	// Set the behavior for `go get` to not error on packages with test files only.
-	b.testFilesOnlyOK = forGet
 	var a *Action
 	if cfg.BuildBuildmode == "shared" {
 		if libName, err := libname(args, pkgs); err != nil {
@@ -589,6 +587,11 @@ func InstallPackages(args []string, forGet bool) {
 		a = &Action{}
 		var tools []*Action
 		for _, p := range pkgs {
+			// During 'go get', don't attempt (and fail) to install packages with only tests.
+			// TODO(rsc): It's not clear why 'go get' should be different from 'go install' here. See #20760.
+			if forGet && len(p.GoFiles)+len(p.CgoFiles) == 0 && len(p.TestGoFiles)+len(p.XTestGoFiles) > 0 {
+				continue
+			}
 			// If p is a tool, delay the installation until the end of the build.
 			// This avoids installing assemblers/compilers that are being executed
 			// by other steps in the build.
@@ -640,16 +643,6 @@ func InstallPackages(args []string, forGet bool) {
 	}
 }
 
-func init() {
-	cfg.Goarch = cfg.BuildContext.GOARCH
-	cfg.Goos = cfg.BuildContext.GOOS
-
-	if cfg.Goos == "windows" {
-		cfg.ExeSuffix = ".exe"
-	}
-	cfg.Gopath = filepath.SplitList(cfg.BuildContext.GOPATH)
-}
-
 // A Builder holds global state about a build.
 // It does not hold per-package state, because we
 // build packages in parallel, and the builder is shared.
@@ -659,8 +652,6 @@ type Builder struct {
 	mkdirCache  map[string]bool      // a cache of created directories
 	flagCache   map[string]bool      // a cache of supported compiler flags
 	Print       func(args ...interface{}) (int, error)
-
-	testFilesOnlyOK bool // do not error if the packages only have test files
 
 	output    sync.Mutex
 	scriptDir string // current directory in printed script
@@ -1165,8 +1156,6 @@ func (b *Builder) Do(root *Action) {
 		if err != nil {
 			if err == errPrintedOutput {
 				base.SetExitStatus(2)
-			} else if _, ok := err.(*build.NoGoError); ok && len(a.Package.TestGoFiles) > 0 && b.testFilesOnlyOK {
-				// Ignore the "no buildable Go source files" error for a package with only test files.
 			} else {
 				base.Errorf("%s", err)
 			}
@@ -1253,7 +1242,7 @@ func (b *Builder) build(a *Action) (err error) {
 	}
 
 	defer func() {
-		if _, ok := err.(*build.NoGoError); err != nil && err != errPrintedOutput && !(ok && b.testFilesOnlyOK && len(a.Package.TestGoFiles) > 0) {
+		if err != nil && err != errPrintedOutput {
 			err = fmt.Errorf("go build %s: %v", a.Package.ImportPath, err)
 		}
 	}()
@@ -1333,6 +1322,16 @@ func (b *Builder) build(a *Action) (err error) {
 			}
 			sfiles, gccfiles = filter(sfiles, sfiles[:0], gccfiles)
 		} else {
+			for _, sfile := range sfiles {
+				data, err := ioutil.ReadFile(filepath.Join(a.Package.Dir, sfile))
+				if err == nil {
+					if bytes.HasPrefix(data, []byte("TEXT")) || bytes.Contains(data, []byte("\nTEXT")) ||
+						bytes.HasPrefix(data, []byte("DATA")) || bytes.Contains(data, []byte("\nDATA")) ||
+						bytes.HasPrefix(data, []byte("GLOBL")) || bytes.Contains(data, []byte("\nGLOBL")) {
+						return fmt.Errorf("package using cgo has Go assembly file %s", sfile)
+					}
+				}
+			}
 			gccfiles = append(gccfiles, sfiles...)
 			sfiles = nil
 		}
@@ -1355,7 +1354,7 @@ func (b *Builder) build(a *Action) (err error) {
 	}
 
 	if len(gofiles) == 0 {
-		return &build.NoGoError{Dir: a.Package.Dir}
+		return &load.NoGoError{Package: a.Package}
 	}
 
 	// If we're doing coverage, preprocess the .go files and put them in the work directory
@@ -1919,7 +1918,7 @@ func (b *Builder) showOutput(dir, desc, out string) {
 // print this error.
 var errPrintedOutput = errors.New("already printed output - no need to show error")
 
-var cgoLine = regexp.MustCompile(`\[[^\[\]]+\.cgo1\.go:[0-9]+\]`)
+var cgoLine = regexp.MustCompile(`\[[^\[\]]+\.cgo1\.go:[0-9]+(:[0-9]+)?\]`)
 var cgoTypeSigRe = regexp.MustCompile(`\b_Ctype_\B`)
 
 // run runs the command given by cmdline in the directory dir.

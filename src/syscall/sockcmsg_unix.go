@@ -19,6 +19,9 @@ func cmsgAlignOf(salen int) int {
 	if darwin64Bit || dragonfly64Bit || solaris64Bit {
 		salign = 4
 	}
+	if netbsd32BitArm {
+		salign = 8
+	}
 	return (salen + salign - 1) & ^(salign - 1)
 }
 

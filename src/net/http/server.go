@@ -75,9 +75,10 @@ var (
 // If ServeHTTP panics, the server (the caller of ServeHTTP) assumes
 // that the effect of the panic was isolated to the active request.
 // It recovers the panic, logs a stack trace to the server error log,
-// and hangs up the connection. To abort a handler so the client sees
-// an interrupted response but the server doesn't log an error, panic
-// with the value ErrAbortHandler.
+// and either closes the network connection or sends an HTTP/2
+// RST_STREAM, depending on the HTTP protocol. To abort a handler so
+// the client sees an interrupted response but the server doesn't log
+// an error, panic with the value ErrAbortHandler.
 type Handler interface {
 	ServeHTTP(ResponseWriter, *Request)
 }
@@ -1957,7 +1958,7 @@ func StripPrefix(prefix string, h Handler) Handler {
 	})
 }
 
-// Redirect replies to the request with a redirect to url,
+// Redirect replies to the request with a redirect to urlStr,
 // which may be a path relative to the request path.
 //
 // The provided code should be in the 3xx range and is usually
@@ -2360,7 +2361,7 @@ type Server struct {
 	// IdleTimeout is the maximum amount of time to wait for the
 	// next request when keep-alives are enabled. If IdleTimeout
 	// is zero, the value of ReadTimeout is used. If both are
-	// zero, there is no timeout.
+	// zero, ReadHeaderTimeout is used.
 	IdleTimeout time.Duration
 
 	// MaxHeaderBytes controls the maximum number of bytes the

@@ -1043,6 +1043,28 @@ func getDoc(n ast.Node) *ast.CommentGroup {
 	return nil
 }
 
+func getLastComment(n ast.Node) *ast.CommentGroup {
+	switch n := n.(type) {
+	case *ast.Field:
+		return n.Comment
+	case *ast.ImportSpec:
+		return n.Comment
+	case *ast.ValueSpec:
+		return n.Comment
+	case *ast.TypeSpec:
+		return n.Comment
+	case *ast.GenDecl:
+		if len(n.Specs) > 0 {
+			return getLastComment(n.Specs[len(n.Specs)-1])
+		}
+	case *ast.File:
+		if len(n.Comments) > 0 {
+			return n.Comments[len(n.Comments)-1]
+		}
+	}
+	return nil
+}
+
 func (p *printer) printNode(node interface{}) error {
 	// unpack *CommentedNode, if any
 	var comments []*ast.CommentGroup
@@ -1065,6 +1087,11 @@ func (p *printer) printNode(node interface{}) error {
 		// of the comment appearance in the source code)
 		if doc := getDoc(n); doc != nil {
 			beg = doc.Pos()
+		}
+		if com := getLastComment(n); com != nil {
+			if e := com.End(); e > end {
+				end = e
+			}
 		}
 		// token.Pos values are global offsets, we can
 		// compare them directly
@@ -1321,7 +1348,7 @@ func (cfg *Config) Fprint(output io.Writer, fset *token.FileSet, node interface{
 
 // Fprint "pretty-prints" an AST node to output.
 // It calls Config.Fprint with default settings.
-// Note that gofmt uses tabs for indentation but spaces for alignent;
+// Note that gofmt uses tabs for indentation but spaces for alignment;
 // use format.Node (package go/format) for output that matches gofmt.
 //
 func Fprint(output io.Writer, fset *token.FileSet, node interface{}) error {

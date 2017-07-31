@@ -24,7 +24,10 @@ func TestCgoCrashHandler(t *testing.T) {
 }
 
 func TestCgoSignalDeadlock(t *testing.T) {
-	t.Parallel()
+	// Don't call t.Parallel, since too much work going on at the
+	// same time can cause the testprogcgo code to overrun its
+	// timeouts (issue #18598).
+
 	if testing.Short() && runtime.GOOS == "windows" {
 		t.Skip("Skipping in short mode") // takes up to 64 seconds
 	}
@@ -397,6 +400,10 @@ func TestRaceSignal(t *testing.T) {
 }
 
 func TestCgoNumGoroutine(t *testing.T) {
+	switch runtime.GOOS {
+	case "windows", "plan9":
+		t.Skipf("skipping numgoroutine test on %s", runtime.GOOS)
+	}
 	t.Parallel()
 	got := runTestProg(t, "testprogcgo", "NumGoroutine")
 	want := "OK\n"
