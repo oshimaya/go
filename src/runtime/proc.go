@@ -2851,18 +2851,35 @@ func syscall_runtime_AfterFork() {
 	systemstack(afterfork)
 }
 
+// inForkedChild is true while manipulating signals in the child process.
+// This is used to avoid calling libc functions in case we are using vfork.
+var inForkedChild bool
+
 // Called from syscall package after fork in child.
 // It resets non-sigignored signals to the default handler, and
 // restores the signal mask in preparation for the exec.
+//
+// Because this might be called during a vfork, and therefore may be
+// temporarily sharing address space with the parent process, this must
+// not change any global variables or calling into C code that may do so.
+//
 //go:linkname syscall_runtime_AfterForkInChild syscall.runtime_AfterForkInChild
 //go:nosplit
 //go:nowritebarrierrec
 func syscall_runtime_AfterForkInChild() {
+	// It's OK to change the global variable inForkedChild here
+	// because we are going to change it back. There is no race here,
+	// because if we are sharing address space with the parent process,
+	// then the parent process can not be running concurrently.
+	inForkedChild = true
+
 	clearSignalHandlers()
 
 	// When we are the child we are the only thread running,
 	// so we know that nothing else has changed gp.m.sigmask.
 	msigrestore(getg().m.sigmask)
+
+	inForkedChild = false
 }
 
 // Called from syscall package before Exec.
@@ -3215,10 +3232,14 @@ var prof struct {
 	hz         int32
 }
 
-func _System()           { _System() }
-func _ExternalCode()     { _ExternalCode() }
-func _LostExternalCode() { _LostExternalCode() }
-func _GC()               { _GC() }
+func _System()                    { _System() }
+func _ExternalCode()              { _ExternalCode() }
+func _LostExternalCode()          { _LostExternalCode() }
+func _GC()                        { _GC() }
+func _LostSIGPROFDuringAtomic64() { _LostSIGPROFDuringAtomic64() }
+
+// Counts SIGPROFs received while in atomic64 critical section, on mips{,le}
+var lostAtomic64Count uint64
 
 // Called if we receive a SIGPROF signal.
 // Called by the signal handler, may run during STW.
@@ -3226,6 +3247,21 @@ func _GC()               { _GC() }
 func sigprof(pc, sp, lr uintptr, gp *g, mp *m) {
 	if prof.hz == 0 {
 		return
+	}
+
+	// On mips{,le}, 64bit atomics are emulated with spinlocks, in
+	// runtime/internal/atomic. If SIGPROF arrives while the program is inside
+	// the critical section, it creates a deadlock (when writing the sample).
+	// As a workaround, create a counter of SIGPROFs while in critical section
+	// to store the count, and pass it to sigprof.add() later when SIGPROF is
+	// received from somewhere else (with _LostSIGPROFDuringAtomic64 as pc).
+	if GOARCH == "mips" || GOARCH == "mipsle" {
+		if f := findfunc(pc); f.valid() {
+			if hasprefix(funcname(f), "runtime/internal/atomic") {
+				lostAtomic64Count++
+				return
+			}
+		}
 	}
 
 	// Profiling runs concurrently with GC, so it must not allocate.
@@ -3354,6 +3390,10 @@ func sigprof(pc, sp, lr uintptr, gp *g, mp *m) {
 	}
 
 	if prof.hz != 0 {
+		if (GOARCH == "mips" || GOARCH == "mipsle") && lostAtomic64Count > 0 {
+			cpuprof.addLostAtomic64(lostAtomic64Count)
+			lostAtomic64Count = 0
+		}
 		cpuprof.add(gp, stk[:n])
 	}
 	getg().m.mallocing--
