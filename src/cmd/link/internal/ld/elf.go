@@ -1284,7 +1284,7 @@ func elfnetbsdarmsig(sh *ElfShdr, startva uint64, resoff uint64) int {
 }
 
 
-func elfwritenetbsdsig(out *OutBuf) int {
+func elfwritenetbsdsig(ctxt *Link, out *OutBuf) int {
 	// Write Elf_Note header.
 	sh := elfwritenotehdr(out, ".note.netbsd.ident", ELF_NOTE_NETBSD_NAMESZ, ELF_NOTE_NETBSD_DESCSZ, ELF_NOTE_NETBSD_TAG)
 
@@ -1297,7 +1297,7 @@ func elfwritenetbsdsig(out *OutBuf) int {
 	out.Write(ELF_NOTE_NETBSD_NAME)
 	out.Write8(0)
 	out.Write32(ELF_NOTE_NETBSD_VERSION)
-	if SysArch.Family == sys.ARM {
+	if ctxt.Arch.Family == sys.ARM {
 		mArch := []byte("earm\x00")
 		switch objabi.GOARM {
 		case 6:
@@ -1306,7 +1306,7 @@ func elfwritenetbsdsig(out *OutBuf) int {
 			mArch = []byte("earmv7hf\x00")
 		}
 		descsz := len(mArch)
-		sh2 := elfwritenotehdr(".note.netbsd.march", ELF_NOTE_NETBSD_MARCH_NAMESZ,
+		sh2 := elfwritenotehdr(out, ".note.netbsd.march", ELF_NOTE_NETBSD_MARCH_NAMESZ,
 			uint32(descsz), ELF_NOTE_NETBSD_MARCH_TAG)
 		if sh2 == nil {
 			return 0
@@ -1920,7 +1920,7 @@ func (ctxt *Link) doelf() {
 	}
 	if Headtype == objabi.Hnetbsd {
 		Addstring(shstrtab, ".note.netbsd.ident")
-		if SysArch.Family == sys.ARM {
+		if ctxt.Arch.Family == sys.ARM {
 			Addstring(shstrtab, ".note.netbsd.march")
 		}
 	}
@@ -2361,7 +2361,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 		pnote.flags = PF_R
 		phsh(pnote, sh)
 	}
-	if Headtype == objabi.Hnetbsd && SysArch.Family == sys.ARM {
+	if Headtype == objabi.Hnetbsd && ctxt.Arch.Family == sys.ARM {
 		var sh *ElfShdr
 		sh = elfshname(".note.netbsd.march")
 		resoff -= int64(elfnetbsdarmsig(sh, uint64(startva), uint64(resoff)))
@@ -2711,7 +2711,7 @@ elfobj:
 	}
 	if Linkmode != LinkExternal {
 		if Headtype == objabi.Hnetbsd {
-			a += int64(elfwritenetbsdsig(ctxt.Out))
+			a += int64(elfwritenetbsdsig(ctxt, ctxt.Out))
 		}
 		if Headtype == objabi.Hopenbsd {
 			a += int64(elfwriteopenbsdsig(ctxt.Out))
