@@ -38,7 +38,7 @@ func initPrintFlags() {
 
 		// Backwards compatibility: skip optional first argument
 		// index after the colon.
-		if colon := strings.LastIndexByte(name, ':'); colon > 0 {
+		if colon := strings.LastIndex(name, ":"); colon > 0 {
 			name = name[:colon]
 		}
 
@@ -303,7 +303,7 @@ func (s *formatState) parseIndex() bool {
 	start := s.nbytes
 	s.scanNum()
 	if s.nbytes == len(s.format) || s.nbytes == start || s.format[s.nbytes] != ']' {
-		end := strings.IndexByte(s.format, ']')
+		end := strings.Index(s.format, "]")
 		if end < 0 {
 			end = len(s.format)
 		}

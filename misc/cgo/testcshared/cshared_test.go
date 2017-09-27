@@ -188,6 +188,7 @@ func adbRun(t *testing.T, env []string, adbargs ...string) string {
 }
 
 func run(t *testing.T, env []string, args ...string) string {
+	t.Helper()
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
@@ -200,6 +201,7 @@ func run(t *testing.T, env []string, args ...string) string {
 }
 
 func runExe(t *testing.T, env []string, args ...string) string {
+	t.Helper()
 	if GOOS == "android" {
 		return adbRun(t, env, args...)
 	}
@@ -207,6 +209,7 @@ func runExe(t *testing.T, env []string, args ...string) string {
 }
 
 func runCC(t *testing.T, args ...string) string {
+	t.Helper()
 	return run(t, nil, append(cc, args...)...)
 }
 
@@ -277,15 +280,16 @@ func TestExportedSymbols(t *testing.T) {
 	t.Parallel()
 
 	cmd := "testp0"
+	bin := cmdToRun(cmd)
 
 	createHeadersOnce(t)
 
 	runCC(t, "-I", installdir, "-o", cmd, "main0.c", libgoname)
 	adbPush(t, cmd)
 
-	defer os.Remove(cmd)
+	defer os.Remove(bin)
 
-	out := runExe(t, append(gopathEnv, "LD_LIBRARY_PATH=."), cmdToRun(cmd))
+	out := runExe(t, append(gopathEnv, "LD_LIBRARY_PATH=."), bin)
 	if strings.TrimSpace(out) != "PASS" {
 		t.Error(out)
 	}
@@ -295,16 +299,22 @@ func TestExportedSymbols(t *testing.T) {
 func TestExportedSymbolsWithDynamicLoad(t *testing.T) {
 	t.Parallel()
 
+	if GOOS == "windows" {
+		t.Logf("Skipping on %s", GOOS)
+		return
+	}
+
 	cmd := "testp1"
+	bin := cmdToRun(cmd)
 
 	createHeadersOnce(t)
 
 	runCC(t, "-o", cmd, "main1.c", "-ldl")
 	adbPush(t, cmd)
 
-	defer os.Remove(cmd)
+	defer os.Remove(bin)
 
-	out := runExe(t, nil, cmdToRun(cmd), "./"+libgoname)
+	out := runExe(t, nil, bin, "./"+libgoname)
 	if strings.TrimSpace(out) != "PASS" {
 		t.Error(out)
 	}
@@ -314,7 +324,13 @@ func TestExportedSymbolsWithDynamicLoad(t *testing.T) {
 func TestUnexportedSymbols(t *testing.T) {
 	t.Parallel()
 
+	if GOOS == "windows" {
+		t.Logf("Skipping on %s", GOOS)
+		return
+	}
+
 	cmd := "testp2"
+	bin := cmdToRun(cmd)
 	libname := "libgo2." + libSuffix
 
 	run(t,
@@ -335,9 +351,9 @@ func TestUnexportedSymbols(t *testing.T) {
 	adbPush(t, cmd)
 
 	defer os.Remove(libname)
-	defer os.Remove(cmd)
+	defer os.Remove(bin)
 
-	out := runExe(t, append(gopathEnv, "LD_LIBRARY_PATH=."), cmdToRun(cmd))
+	out := runExe(t, append(gopathEnv, "LD_LIBRARY_PATH=."), bin)
 
 	if strings.TrimSpace(out) != "PASS" {
 		t.Error(out)
@@ -348,20 +364,25 @@ func TestUnexportedSymbols(t *testing.T) {
 func TestMainExportedOnAndroid(t *testing.T) {
 	t.Parallel()
 
-	if GOOS != "android" {
+	switch GOOS {
+	case "android":
+		break
+	default:
+		t.Logf("Skipping on %s", GOOS)
 		return
 	}
 
 	cmd := "testp3"
+	bin := cmdToRun(cmd)
 
 	createHeadersOnce(t)
 
 	runCC(t, "-o", cmd, "main3.c", "-ldl")
 	adbPush(t, cmd)
 
-	defer os.Remove(cmd)
+	defer os.Remove(bin)
 
-	out := runExe(t, nil, cmdToRun(cmd), "./"+libgoname)
+	out := runExe(t, nil, bin, "./"+libgoname)
 	if strings.TrimSpace(out) != "PASS" {
 		t.Error(out)
 	}
@@ -380,11 +401,12 @@ func testSignalHandlers(t *testing.T, pkgname, cfile, cmd string) {
 	runCC(t, "-pthread", "-o", cmd, cfile, "-ldl")
 	adbPush(t, cmd)
 
+	bin := cmdToRun(cmd)
+
 	defer os.Remove(libname)
-	defer os.Remove(cmd)
+	defer os.Remove(bin)
 	defer os.Remove(pkgname + ".h")
 
-	bin := cmdToRun(cmd)
 	out := runExe(t, nil, bin, "./"+libname)
 	if strings.TrimSpace(out) != "PASS" {
 		t.Error(run(t, nil, bin, libname, "verbose"))
@@ -394,12 +416,20 @@ func testSignalHandlers(t *testing.T, pkgname, cfile, cmd string) {
 // test4: test signal handlers
 func TestSignalHandlers(t *testing.T) {
 	t.Parallel()
+	if GOOS == "windows" {
+		t.Logf("Skipping on %s", GOOS)
+		return
+	}
 	testSignalHandlers(t, "libgo4", "main4.c", "testp4")
 }
 
 // test5: test signal handlers with os/signal.Notify
 func TestSignalHandlersWithNotify(t *testing.T) {
 	t.Parallel()
+	if GOOS == "windows" {
+		t.Logf("Skipping on %s", GOOS)
+		return
+	}
 	testSignalHandlers(t, "libgo5", "main5.c", "testp5")
 }
 
@@ -410,7 +440,7 @@ func TestPIE(t *testing.T) {
 	case "linux", "android":
 		break
 	default:
-		t.Logf("Skipping TestPIE on %s", GOOS)
+		t.Logf("Skipping on %s", GOOS)
 		return
 	}
 

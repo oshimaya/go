@@ -18,7 +18,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"text/template"
@@ -511,9 +510,6 @@ func runTest(cmd *base.Command, args []string) {
 		if deps["C"] {
 			delete(deps, "C")
 			deps["runtime/cgo"] = true
-			if cfg.Goos == runtime.GOOS && cfg.Goarch == runtime.GOARCH && !cfg.BuildRace && !cfg.BuildMSan {
-				deps["cmd/cgo"] = true
-			}
 		}
 		// Ignore pseudo-packages.
 		delete(deps, "unsafe")
@@ -815,17 +811,12 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 		},
 	}
 
-	// The generated main also imports testing, regexp, os, and maybe runtime/cgo.
+	// The generated main also imports testing, regexp, and os.
+	// Also the linker introduces implicit dependencies reported by LinkerDeps.
 	stk.Push("testmain")
-	forceCgo := false
-	if cfg.BuildContext.GOOS == "darwin" {
-		if cfg.BuildContext.GOARCH == "arm" || cfg.BuildContext.GOARCH == "arm64" {
-			forceCgo = true
-		}
-	}
-	deps := testMainDeps
-	if cfg.ExternalLinkingForced() || forceCgo {
-		deps = str.StringList(deps, "runtime/cgo")
+	deps := testMainDeps // cap==len, so safe for append
+	for _, d := range load.LinkerDeps(p) {
+		deps = append(deps, d)
 	}
 	for _, dep := range deps {
 		if dep == ptest.ImportPath {
@@ -888,8 +879,6 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 		// and we may find that we need to do it always in the future.
 		recompileForTest(pmain, p, ptest)
 	}
-
-	t.NeedCgo = forceCgo
 
 	for _, cp := range pmain.Internal.Imports {
 		if len(cp.Internal.CoverVars) > 0 {
@@ -1319,7 +1308,6 @@ type testFuncs struct {
 	NeedTest    bool
 	ImportXtest bool
 	NeedXtest   bool
-	NeedCgo     bool
 	Cover       []coverInfo
 }
 
@@ -1447,10 +1435,6 @@ import (
 {{end}}
 {{range $i, $p := .Cover}}
 	_cover{{$i}} {{$p.Package.ImportPath | printf "%q"}}
-{{end}}
-
-{{if .NeedCgo}}
-	_ "runtime/cgo"
 {{end}}
 )
 

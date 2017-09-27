@@ -186,7 +186,7 @@ func Main(archInit func(*Arch)) {
 	objabi.Flagcount("K", "debug missing line numbers", &Debug['K'])
 	objabi.Flagcount("N", "disable optimizations", &Debug['N'])
 	flag.BoolVar(&Debug_asm, "S", false, "print assembly listing")
-	objabi.Flagfn0("V", "print compiler version", doversion)
+	objabi.AddVersionFlag() // -V
 	objabi.Flagcount("W", "debug parse tree after type checking", &Debug['W'])
 	flag.StringVar(&asmhdr, "asmhdr", "", "write assembly header to `file`")
 	flag.StringVar(&buildid, "buildid", "", "record `id` as the build id in the export metadata")
@@ -364,7 +364,7 @@ func Main(archInit func(*Arch)) {
 				// _ in phase name also matches space
 				phase := name[4:]
 				flag := "debug" // default flag is debug
-				if i := strings.IndexByte(phase, '/'); i >= 0 {
+				if i := strings.Index(phase, "/"); i >= 0 {
 					flag = phase[i+1:]
 					phase = phase[:i]
 				}
@@ -689,7 +689,7 @@ func addImportMap(s string) {
 	if strings.Count(s, "=") != 1 {
 		log.Fatal("-importmap argument must be of the form source=actual")
 	}
-	i := strings.IndexByte(s, '=')
+	i := strings.Index(s, "=")
 	source, actual := s[:i], s[i+1:]
 	if source == "" || actual == "" {
 		log.Fatal("-importmap argument must be of the form source=actual; source and actual must be non-empty")
@@ -712,13 +712,13 @@ func readImportCfg(file string) {
 		}
 
 		var verb, args string
-		if i := strings.IndexByte(line, ' '); i < 0 {
+		if i := strings.Index(line, " "); i < 0 {
 			verb = line
 		} else {
 			verb, args = line[:i], strings.TrimSpace(line[i+1:])
 		}
 		var before, after string
-		if i := strings.IndexByte(args, '='); i >= 0 {
+		if i := strings.Index(args, "="); i >= 0 {
 			before, after = args[:i], args[i+1:]
 		}
 		switch verb {

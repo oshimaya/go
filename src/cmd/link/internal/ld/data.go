@@ -45,83 +45,6 @@ import (
 	"sync"
 )
 
-/*
- * divide-and-conquer list-link (by Sub) sort of sym.Symbol* by Value.
- * Used for sub-symbols when loading host objects (see e.g. ldelf.go).
- */
-
-func listsort(l *sym.Symbol) *sym.Symbol {
-	if l == nil || l.Sub == nil {
-		return l
-	}
-
-	l1 := l
-	l2 := l
-	for {
-		l2 = l2.Sub
-		if l2 == nil {
-			break
-		}
-		l2 = l2.Sub
-		if l2 == nil {
-			break
-		}
-		l1 = l1.Sub
-	}
-
-	l2 = l1.Sub
-	l1.Sub = nil
-	l1 = listsort(l)
-	l2 = listsort(l2)
-
-	/* set up lead element */
-	if l1.Value < l2.Value {
-		l = l1
-		l1 = l1.Sub
-	} else {
-		l = l2
-		l2 = l2.Sub
-	}
-
-	le := l
-
-	for {
-		if l1 == nil {
-			for l2 != nil {
-				le.Sub = l2
-				le = l2
-				l2 = l2.Sub
-			}
-
-			le.Sub = nil
-			break
-		}
-
-		if l2 == nil {
-			for l1 != nil {
-				le.Sub = l1
-				le = l1
-				l1 = l1.Sub
-			}
-
-			break
-		}
-
-		if l1.Value < l2.Value {
-			le.Sub = l1
-			le = l1
-			l1 = l1.Sub
-		} else {
-			le.Sub = l2
-			le = l2
-			l2 = l2.Sub
-		}
-	}
-
-	le.Sub = nil
-	return l
-}
-
 // isRuntimeDepPkg returns whether pkg is the runtime package or its dependency
 func isRuntimeDepPkg(pkg string) bool {
 	switch pkg {
@@ -202,7 +125,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 		if r.Sym != nil && (r.Sym.Type&(sym.SMASK|sym.SHIDDEN) == 0 || r.Sym.Type&sym.SMASK == sym.SXREF) {
 			// When putting the runtime but not main into a shared library
 			// these symbols are undefined and that's OK.
-			if Buildmode == BuildmodeShared {
+			if ctxt.BuildMode == BuildModeShared {
 				if r.Sym.Name == "main.main" || r.Sym.Name == "main.init" {
 					r.Sym.Type = sym.SDYNIMPORT
 				} else if strings.HasPrefix(r.Sym.Name, "go.info.") {
@@ -226,7 +149,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 		// We need to be able to reference dynimport symbols when linking against
 		// shared libraries, and Solaris needs it always
 		if Headtype != objabi.Hsolaris && r.Sym != nil && r.Sym.Type == sym.SDYNIMPORT && !ctxt.DynlinkingGo() {
-			if !(ctxt.Arch.Family == sys.PPC64 && Linkmode == LinkExternal && r.Sym.Name == ".TOC.") {
+			if !(ctxt.Arch.Family == sys.PPC64 && ctxt.LinkMode == LinkExternal && r.Sym.Name == ".TOC.") {
 				Errorf(s, "unhandled relocation for %s (type %d (%s) rtype %d (%s))", r.Sym.Name, r.Sym.Type, r.Sym.Type, r.Type, sym.RelocName(ctxt.Arch, r.Type))
 			}
 		}
@@ -266,7 +189,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 		case objabi.R_TLS_LE:
 			isAndroidX86 := objabi.GOOS == "android" && (ctxt.Arch.InFamily(sys.AMD64, sys.I386))
 
-			if Linkmode == LinkExternal && Iself && !isAndroidX86 {
+			if ctxt.LinkMode == LinkExternal && Iself && !isAndroidX86 {
 				r.Done = false
 				if r.Sym == nil {
 					r.Sym = ctxt.Tlsg
@@ -299,7 +222,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 		case objabi.R_TLS_IE:
 			isAndroidX86 := objabi.GOOS == "android" && (ctxt.Arch.InFamily(sys.AMD64, sys.I386))
 
-			if Linkmode == LinkExternal && Iself && !isAndroidX86 {
+			if ctxt.LinkMode == LinkExternal && Iself && !isAndroidX86 {
 				r.Done = false
 				if r.Sym == nil {
 					r.Sym = ctxt.Tlsg
@@ -312,7 +235,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				}
 				break
 			}
-			if Buildmode == BuildmodePIE && Iself {
+			if ctxt.BuildMode == BuildModePIE && Iself {
 				// We are linking the final executable, so we
 				// can optimize any TLS IE relocation to LE.
 				if Thearch.TLSIEtoLE == nil {
@@ -327,7 +250,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				log.Fatalf("cannot handle R_TLS_IE (sym %s) when linking internally", s.Name)
 			}
 		case objabi.R_ADDR:
-			if Linkmode == LinkExternal && r.Sym.Type != sym.SCONST {
+			if ctxt.LinkMode == LinkExternal && r.Sym.Type != sym.SCONST {
 				r.Done = false
 
 				// set up addend for eventual relocation via outer symbol.
@@ -388,7 +311,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				Errorf(s, "missing DWARF section for relocation target %s", r.Sym.Name)
 			}
 
-			if Linkmode == LinkExternal {
+			if ctxt.LinkMode == LinkExternal {
 				r.Done = false
 				// PE code emits IMAGE_REL_I386_SECREL and IMAGE_REL_AMD64_SECREL
 				// for R_DWARFREF relocations, while R_ADDR is replaced with
@@ -438,7 +361,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 			}
 			fallthrough
 		case objabi.R_CALL, objabi.R_PCREL:
-			if Linkmode == LinkExternal && r.Sym != nil && r.Sym.Type != sym.SCONST && (r.Sym.Sect != s.Sect || r.Type == objabi.R_GOTPCREL) {
+			if ctxt.LinkMode == LinkExternal && r.Sym != nil && r.Sym.Type != sym.SCONST && (r.Sym.Sect != s.Sect || r.Type == objabi.R_GOTPCREL) {
 				r.Done = false
 
 				// set up addend for eventual relocation via outer symbol.
@@ -599,7 +522,7 @@ func windynrelocsym(ctxt *Link, s *sym.Symbol) {
 
 func dynrelocsym(ctxt *Link, s *sym.Symbol) {
 	if Headtype == objabi.Hwindows {
-		if Linkmode == LinkInternal {
+		if ctxt.LinkMode == LinkInternal {
 			windynrelocsym(ctxt, s)
 		}
 		return
@@ -607,7 +530,7 @@ func dynrelocsym(ctxt *Link, s *sym.Symbol) {
 
 	for ri := 0; ri < len(s.R); ri++ {
 		r := &s.R[ri]
-		if Buildmode == BuildmodePIE && Linkmode == LinkInternal {
+		if ctxt.BuildMode == BuildModePIE && ctxt.LinkMode == LinkInternal {
 			// It's expected that some relocations will be done
 			// later by relocsym (R_TLS_LE, R_ADDROFF), so
 			// don't worry if Adddynrel returns false.
@@ -804,7 +727,7 @@ func Datblk(ctxt *Link, addr int64, size int64) {
 		}
 		ctxt.Logf("\n")
 
-		if Linkmode != LinkExternal {
+		if ctxt.LinkMode != LinkExternal {
 			continue
 		}
 		for _, r := range sym.R {
@@ -844,13 +767,13 @@ var zeros [512]byte
 var strdata []*sym.Symbol
 
 func addstrdata1(ctxt *Link, arg string) {
-	eq := strings.IndexByte(arg, '=')
+	eq := strings.Index(arg, "=")
 	dot := strings.LastIndex(arg[:eq+1], ".")
 	if eq < 0 || dot < 0 {
 		Exitf("-X flag requires argument of the form importpath.name=value")
 	}
 	pkg := objabi.PathToPrefix(arg[:dot])
-	if Buildmode == BuildmodePlugin && pkg == "main" {
+	if ctxt.BuildMode == BuildModePlugin && pkg == "main" {
 		pkg = *flagPluginPath
 	}
 	addstrdata(ctxt, pkg+arg[dot:eq], arg[eq+1:])
@@ -931,8 +854,8 @@ func addinitarrdata(ctxt *Link, s *sym.Symbol) {
 }
 
 func dosymtype(ctxt *Link) {
-	switch Buildmode {
-	case BuildmodeCArchive, BuildmodeCShared:
+	switch ctxt.BuildMode {
+	case BuildModeCArchive, BuildModeCShared:
 		for _, s := range ctxt.Syms.Allsym {
 			// Create a new entry in the .init_array section that points to the
 			// library initializer function.
@@ -1139,7 +1062,7 @@ func (ctxt *Link) dodata() {
 	}
 	dynreloc(ctxt, &data)
 
-	if UseRelro() {
+	if ctxt.UseRelro() {
 		// "read only" data with relocations needs to go in its own section
 		// when building a shared library. We do this by boosting objects of
 		// type SXXX with relocations to type SXXXRELRO.
@@ -1276,8 +1199,8 @@ func (ctxt *Link) dodata() {
 	hasinitarr := *FlagLinkshared
 
 	/* shared library initializer */
-	switch Buildmode {
-	case BuildmodeCArchive, BuildmodeCShared, BuildmodeShared, BuildmodePlugin:
+	switch ctxt.BuildMode {
+	case BuildModeCArchive, BuildModeCShared, BuildModeShared, BuildModePlugin:
 		hasinitarr = true
 	}
 	if hasinitarr {
@@ -1356,7 +1279,7 @@ func (ctxt *Link) dodata() {
 
 	if len(data[sym.STLSBSS]) > 0 {
 		var sect *sym.Section
-		if Iself && (Linkmode == LinkExternal || !*FlagD) {
+		if Iself && (ctxt.LinkMode == LinkExternal || !*FlagD) {
 			sect = addsection(ctxt.Arch, &Segdata, ".tbss", 06)
 			sect.Align = int32(ctxt.Arch.PtrSize)
 			sect.Vaddr = 0
@@ -1387,7 +1310,7 @@ func (ctxt *Link) dodata() {
 	 * segtext.
 	 */
 	var segro *sym.Segment
-	if Iself && Linkmode == LinkInternal {
+	if Iself && ctxt.LinkMode == LinkInternal {
 		segro = &Segrodata
 	} else {
 		segro = &Segtext
@@ -1418,7 +1341,7 @@ func (ctxt *Link) dodata() {
 	sect.Vaddr = 0
 	ctxt.Syms.Lookup("runtime.rodata", 0).Sect = sect
 	ctxt.Syms.Lookup("runtime.erodata", 0).Sect = sect
-	if !UseRelro() {
+	if !ctxt.UseRelro() {
 		ctxt.Syms.Lookup("runtime.types", 0).Sect = sect
 		ctxt.Syms.Lookup("runtime.etypes", 0).Sect = sect
 	}
@@ -1482,10 +1405,10 @@ func (ctxt *Link) dodata() {
 		return addsection(ctxt.Arch, segro, suffix, 04)
 	}
 
-	if UseRelro() {
+	if ctxt.UseRelro() {
 		addrelrosection = func(suffix string) *sym.Section {
 			seg := &Segrelrodata
-			if Linkmode == LinkExternal {
+			if ctxt.LinkMode == LinkExternal {
 				// Using a separate segment with an external
 				// linker results in some programs moving
 				// their data sections unexpectedly, which
@@ -1799,7 +1722,7 @@ func dodataSect(ctxt *Link, symn sym.SymKind, syms []*sym.Symbol) (result []*sym
 // at the very beginning of the text segment.
 // This ``header'' is read by cmd/go.
 func (ctxt *Link) textbuildid() {
-	if Iself || Buildmode == BuildmodePlugin || *flagBuildid == "" {
+	if Iself || ctxt.BuildMode == BuildModePlugin || *flagBuildid == "" {
 		return
 	}
 
@@ -1907,7 +1830,7 @@ func assignAddress(ctxt *Link, sect *sym.Section, n int, s *sym.Symbol, va uint6
 
 	// Only break at outermost syms.
 
-	if ctxt.Arch.InFamily(sys.PPC64) && s.Outer == nil && Iself && Linkmode == LinkExternal && va-sect.Vaddr+funcsize+maxSizeTrampolinesPPC64(s, isTramp) > 0x1c00000 {
+	if ctxt.Arch.InFamily(sys.PPC64) && s.Outer == nil && Iself && ctxt.LinkMode == LinkExternal && va-sect.Vaddr+funcsize+maxSizeTrampolinesPPC64(s, isTramp) > 0x1c00000 {
 
 		// Set the length for the previous text section
 		sect.Length = va - sect.Vaddr
@@ -2091,7 +2014,7 @@ func (ctxt *Link) address() {
 		}
 	}
 
-	if Buildmode == BuildmodeShared {
+	if ctxt.BuildMode == BuildModeShared {
 		s := ctxt.Syms.Lookup("go.link.abihashbytes", 0)
 		sectSym := ctxt.Syms.Lookup(".note.go.abihash", 0)
 		s.Sect = sectSym.Sect

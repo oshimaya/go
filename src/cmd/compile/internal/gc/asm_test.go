@@ -276,17 +276,29 @@ var allAsmTests = []*asmTests{
 }
 
 var linuxAMD64Tests = []*asmTest{
+	// multiplication by powers of two
 	{
 		fn: `
-		func f0(x int) int {
-			return x * 64
+		func $(n int) int {
+			return n * 64
 		}
 		`,
 		pos: []string{"\tSHLQ\t\\$6,"},
+		neg: []string{"IMULQ"},
 	},
 	{
 		fn: `
-		func f1(x int) int {
+		func $(n int) int {
+			return -128*n
+		}
+		`,
+		pos: []string{"SHLQ"},
+		neg: []string{"IMULQ"},
+	},
+
+	{
+		fn: `
+		func $(x int) int {
 			return x * 96
 		}
 		`,
@@ -1120,6 +1132,66 @@ var linuxAMD64Tests = []*asmTest{
 		`,
 		pos: []string{"\tMOVL\t[^X].*, X.*"},
 	},
+	{
+		fn: `
+		func $(x uint32) bool {
+			return x > 4
+		}
+		`,
+		pos: []string{"\tSETHI\t\\("},
+	},
+	// Check that len() and cap() div by a constant power of two
+	// are compiled into SHRQ.
+	{
+		fn: `
+		func $(a []int) int {
+			return len(a) / 1024
+		}
+		`,
+		pos: []string{"\tSHRQ\t\\$10,"},
+	},
+	{
+		fn: `
+		func $(s string) int {
+			return len(s) / (4097 >> 1)
+		}
+		`,
+		pos: []string{"\tSHRQ\t\\$11,"},
+	},
+	{
+		fn: `
+		func $(a []int) int {
+			return cap(a) / ((1 << 11) + 2048)
+		}
+		`,
+		pos: []string{"\tSHRQ\t\\$12,"},
+	},
+	// Check that len() and cap() mod by a constant power of two
+	// are compiled into ANDQ.
+	{
+		fn: `
+		func $(a []int) int {
+			return len(a) % 1024
+		}
+		`,
+		pos: []string{"\tANDQ\t\\$1023,"},
+	},
+	{
+		fn: `
+		func $(s string) int {
+			return len(s) % (4097 >> 1)
+		}
+		`,
+		pos: []string{"\tANDQ\t\\$2047,"},
+	},
+	{
+		fn: `
+		func $(a []int) int {
+			return cap(a) % ((1 << 11) + 2048)
+		}
+		`,
+		pos: []string{"\tANDQ\t\\$4095,"},
+	},
 }
 
 var linux386Tests = []*asmTest{
@@ -1138,6 +1210,26 @@ var linux386Tests = []*asmTest{
 		}
 		`,
 		pos: []string{"\tMOVL\t\\(.*\\)\\(.*\\*1\\),"},
+	},
+
+	// multiplication by powers of two
+	{
+		fn: `
+		func $(n int) int {
+			return 32*n
+		}
+		`,
+		pos: []string{"SHLL"},
+		neg: []string{"IMULL"},
+	},
+	{
+		fn: `
+		func $(n int) int {
+			return -64*n
+		}
+		`,
+		pos: []string{"SHLL"},
+		neg: []string{"IMULL"},
 	},
 
 	// multiplication merging tests
@@ -1178,6 +1270,58 @@ var linux386Tests = []*asmTest{
 			return n*a - a*19
 		}`,
 		pos: []string{"\tADDL\t[$]-19", "\tIMULL"}, // (n-19)*a
+	},
+	// Check that len() and cap() div by a constant power of two
+	// are compiled into SHRL.
+	{
+		fn: `
+		func $(a []int) int {
+			return len(a) / 1024
+		}
+		`,
+		pos: []string{"\tSHRL\t\\$10,"},
+	},
+	{
+		fn: `
+		func $(s string) int {
+			return len(s) / (4097 >> 1)
+		}
+		`,
+		pos: []string{"\tSHRL\t\\$11,"},
+	},
+	{
+		fn: `
+		func $(a []int) int {
+			return cap(a) / ((1 << 11) + 2048)
+		}
+		`,
+		pos: []string{"\tSHRL\t\\$12,"},
+	},
+	// Check that len() and cap() mod by a constant power of two
+	// are compiled into ANDL.
+	{
+		fn: `
+		func $(a []int) int {
+			return len(a) % 1024
+		}
+		`,
+		pos: []string{"\tANDL\t\\$1023,"},
+	},
+	{
+		fn: `
+		func $(s string) int {
+			return len(s) % (4097 >> 1)
+		}
+		`,
+		pos: []string{"\tANDL\t\\$2047,"},
+	},
+	{
+		fn: `
+		func $(a []int) int {
+			return cap(a) % ((1 << 11) + 2048)
+		}
+		`,
+		pos: []string{"\tANDL\t\\$4095,"},
 	},
 }
 

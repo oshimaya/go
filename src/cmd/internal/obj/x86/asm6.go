@@ -86,6 +86,7 @@ const (
 	Ynone
 	Yi0 // $0
 	Yi1 // $1
+	Yu2 // $x, x fits in uint2
 	Yi8 // $x, x fits in int8
 	Yu8 // $x, x fits in uint8
 	Yu7 // $x, x in 0..127 (fits in both int8 and uint8)
@@ -244,6 +245,11 @@ const (
 	// The P, L, and W fields are chosen to match
 	// their eventual locations in the VEX prefix bytes.
 
+	// V field - 4 bits; ignored by encoder
+	vexNOVSR = 0 // No VEX-SPECIFIED-REGISTER
+	vexNDS   = 0
+	vexNDD   = 0
+	vexDDS   = 0
 	// P field - 2 bits
 	vex66 = 1 << 0
 	vexF3 = 2 << 0
@@ -263,49 +269,38 @@ const (
 	vex0F3A = 3 << 3
 
 	// Combinations used in the manual.
-	VEX_128_0F_WIG      = vex128 | vex0F | vexWIG
-	VEX_128_66_0F_W0    = vex128 | vex66 | vex0F | vexW0
-	VEX_128_66_0F_W1    = vex128 | vex66 | vex0F | vexW1
-	VEX_128_66_0F_WIG   = vex128 | vex66 | vex0F | vexWIG
-	VEX_128_66_0F38_W0  = vex128 | vex66 | vex0F38 | vexW0
-	VEX_128_66_0F38_W1  = vex128 | vex66 | vex0F38 | vexW1
-	VEX_128_66_0F38_WIG = vex128 | vex66 | vex0F38 | vexWIG
-	VEX_128_66_0F3A_W0  = vex128 | vex66 | vex0F3A | vexW0
-	VEX_128_66_0F3A_W1  = vex128 | vex66 | vex0F3A | vexW1
-	VEX_128_66_0F3A_WIG = vex128 | vex66 | vex0F3A | vexWIG
-	VEX_128_F2_0F_WIG   = vex128 | vexF2 | vex0F | vexWIG
-	VEX_128_F3_0F_WIG   = vex128 | vexF3 | vex0F | vexWIG
-	VEX_256_66_0F_WIG   = vex256 | vex66 | vex0F | vexWIG
-	VEX_256_66_0F38_W0  = vex256 | vex66 | vex0F38 | vexW0
-	VEX_256_66_0F38_W1  = vex256 | vex66 | vex0F38 | vexW1
-	VEX_256_66_0F38_WIG = vex256 | vex66 | vex0F38 | vexWIG
-	VEX_256_66_0F3A_W0  = vex256 | vex66 | vex0F3A | vexW0
-	VEX_256_66_0F3A_W1  = vex256 | vex66 | vex0F3A | vexW1
-	VEX_256_66_0F3A_WIG = vex256 | vex66 | vex0F3A | vexWIG
-	VEX_256_F2_0F_WIG   = vex256 | vexF2 | vex0F | vexWIG
-	VEX_256_F3_0F_WIG   = vex256 | vexF3 | vex0F | vexWIG
-	VEX_LIG_0F_WIG      = vexLIG | vex0F | vexWIG
-	VEX_LIG_66_0F_WIG   = vexLIG | vex66 | vex0F | vexWIG
-	VEX_LIG_66_0F38_W0  = vexLIG | vex66 | vex0F38 | vexW0
-	VEX_LIG_66_0F38_W1  = vexLIG | vex66 | vex0F38 | vexW1
-	VEX_LIG_66_0F3A_WIG = vexLIG | vex66 | vex0F3A | vexWIG
-	VEX_LIG_F2_0F_W0    = vexLIG | vexF2 | vex0F | vexW0
-	VEX_LIG_F2_0F_W1    = vexLIG | vexF2 | vex0F | vexW1
-	VEX_LIG_F2_0F_WIG   = vexLIG | vexF2 | vex0F | vexWIG
-	VEX_LIG_F3_0F_W0    = vexLIG | vexF3 | vex0F | vexW0
-	VEX_LIG_F3_0F_W1    = vexLIG | vexF3 | vex0F | vexW1
-	VEX_LIG_F3_0F_WIG   = vexLIG | vexF3 | vex0F | vexWIG
-	VEX_LZ_0F_WIG       = vexLZ | vex0F | vexWIG
-	VEX_LZ_0F38_W0      = vexLZ | vex0F38 | vexW0
-	VEX_LZ_0F38_W1      = vexLZ | vex0F38 | vexW1
-	VEX_LZ_66_0F38_W0   = vexLZ | vex66 | vex0F38 | vexW0
-	VEX_LZ_66_0F38_W1   = vexLZ | vex66 | vex0F38 | vexW1
-	VEX_LZ_F2_0F38_W0   = vexLZ | vexF2 | vex0F38 | vexW0
-	VEX_LZ_F2_0F38_W1   = vexLZ | vexF2 | vex0F38 | vexW1
-	VEX_LZ_F2_0F3A_W0   = vexLZ | vexF2 | vex0F3A | vexW0
-	VEX_LZ_F2_0F3A_W1   = vexLZ | vexF2 | vex0F3A | vexW1
-	VEX_LZ_F3_0F38_W0   = vexLZ | vexF3 | vex0F38 | vexW0
-	VEX_LZ_F3_0F38_W1   = vexLZ | vexF3 | vex0F38 | vexW1
+	VEX_DDS_LIG_66_0F38_W1    = vexDDS | vexLIG | vex66 | vex0F38 | vexW1
+	VEX_NDD_128_66_0F_WIG     = vexNDD | vex128 | vex66 | vex0F | vexWIG
+	VEX_NDD_256_66_0F_WIG     = vexNDD | vex256 | vex66 | vex0F | vexWIG
+	VEX_NDD_LZ_F2_0F38_W0     = vexNDD | vexLZ | vexF2 | vex0F38 | vexW0
+	VEX_NDD_LZ_F2_0F38_W1     = vexNDD | vexLZ | vexF2 | vex0F38 | vexW1
+	VEX_NDS_128_66_0F_WIG     = vexNDS | vex128 | vex66 | vex0F | vexWIG
+	VEX_NDS_128_66_0F38_WIG   = vexNDS | vex128 | vex66 | vex0F38 | vexWIG
+	VEX_NDS_128_F2_0F_WIG     = vexNDS | vex128 | vexF2 | vex0F | vexWIG
+	VEX_NDS_256_66_0F_WIG     = vexNDS | vex256 | vex66 | vex0F | vexWIG
+	VEX_NDS_256_66_0F38_WIG   = vexNDS | vex256 | vex66 | vex0F38 | vexWIG
+	VEX_NDS_256_66_0F3A_W0    = vexNDS | vex256 | vex66 | vex0F3A | vexW0
+	VEX_NDS_256_66_0F3A_WIG   = vexNDS | vex256 | vex66 | vex0F3A | vexWIG
+	VEX_NDS_LZ_0F38_W0        = vexNDS | vexLZ | vex0F38 | vexW0
+	VEX_NDS_LZ_0F38_W1        = vexNDS | vexLZ | vex0F38 | vexW1
+	VEX_NDS_LZ_66_0F38_W0     = vexNDS | vexLZ | vex66 | vex0F38 | vexW0
+	VEX_NDS_LZ_66_0F38_W1     = vexNDS | vexLZ | vex66 | vex0F38 | vexW1
+	VEX_NDS_LZ_F2_0F38_W0     = vexNDS | vexLZ | vexF2 | vex0F38 | vexW0
+	VEX_NDS_LZ_F2_0F38_W1     = vexNDS | vexLZ | vexF2 | vex0F38 | vexW1
+	VEX_NDS_LZ_F3_0F38_W0     = vexNDS | vexLZ | vexF3 | vex0F38 | vexW0
+	VEX_NDS_LZ_F3_0F38_W1     = vexNDS | vexLZ | vexF3 | vex0F38 | vexW1
+	VEX_NOVSR_128_66_0F_WIG   = vexNOVSR | vex128 | vex66 | vex0F | vexWIG
+	VEX_NOVSR_128_66_0F38_W0  = vexNOVSR | vex128 | vex66 | vex0F38 | vexW0
+	VEX_NOVSR_128_66_0F38_WIG = vexNOVSR | vex128 | vex66 | vex0F38 | vexWIG
+	VEX_NOVSR_128_F2_0F_WIG   = vexNOVSR | vex128 | vexF2 | vex0F | vexWIG
+	VEX_NOVSR_128_F3_0F_WIG   = vexNOVSR | vex128 | vexF3 | vex0F | vexWIG
+	VEX_NOVSR_256_66_0F_WIG   = vexNOVSR | vex256 | vex66 | vex0F | vexWIG
+	VEX_NOVSR_256_66_0F38_W0  = vexNOVSR | vex256 | vex66 | vex0F38 | vexW0
+	VEX_NOVSR_256_66_0F38_WIG = vexNOVSR | vex256 | vex66 | vex0F38 | vexWIG
+	VEX_NOVSR_256_F2_0F_WIG   = vexNOVSR | vex256 | vexF2 | vex0F | vexWIG
+	VEX_NOVSR_256_F3_0F_WIG   = vexNOVSR | vex256 | vexF3 | vex0F | vexWIG
+	VEX_NOVSR_LZ_F2_0F3A_W0   = vexNOVSR | vexLZ | vexF2 | vex0F3A | vexW0
+	VEX_NOVSR_LZ_F2_0F3A_W1   = vexNOVSR | vexLZ | vexF2 | vex0F3A | vexW1
 )
 
 var ycover [Ymax * Ymax]uint8
@@ -805,10 +800,9 @@ var ypalignr = []ytab{
 //	VPXOR ymm2/m256, ymmV, ymm1
 //	VEX.NDS.256.66.0F.WIG EF /r
 //
-// The NDS/NDD/DDS part can be dropped, producing this
-// Optab entry:
+// Produce this Optab entry:
 //
-//	{AVPXOR, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xEF, VEX_256_66_0F_WIG, 0xEF}}
+//	{AVPXOR, yvex_xy3, Pvex, [23]uint8{VEX_NDS_128_66_0F_WIG, 0xEF, VEX_NDS_256_66_0F_WIG, 0xEF}}
 //
 var yvex_xy3 = []ytab{
 	{Zvex_rm_v_r, 2, argList{Yxm, Yxr, Yxr}},
@@ -892,6 +886,10 @@ var yvex_vpbroadcast_sd = []ytab{
 var ymmxmm0f38 = []ytab{
 	{Zlitm_r, 3, argList{Ymm, Ymr}},
 	{Zlitm_r, 5, argList{Yxm, Yxr}},
+}
+
+var yextractps = []ytab{
+	{Zibr_m, 2, argList{Yu2, Yxr, Yml}},
 }
 
 /*
@@ -1117,6 +1115,7 @@ var optab =
 	{ADPPD, yxshuf, Pq, [23]uint8{0x3a, 0x41, 0}},
 	{ADPPS, yxshuf, Pq, [23]uint8{0x3a, 0x40, 0}},
 	{AEMMS, ynone, Pm, [23]uint8{0x77}},
+	{AEXTRACTPS, yextractps, Pq, [23]uint8{0x3a, 0x17, 0}},
 	{AENTER, nil, 0, [23]uint8{}}, /* botch */
 	{AFXRSTOR, ysvrs_mo, Pm, [23]uint8{0xae, 01, 0xae, 01}},
 	{AFXSAVE, ysvrs_om, Pm, [23]uint8{0xae, 00, 0xae, 00}},
@@ -1688,66 +1687,66 @@ var optab =
 	{AMOVSHDUP, yxm, Pf3, [23]uint8{0x16}},
 	{AMOVSLDUP, yxm, Pf3, [23]uint8{0x12}},
 
-	{AANDNL, yvex_r3, Pvex, [23]uint8{VEX_LZ_0F38_W0, 0xF2}},
-	{AANDNQ, yvex_r3, Pvex, [23]uint8{VEX_LZ_0F38_W1, 0xF2}},
-	{ABEXTRL, yvex_vmr3, Pvex, [23]uint8{VEX_LZ_0F38_W0, 0xF7}},
-	{ABEXTRQ, yvex_vmr3, Pvex, [23]uint8{VEX_LZ_0F38_W1, 0xF7}},
+	{AANDNL, yvex_r3, Pvex, [23]uint8{VEX_NDS_LZ_0F38_W0, 0xF2}},
+	{AANDNQ, yvex_r3, Pvex, [23]uint8{VEX_NDS_LZ_0F38_W1, 0xF2}},
+	{ABEXTRL, yvex_vmr3, Pvex, [23]uint8{VEX_NDS_LZ_0F38_W0, 0xF7}},
+	{ABEXTRQ, yvex_vmr3, Pvex, [23]uint8{VEX_NDS_LZ_0F38_W1, 0xF7}},
 	{ABLENDPD, yxshuf, Pq, [23]uint8{0x3a, 0x0d, 0}},
 	{ABLENDPS, yxshuf, Pq, [23]uint8{0x3a, 0x0c, 0}},
-	{ABZHIL, yvex_vmr3, Pvex, [23]uint8{VEX_LZ_0F38_W0, 0xF5}},
-	{ABZHIQ, yvex_vmr3, Pvex, [23]uint8{VEX_LZ_0F38_W1, 0xF5}},
-	{AMULXL, yvex_r3, Pvex, [23]uint8{VEX_LZ_F2_0F38_W0, 0xF6}},
-	{AMULXQ, yvex_r3, Pvex, [23]uint8{VEX_LZ_F2_0F38_W1, 0xF6}},
-	{APDEPL, yvex_r3, Pvex, [23]uint8{VEX_LZ_F2_0F38_W0, 0xF5}},
-	{APDEPQ, yvex_r3, Pvex, [23]uint8{VEX_LZ_F2_0F38_W1, 0xF5}},
-	{APEXTL, yvex_r3, Pvex, [23]uint8{VEX_LZ_F3_0F38_W0, 0xF5}},
-	{APEXTQ, yvex_r3, Pvex, [23]uint8{VEX_LZ_F3_0F38_W1, 0xF5}},
-	{ASARXL, yvex_vmr3, Pvex, [23]uint8{VEX_LZ_F3_0F38_W0, 0xF7}},
-	{ASARXQ, yvex_vmr3, Pvex, [23]uint8{VEX_LZ_F3_0F38_W1, 0xF7}},
-	{ASHLXL, yvex_vmr3, Pvex, [23]uint8{VEX_LZ_66_0F38_W0, 0xF7}},
-	{ASHLXQ, yvex_vmr3, Pvex, [23]uint8{VEX_LZ_66_0F38_W1, 0xF7}},
-	{ASHRXL, yvex_vmr3, Pvex, [23]uint8{VEX_LZ_F2_0F38_W0, 0xF7}},
-	{ASHRXQ, yvex_vmr3, Pvex, [23]uint8{VEX_LZ_F2_0F38_W1, 0xF7}},
+	{ABZHIL, yvex_vmr3, Pvex, [23]uint8{VEX_NDS_LZ_0F38_W0, 0xF5}},
+	{ABZHIQ, yvex_vmr3, Pvex, [23]uint8{VEX_NDS_LZ_0F38_W1, 0xF5}},
+	{AMULXL, yvex_r3, Pvex, [23]uint8{VEX_NDD_LZ_F2_0F38_W0, 0xF6}},
+	{AMULXQ, yvex_r3, Pvex, [23]uint8{VEX_NDD_LZ_F2_0F38_W1, 0xF6}},
+	{APDEPL, yvex_r3, Pvex, [23]uint8{VEX_NDS_LZ_F2_0F38_W0, 0xF5}},
+	{APDEPQ, yvex_r3, Pvex, [23]uint8{VEX_NDS_LZ_F2_0F38_W1, 0xF5}},
+	{APEXTL, yvex_r3, Pvex, [23]uint8{VEX_NDS_LZ_F3_0F38_W0, 0xF5}},
+	{APEXTQ, yvex_r3, Pvex, [23]uint8{VEX_NDS_LZ_F3_0F38_W1, 0xF5}},
+	{ASARXL, yvex_vmr3, Pvex, [23]uint8{VEX_NDS_LZ_F3_0F38_W0, 0xF7}},
+	{ASARXQ, yvex_vmr3, Pvex, [23]uint8{VEX_NDS_LZ_F3_0F38_W1, 0xF7}},
+	{ASHLXL, yvex_vmr3, Pvex, [23]uint8{VEX_NDS_LZ_66_0F38_W0, 0xF7}},
+	{ASHLXQ, yvex_vmr3, Pvex, [23]uint8{VEX_NDS_LZ_66_0F38_W1, 0xF7}},
+	{ASHRXL, yvex_vmr3, Pvex, [23]uint8{VEX_NDS_LZ_F2_0F38_W0, 0xF7}},
+	{ASHRXQ, yvex_vmr3, Pvex, [23]uint8{VEX_NDS_LZ_F2_0F38_W1, 0xF7}},
 
 	{AVZEROUPPER, ynone, Px, [23]uint8{0xc5, 0xf8, 0x77}},
-	{AVMOVDQU, yvex_vmovdqa, Pvex, [23]uint8{VEX_128_F3_0F_WIG, 0x6F, VEX_128_F3_0F_WIG, 0x7F, VEX_256_F3_0F_WIG, 0x6F, VEX_256_F3_0F_WIG, 0x7F}},
-	{AVMOVDQA, yvex_vmovdqa, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x6F, VEX_128_66_0F_WIG, 0x7F, VEX_256_66_0F_WIG, 0x6F, VEX_256_66_0F_WIG, 0x7F}},
-	{AVMOVNTDQ, yvex_vmovntdq, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xE7, VEX_256_66_0F_WIG, 0xE7}},
-	{AVPCMPEQB, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x74, VEX_256_66_0F_WIG, 0x74}},
-	{AVPXOR, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xEF, VEX_256_66_0F_WIG, 0xEF}},
-	{AVPMOVMSKB, yvex_xyr2, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xD7, VEX_256_66_0F_WIG, 0xD7}},
-	{AVPAND, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xDB, VEX_256_66_0F_WIG, 0xDB}},
-	{AVPBROADCASTB, yvex_vpbroadcast, Pvex, [23]uint8{VEX_128_66_0F38_W0, 0x78, VEX_256_66_0F38_W0, 0x78}},
-	{AVPTEST, yvex_xy2, Pvex, [23]uint8{VEX_128_66_0F38_WIG, 0x17, VEX_256_66_0F38_WIG, 0x17}},
-	{AVPSHUFB, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F38_WIG, 0x00, VEX_256_66_0F38_WIG, 0x00}},
-	{AVPSHUFD, yvex_xyi3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x70, VEX_256_66_0F_WIG, 0x70, VEX_128_66_0F_WIG, 0x70, VEX_256_66_0F_WIG, 0x70}},
-	{AVPOR, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xeb, VEX_256_66_0F_WIG, 0xeb}},
-	{AVPADDQ, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xd4, VEX_256_66_0F_WIG, 0xd4}},
-	{AVPADDD, yvex_xy3, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0xfe, VEX_256_66_0F_WIG, 0xfe}},
-	{AVADDSD, yvex_x3, Pvex, [23]uint8{VEX_128_F2_0F_WIG, 0x58}},
-	{AVSUBSD, yvex_x3, Pvex, [23]uint8{VEX_128_F2_0F_WIG, 0x5c}},
-	{AVFMADD213SD, yvex_x3, Pvex, [23]uint8{VEX_LIG_66_0F38_W1, 0xa9}},
-	{AVFMADD231SD, yvex_x3, Pvex, [23]uint8{VEX_LIG_66_0F38_W1, 0xb9}},
-	{AVFNMADD213SD, yvex_x3, Pvex, [23]uint8{VEX_LIG_66_0F38_W1, 0xad}},
-	{AVFNMADD231SD, yvex_x3, Pvex, [23]uint8{VEX_LIG_66_0F38_W1, 0xbd}},
-	{AVPSLLD, yvex_shift, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x72, 0xf0, VEX_256_66_0F_WIG, 0x72, 0xf0, VEX_128_66_0F_WIG, 0xf2, VEX_256_66_0F_WIG, 0xf2}},
-	{AVPSLLQ, yvex_shift, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x73, 0xf0, VEX_256_66_0F_WIG, 0x73, 0xf0, VEX_128_66_0F_WIG, 0xf3, VEX_256_66_0F_WIG, 0xf3}},
-	{AVPSRLD, yvex_shift, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x72, 0xd0, VEX_256_66_0F_WIG, 0x72, 0xd0, VEX_128_66_0F_WIG, 0xd2, VEX_256_66_0F_WIG, 0xd2}},
-	{AVPSRLQ, yvex_shift, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x73, 0xd0, VEX_256_66_0F_WIG, 0x73, 0xd0, VEX_128_66_0F_WIG, 0xd3, VEX_256_66_0F_WIG, 0xd3}},
-	{AVPSRLDQ, yvex_shift_dq, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x73, 0xd8, VEX_256_66_0F_WIG, 0x73, 0xd8}},
-	{AVPSLLDQ, yvex_shift_dq, Pvex, [23]uint8{VEX_128_66_0F_WIG, 0x73, 0xf8, VEX_256_66_0F_WIG, 0x73, 0xf8}},
-	{AVPERM2F128, yvex_yyi4, Pvex, [23]uint8{VEX_256_66_0F3A_W0, 0x06}},
-	{AVPALIGNR, yvex_yyi4, Pvex, [23]uint8{VEX_256_66_0F3A_WIG, 0x0f}},
-	{AVPBLENDD, yvex_yyi4, Pvex, [23]uint8{VEX_256_66_0F3A_WIG, 0x02}},
-	{AVINSERTI128, yvex_xyi4, Pvex, [23]uint8{VEX_256_66_0F3A_WIG, 0x38}},
-	{AVPERM2I128, yvex_yyi4, Pvex, [23]uint8{VEX_256_66_0F3A_WIG, 0x46}},
-	{ARORXL, yvex_ri3, Pvex, [23]uint8{VEX_LZ_F2_0F3A_W0, 0xf0}},
-	{ARORXQ, yvex_ri3, Pvex, [23]uint8{VEX_LZ_F2_0F3A_W1, 0xf0}},
-	{AVBROADCASTSD, yvex_vpbroadcast_sd, Pvex, [23]uint8{VEX_256_66_0F38_W0, 0x19}},
-	{AVBROADCASTSS, yvex_vpbroadcast, Pvex, [23]uint8{VEX_128_66_0F38_W0, 0x18, VEX_256_66_0F38_W0, 0x18}},
-	{AVMOVDDUP, yvex_xy2, Pvex, [23]uint8{VEX_128_F2_0F_WIG, 0x12, VEX_256_F2_0F_WIG, 0x12}},
-	{AVMOVSHDUP, yvex_xy2, Pvex, [23]uint8{VEX_128_F3_0F_WIG, 0x16, VEX_256_F3_0F_WIG, 0x16}},
-	{AVMOVSLDUP, yvex_xy2, Pvex, [23]uint8{VEX_128_F3_0F_WIG, 0x12, VEX_256_F3_0F_WIG, 0x12}},
+	{AVMOVDQU, yvex_vmovdqa, Pvex, [23]uint8{VEX_NOVSR_128_F3_0F_WIG, 0x6F, VEX_NOVSR_128_F3_0F_WIG, 0x7F, VEX_NOVSR_256_F3_0F_WIG, 0x6F, VEX_NOVSR_256_F3_0F_WIG, 0x7F}},
+	{AVMOVDQA, yvex_vmovdqa, Pvex, [23]uint8{VEX_NOVSR_128_66_0F_WIG, 0x6F, VEX_NOVSR_128_66_0F_WIG, 0x7F, VEX_NOVSR_256_66_0F_WIG, 0x6F, VEX_NOVSR_256_66_0F_WIG, 0x7F}},
+	{AVMOVNTDQ, yvex_vmovntdq, Pvex, [23]uint8{VEX_NOVSR_128_66_0F_WIG, 0xE7, VEX_NOVSR_256_66_0F_WIG, 0xE7}},
+	{AVPCMPEQB, yvex_xy3, Pvex, [23]uint8{VEX_NDS_128_66_0F_WIG, 0x74, VEX_NDS_256_66_0F_WIG, 0x74}},
+	{AVPXOR, yvex_xy3, Pvex, [23]uint8{VEX_NDS_128_66_0F_WIG, 0xEF, VEX_NDS_256_66_0F_WIG, 0xEF}},
+	{AVPMOVMSKB, yvex_xyr2, Pvex, [23]uint8{VEX_NOVSR_128_66_0F_WIG, 0xD7, VEX_NOVSR_256_66_0F_WIG, 0xD7}},
+	{AVPAND, yvex_xy3, Pvex, [23]uint8{VEX_NDS_128_66_0F_WIG, 0xDB, VEX_NDS_256_66_0F_WIG, 0xDB}},
+	{AVPBROADCASTB, yvex_vpbroadcast, Pvex, [23]uint8{VEX_NOVSR_128_66_0F38_W0, 0x78, VEX_NOVSR_256_66_0F38_W0, 0x78}},
+	{AVPTEST, yvex_xy2, Pvex, [23]uint8{VEX_NOVSR_128_66_0F38_WIG, 0x17, VEX_NOVSR_256_66_0F38_WIG, 0x17}},
+	{AVPSHUFB, yvex_xy3, Pvex, [23]uint8{VEX_NDS_128_66_0F38_WIG, 0x00, VEX_NDS_256_66_0F38_WIG, 0x00}},
+	{AVPSHUFD, yvex_xyi3, Pvex, [23]uint8{VEX_NOVSR_128_66_0F_WIG, 0x70, VEX_NOVSR_256_66_0F_WIG, 0x70, VEX_NOVSR_128_66_0F_WIG, 0x70, VEX_NOVSR_256_66_0F_WIG, 0x70}},
+	{AVPOR, yvex_xy3, Pvex, [23]uint8{VEX_NDS_128_66_0F_WIG, 0xeb, VEX_NDS_256_66_0F_WIG, 0xeb}},
+	{AVPADDQ, yvex_xy3, Pvex, [23]uint8{VEX_NDS_128_66_0F_WIG, 0xd4, VEX_NDS_256_66_0F_WIG, 0xd4}},
+	{AVPADDD, yvex_xy3, Pvex, [23]uint8{VEX_NDS_128_66_0F_WIG, 0xfe, VEX_NDS_256_66_0F_WIG, 0xfe}},
+	{AVADDSD, yvex_x3, Pvex, [23]uint8{VEX_NDS_128_F2_0F_WIG, 0x58}},
+	{AVSUBSD, yvex_x3, Pvex, [23]uint8{VEX_NDS_128_F2_0F_WIG, 0x5c}},
+	{AVFMADD213SD, yvex_x3, Pvex, [23]uint8{VEX_DDS_LIG_66_0F38_W1, 0xa9}},
+	{AVFMADD231SD, yvex_x3, Pvex, [23]uint8{VEX_DDS_LIG_66_0F38_W1, 0xb9}},
+	{AVFNMADD213SD, yvex_x3, Pvex, [23]uint8{VEX_DDS_LIG_66_0F38_W1, 0xad}},
+	{AVFNMADD231SD, yvex_x3, Pvex, [23]uint8{VEX_DDS_LIG_66_0F38_W1, 0xbd}},
+	{AVPSLLD, yvex_shift, Pvex, [23]uint8{VEX_NDS_128_66_0F_WIG, 0x72, 0xf0, VEX_NDS_256_66_0F_WIG, 0x72, 0xf0, VEX_NDD_128_66_0F_WIG, 0xf2, VEX_NDD_256_66_0F_WIG, 0xf2}},
+	{AVPSLLQ, yvex_shift, Pvex, [23]uint8{VEX_NDD_128_66_0F_WIG, 0x73, 0xf0, VEX_NDD_256_66_0F_WIG, 0x73, 0xf0, VEX_NDS_128_66_0F_WIG, 0xf3, VEX_NDS_256_66_0F_WIG, 0xf3}},
+	{AVPSRLD, yvex_shift, Pvex, [23]uint8{VEX_NDD_128_66_0F_WIG, 0x72, 0xd0, VEX_NDD_256_66_0F_WIG, 0x72, 0xd0, VEX_NDD_128_66_0F_WIG, 0xd2, VEX_NDD_256_66_0F_WIG, 0xd2}},
+	{AVPSRLQ, yvex_shift, Pvex, [23]uint8{VEX_NDD_128_66_0F_WIG, 0x73, 0xd0, VEX_NDD_256_66_0F_WIG, 0x73, 0xd0, VEX_NDS_128_66_0F_WIG, 0xd3, VEX_NDS_256_66_0F_WIG, 0xd3}},
+	{AVPSRLDQ, yvex_shift_dq, Pvex, [23]uint8{VEX_NDD_128_66_0F_WIG, 0x73, 0xd8, VEX_NDD_256_66_0F_WIG, 0x73, 0xd8}},
+	{AVPSLLDQ, yvex_shift_dq, Pvex, [23]uint8{VEX_NDD_128_66_0F_WIG, 0x73, 0xf8, VEX_NDD_256_66_0F_WIG, 0x73, 0xf8}},
+	{AVPERM2F128, yvex_yyi4, Pvex, [23]uint8{VEX_NDS_256_66_0F3A_W0, 0x06}},
+	{AVPALIGNR, yvex_yyi4, Pvex, [23]uint8{VEX_NDS_256_66_0F3A_WIG, 0x0f}},
+	{AVPBLENDD, yvex_yyi4, Pvex, [23]uint8{VEX_NDS_256_66_0F3A_WIG, 0x02}},
+	{AVINSERTI128, yvex_xyi4, Pvex, [23]uint8{VEX_NDS_256_66_0F3A_WIG, 0x38}},
+	{AVPERM2I128, yvex_yyi4, Pvex, [23]uint8{VEX_NDS_256_66_0F3A_WIG, 0x46}},
+	{ARORXL, yvex_ri3, Pvex, [23]uint8{VEX_NOVSR_LZ_F2_0F3A_W0, 0xf0}},
+	{ARORXQ, yvex_ri3, Pvex, [23]uint8{VEX_NOVSR_LZ_F2_0F3A_W1, 0xf0}},
+	{AVBROADCASTSD, yvex_vpbroadcast_sd, Pvex, [23]uint8{VEX_NOVSR_256_66_0F38_W0, 0x19}},
+	{AVBROADCASTSS, yvex_vpbroadcast, Pvex, [23]uint8{VEX_NOVSR_128_66_0F38_W0, 0x18, VEX_NOVSR_256_66_0F38_W0, 0x18}},
+	{AVMOVDDUP, yvex_xy2, Pvex, [23]uint8{VEX_NOVSR_128_F2_0F_WIG, 0x12, VEX_NOVSR_256_F2_0F_WIG, 0x12}},
+	{AVMOVSHDUP, yvex_xy2, Pvex, [23]uint8{VEX_NOVSR_128_F3_0F_WIG, 0x16, VEX_NOVSR_256_F3_0F_WIG, 0x16}},
+	{AVMOVSLDUP, yvex_xy2, Pvex, [23]uint8{VEX_NOVSR_128_F3_0F_WIG, 0x12, VEX_NOVSR_256_F3_0F_WIG, 0x12}},
 
 	{AXACQUIRE, ynone, Px, [23]uint8{0xf2}},
 	{AXRELEASE, ynone, Px, [23]uint8{0xf3}},
@@ -2049,25 +2048,33 @@ func instinit(ctxt *obj.Link) {
 		ycover[i*Ymax+i] = 1
 	}
 
+	ycover[Yi0*Ymax+Yu2] = 1
+	ycover[Yi1*Ymax+Yu2] = 1
+
 	ycover[Yi0*Ymax+Yi8] = 1
 	ycover[Yi1*Ymax+Yi8] = 1
+	ycover[Yu2*Ymax+Yi8] = 1
 	ycover[Yu7*Ymax+Yi8] = 1
 
 	ycover[Yi0*Ymax+Yu7] = 1
 	ycover[Yi1*Ymax+Yu7] = 1
+	ycover[Yu2*Ymax+Yu7] = 1
 
 	ycover[Yi0*Ymax+Yu8] = 1
 	ycover[Yi1*Ymax+Yu8] = 1
+	ycover[Yu2*Ymax+Yu8] = 1
 	ycover[Yu7*Ymax+Yu8] = 1
 
 	ycover[Yi0*Ymax+Ys32] = 1
 	ycover[Yi1*Ymax+Ys32] = 1
+	ycover[Yu2*Ymax+Ys32] = 1
 	ycover[Yu7*Ymax+Ys32] = 1
 	ycover[Yu8*Ymax+Ys32] = 1
 	ycover[Yi8*Ymax+Ys32] = 1
 
 	ycover[Yi0*Ymax+Yi32] = 1
 	ycover[Yi1*Ymax+Yi32] = 1
+	ycover[Yu2*Ymax+Yi32] = 1
 	ycover[Yu7*Ymax+Yi32] = 1
 	ycover[Yu8*Ymax+Yi32] = 1
 	ycover[Yi8*Ymax+Yi32] = 1
@@ -2076,6 +2083,7 @@ func instinit(ctxt *obj.Link) {
 	ycover[Yi0*Ymax+Yi64] = 1
 	ycover[Yi1*Ymax+Yi64] = 1
 	ycover[Yu7*Ymax+Yi64] = 1
+	ycover[Yu2*Ymax+Yi64] = 1
 	ycover[Yu8*Ymax+Yi64] = 1
 	ycover[Yi8*Ymax+Yi64] = 1
 	ycover[Ys32*Ymax+Yi64] = 1
@@ -2405,6 +2413,9 @@ func oclass(ctxt *obj.Link, p *obj.Prog, a *obj.Addr) int {
 		}
 		if v == 1 {
 			return Yi1
+		}
+		if v >= 0 && v <= 3 {
+			return Yu2
 		}
 		if v >= 0 && v <= 127 {
 			return Yu7
