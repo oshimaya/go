@@ -425,11 +425,11 @@ var (
 	testKillTimeout = 10 * time.Minute
 )
 
-var testMainDeps = map[string]bool{
+var testMainDeps = []string{
 	// Dependencies for testmain.
-	"testing":                   true,
-	"testing/internal/testdeps": true,
-	"os": true,
+	"os",
+	"testing",
+	"testing/internal/testdeps",
 }
 
 func runTest(cmd *base.Command, args []string) {
@@ -490,7 +490,7 @@ func runTest(cmd *base.Command, args []string) {
 		cfg.BuildV = testV
 
 		deps := make(map[string]bool)
-		for dep := range testMainDeps {
+		for _, dep := range testMainDeps {
 			deps[dep] = true
 		}
 
@@ -566,7 +566,6 @@ func runTest(cmd *base.Command, args []string) {
 			}
 			p.Stale = true // rebuild
 			p.StaleReason = "rebuild for coverage"
-			p.Internal.Fake = true // do not warn about rebuild
 			p.Internal.CoverMode = testCoverMode
 			var coverFiles []string
 			coverFiles = append(coverFiles, p.GoFiles...)
@@ -627,56 +626,12 @@ func runTest(cmd *base.Command, args []string) {
 		}
 	}
 
-	// If we are building any out-of-date packages other
-	// than those under test, warn.
-	okBuild := map[*load.Package]bool{}
-	for _, p := range pkgs {
-		okBuild[p] = true
-	}
-	warned := false
-	for _, a := range work.ActionList(root) {
-		if a.Package == nil || okBuild[a.Package] {
-			continue
-		}
-		okBuild[a.Package] = true // warn at most once
-
-		// Don't warn about packages being rebuilt because of
-		// things like coverage analysis.
-		for _, p1 := range a.Package.Internal.Imports {
-			if p1.Internal.Fake {
-				a.Package.Internal.Fake = true
-			}
-		}
-
-		if a.Func != nil && !okBuild[a.Package] && !a.Package.Internal.Fake && !a.Package.Internal.Local {
-			if !warned {
-				fmt.Fprintf(os.Stderr, "warning: building out-of-date packages:\n")
-				warned = true
-			}
-			fmt.Fprintf(os.Stderr, "\t%s\n", a.Package.ImportPath)
-		}
-	}
-	if warned {
-		args := strings.Join(pkgArgs, " ")
-		if args != "" {
-			args = " " + args
-		}
-		extraOpts := ""
-		if cfg.BuildRace {
-			extraOpts = "-race "
-		}
-		if cfg.BuildMSan {
-			extraOpts = "-msan "
-		}
-		fmt.Fprintf(os.Stderr, "installing these packages with 'go test %s-i%s' will speed future tests.\n\n", extraOpts, args)
-	}
-
 	b.Do(root)
 }
 
 // ensures that package p imports the named package
 func ensureImport(p *load.Package, pkg string) {
-	for _, d := range p.Internal.Deps {
+	for _, d := range p.Internal.Imports {
 		if d.Name == pkg {
 			return
 		}
@@ -773,29 +728,6 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 	}
 	testBinary := elem + ".test"
 
-	// The ptest package needs to be importable under the
-	// same import path that p has, but we cannot put it in
-	// the usual place in the temporary tree, because then
-	// other tests will see it as the real package.
-	// Instead we make a _test directory under the import path
-	// and then repeat the import path there. We tell the
-	// compiler and linker to look in that _test directory first.
-	//
-	// That is, if the package under test is unicode/utf8,
-	// then the normal place to write the package archive is
-	// $WORK/unicode/utf8.a, but we write the test package archive to
-	// $WORK/unicode/utf8/_test/unicode/utf8.a.
-	// We write the external test package archive to
-	// $WORK/unicode/utf8/_test/unicode/utf8_test.a.
-	testDir := filepath.Join(b.WorkDir, filepath.FromSlash(p.ImportPath+"/_test"))
-	ptestObj := work.BuildToolchain.Pkgpath(testDir, p)
-
-	// Create the directory for the .a files.
-	ptestDir, _ := filepath.Split(ptestObj)
-	if err := b.Mkdir(ptestDir); err != nil {
-		return nil, nil, nil, err
-	}
-
 	// Should we apply coverage analysis locally,
 	// only for this package and only for this test?
 	// Yes, if -cover is on but -coverpkg has not specified
@@ -812,8 +744,6 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 		ptest.Internal.Target = ""
 		ptest.Imports = str.StringList(p.Imports, p.TestImports)
 		ptest.Internal.Imports = append(append([]*load.Package{}, p.Internal.Imports...), imports...)
-		ptest.Internal.Pkgdir = testDir
-		ptest.Internal.Fake = true
 		ptest.Internal.ForceLibrary = true
 		ptest.Stale = true
 		ptest.StaleReason = "rebuild for test"
@@ -856,15 +786,17 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 				Build: &build.Package{
 					ImportPos: p.Internal.Build.XTestImportPos,
 				},
-				Imports:  ximports,
-				Pkgdir:   testDir,
-				Fake:     true,
-				External: true,
+				Imports: ximports,
 			},
 		}
 		if pxtestNeedsPtest {
 			pxtest.Internal.Imports = append(pxtest.Internal.Imports, ptest)
 		}
+	}
+
+	testDir := b.NewObjdir()
+	if err := b.Mkdir(testDir); err != nil {
+		return nil, nil, nil, err
 	}
 
 	// Action for building pkg.test.
@@ -873,21 +805,29 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 			Name:       "main",
 			Dir:        testDir,
 			GoFiles:    []string{"_testmain.go"},
-			ImportPath: "testmain",
+			ImportPath: p.ImportPath + " (testmain)",
 			Root:       p.Root,
 			Stale:      true,
 		},
 		Internal: load.PackageInternal{
 			Build:     &build.Package{Name: "main"},
-			Pkgdir:    testDir,
-			Fake:      true,
 			OmitDebug: !testC && !testNeedBinary,
 		},
 	}
 
-	// The generated main also imports testing, regexp, and os.
+	// The generated main also imports testing, regexp, os, and maybe runtime/cgo.
 	stk.Push("testmain")
-	for dep := range testMainDeps {
+	forceCgo := false
+	if cfg.BuildContext.GOOS == "darwin" {
+		if cfg.BuildContext.GOARCH == "arm" || cfg.BuildContext.GOARCH == "arm64" {
+			forceCgo = true
+		}
+	}
+	deps := testMainDeps
+	if cfg.ExternalLinkingForced() || forceCgo {
+		deps = str.StringList(deps, "runtime/cgo")
+	}
+	for _, dep := range deps {
 		if dep == ptest.ImportPath {
 			pmain.Internal.Imports = append(pmain.Internal.Imports, ptest)
 		} else {
@@ -932,25 +872,24 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 
 	if ptest != p && localCover {
 		// We have made modifications to the package p being tested
-		// and are rebuilding p (as ptest), writing it to the testDir tree.
-		// Arrange to rebuild, writing to that same tree, all packages q
-		// such that the test depends on q, and q depends on p.
+		// and are rebuilding p (as ptest).
+		// Arrange to rebuild all packages q such that
+		// the test depends on q and q depends on p.
 		// This makes sure that q sees the modifications to p.
 		// Strictly speaking, the rebuild is only necessary if the
 		// modifications to p change its export metadata, but
 		// determining that is a bit tricky, so we rebuild always.
+		// TODO(rsc): Once we get export metadata changes
+		// handled properly, look into the expense of dropping
+		// "&& localCover" above.
 		//
 		// This will cause extra compilation, so for now we only do it
 		// when testCover is set. The conditions are more general, though,
 		// and we may find that we need to do it always in the future.
-		recompileForTest(pmain, p, ptest, testDir)
+		recompileForTest(pmain, p, ptest)
 	}
 
-	if cfg.BuildContext.GOOS == "darwin" {
-		if cfg.BuildContext.GOARCH == "arm" || cfg.BuildContext.GOARCH == "arm64" {
-			t.NeedCgo = true
-		}
-	}
+	t.NeedCgo = forceCgo
 
 	for _, cp := range pmain.Internal.Imports {
 		if len(cp.Internal.CoverVars) > 0 {
@@ -959,9 +898,9 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 	}
 
 	if !cfg.BuildN {
-		// writeTestmain writes _testmain.go. This must happen after recompileForTest,
-		// because recompileForTest modifies XXX.
-		if err := writeTestmain(filepath.Join(testDir, "_testmain.go"), t); err != nil {
+		// writeTestmain writes _testmain.go,
+		// using the test description gathered in t.
+		if err := writeTestmain(testDir+"_testmain.go", t); err != nil {
 			return nil, nil, nil, err
 		}
 	}
@@ -970,23 +909,11 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 
 	if ptest != p {
 		a := b.Action(work.ModeBuild, work.ModeBuild, ptest)
-		a.Objdir = testDir + string(filepath.Separator) + "_obj_test" + string(filepath.Separator)
-		a.Objpkg = ptestObj
-		a.Target = ptestObj
 		a.Link = false
 	}
 
-	if pxtest != nil {
-		a := b.Action(work.ModeBuild, work.ModeBuild, pxtest)
-		a.Objdir = testDir + string(filepath.Separator) + "_obj_xtest" + string(filepath.Separator)
-		a.Objpkg = work.BuildToolchain.Pkgpath(testDir, pxtest)
-		a.Target = a.Objpkg
-	}
-
 	a := b.Action(work.ModeBuild, work.ModeBuild, pmain)
-	a.Objdir = testDir + string(filepath.Separator)
-	a.Objpkg = filepath.Join(testDir, "main.a")
-	a.Target = filepath.Join(testDir, testBinary) + cfg.ExeSuffix
+	a.Target = testDir + testBinary + cfg.ExeSuffix
 	if cfg.Goos == "windows" {
 		// There are many reserved words on Windows that,
 		// if used in the name of an executable, cause Windows
@@ -1012,7 +939,7 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 		// we could just do this always on Windows.
 		for _, bad := range windowsBadWords {
 			if strings.Contains(testBinary, bad) {
-				a.Target = filepath.Join(testDir, "test.test") + cfg.ExeSuffix
+				a.Target = testDir + "test.test" + cfg.ExeSuffix
 				break
 			}
 		}
@@ -1050,6 +977,7 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 			Func:    builderCleanTest,
 			Deps:    []*work.Action{runAction},
 			Package: p,
+			Objdir:  testDir,
 		}
 		printAction = &work.Action{
 			Func:    builderPrintTest,
@@ -1079,7 +1007,7 @@ Search:
 	return stk
 }
 
-func recompileForTest(pmain, preal, ptest *load.Package, testDir string) {
+func recompileForTest(pmain, preal, ptest *load.Package) {
 	// The "test copy" of preal is ptest.
 	// For each package that depends on preal, make a "test copy"
 	// that depends on ptest. And so on, up the dependency tree.
@@ -1092,28 +1020,21 @@ func recompileForTest(pmain, preal, ptest *load.Package, testDir string) {
 				return
 			}
 			didSplit = true
-			if p.Internal.Pkgdir != testDir {
-				p1 := new(load.Package)
-				testCopy[p] = p1
-				*p1 = *p
-				p1.Internal.Imports = make([]*load.Package, len(p.Internal.Imports))
-				copy(p1.Internal.Imports, p.Internal.Imports)
-				p = p1
-				p.Internal.Pkgdir = testDir
-				p.Internal.Target = ""
-				p.Internal.Fake = true
-				p.Stale = true
-				p.StaleReason = "depends on package being tested"
+			if testCopy[p] != nil {
+				panic("recompileForTest loop")
 			}
+			p1 := new(load.Package)
+			testCopy[p] = p1
+			*p1 = *p
+			p1.Internal.Imports = make([]*load.Package, len(p.Internal.Imports))
+			copy(p1.Internal.Imports, p.Internal.Imports)
+			p = p1
+			p.Internal.Target = ""
+			p.Stale = true
+			p.StaleReason = "depends on package being tested"
 		}
 
-		// Update p.Deps and p.Internal.Imports to use at test copies.
-		for i, dep := range p.Internal.Deps {
-			if p1 := testCopy[dep]; p1 != nil && p1 != dep {
-				split()
-				p.Internal.Deps[i] = p1
-			}
-		}
+		// Update p.Internal.Imports to use test copies.
 		for i, imp := range p.Internal.Imports {
 			if p1 := testCopy[imp]; p1 != nil && p1 != imp {
 				split()
@@ -1288,9 +1209,10 @@ func builderCleanTest(b *work.Builder, a *work.Action) error {
 	if cfg.BuildWork {
 		return nil
 	}
-	run := a.Deps[0]
-	testDir := filepath.Join(b.WorkDir, filepath.FromSlash(run.Package.ImportPath+"/_test"))
-	os.RemoveAll(testDir)
+	if cfg.BuildX {
+		b.Showcmd("", "rm -r %s", a.Objdir)
+	}
+	os.RemoveAll(a.Objdir)
 	return nil
 }
 

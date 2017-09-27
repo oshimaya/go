@@ -156,7 +156,7 @@ var pkgDeps = map[string][]string{
 
 	"internal/poll": {"L0", "internal/race", "syscall", "time", "unicode/utf16", "unicode/utf8"},
 	"os":            {"L1", "os", "syscall", "time", "internal/poll", "internal/syscall/windows"},
-	"path/filepath": {"L2", "os", "syscall"},
+	"path/filepath": {"L2", "os", "syscall", "internal/syscall/windows"},
 	"io/ioutil":     {"L2", "os", "path/filepath", "time"},
 	"os/exec":       {"L2", "os", "context", "path/filepath", "syscall"},
 	"os/signal":     {"L2", "os", "syscall"},
@@ -226,7 +226,7 @@ var pkgDeps = map[string][]string{
 	"go/types":                  {"L4", "GOPARSER", "container/heap", "go/constant"},
 
 	// One of a kind.
-	"archive/tar":              {"L4", "OS", "syscall"},
+	"archive/tar":              {"L4", "OS", "syscall", "os/user"},
 	"archive/zip":              {"L4", "OS", "compress/flate"},
 	"container/heap":           {"sort"},
 	"compress/bzip2":           {"L4"},
@@ -379,7 +379,7 @@ var pkgDeps = map[string][]string{
 		"L4", "CRYPTO-MATH", "OS", "CGO",
 		"crypto/x509/pkix", "encoding/pem", "encoding/hex", "net", "os/user", "syscall",
 	},
-	"crypto/x509/pkix": {"L4", "CRYPTO-MATH"},
+	"crypto/x509/pkix": {"L4", "CRYPTO-MATH", "encoding/hex"},
 
 	// Simple net+crypto-aware packages.
 	"mime/multipart": {"L4", "OS", "mime", "crypto/rand", "net/textproto", "mime/quotedprintable"},

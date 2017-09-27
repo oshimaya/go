@@ -461,6 +461,68 @@ func TestMuxRedirectLeadingSlashes(t *testing.T) {
 	}
 }
 
+// Test that the special cased "/route" redirect
+// implicitly created by a registered "/route/"
+// properly sets the query string in the redirect URL.
+// See Issue 17841.
+func TestServeWithSlashRedirectKeepsQueryString(t *testing.T) {
+	setParallel(t)
+	defer afterTest(t)
+
+	writeBackQuery := func(w ResponseWriter, r *Request) {
+		fmt.Fprintf(w, "%s", r.URL.RawQuery)
+	}
+
+	mux := NewServeMux()
+	mux.HandleFunc("/testOne", writeBackQuery)
+	mux.HandleFunc("/testTwo/", writeBackQuery)
+	mux.HandleFunc("/testThree", writeBackQuery)
+	mux.HandleFunc("/testThree/", func(w ResponseWriter, r *Request) {
+		fmt.Fprintf(w, "%s:bar", r.URL.RawQuery)
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	tests := [...]struct {
+		path     string
+		method   string
+		want     string
+		statusOk bool
+	}{
+		0: {"/testOne?this=that", "GET", "this=that", true},
+		1: {"/testTwo?foo=bar", "GET", "foo=bar", true},
+		2: {"/testTwo?a=1&b=2&a=3", "GET", "a=1&b=2&a=3", true},
+		3: {"/testTwo?", "GET", "", true},
+		4: {"/testThree?foo", "GET", "foo", true},
+		5: {"/testThree/?foo", "GET", "foo:bar", true},
+		6: {"/testThree?foo", "CONNECT", "foo", true},
+		7: {"/testThree/?foo", "CONNECT", "foo:bar", true},
+
+		// canonicalization or not
+		8: {"/testOne/foo/..?foo", "GET", "foo", true},
+		9: {"/testOne/foo/..?foo", "CONNECT", "404 page not found\n", false},
+	}
+
+	for i, tt := range tests {
+		req, _ := NewRequest(tt.method, ts.URL+tt.path, nil)
+		res, err := ts.Client().Do(req)
+		if err != nil {
+			continue
+		}
+		slurp, _ := ioutil.ReadAll(res.Body)
+		res.Body.Close()
+		if !tt.statusOk {
+			if got, want := res.StatusCode, 404; got != want {
+				t.Errorf("#%d: Status = %d; want = %d", i, got, want)
+			}
+		}
+		if got, want := string(slurp), tt.want; got != want {
+			t.Errorf("#%d: Body = %q; want = %q", i, got, want)
+		}
+	}
+}
+
 func BenchmarkServeMux(b *testing.B) {
 
 	type test struct {
@@ -2376,6 +2438,14 @@ func TestTimeoutHandlerEmptyResponse(t *testing.T) {
 	}
 }
 
+// https://golang.org/issues/22084
+func TestTimeoutHandlerPanicRecovery(t *testing.T) {
+	wrapper := func(h Handler) Handler {
+		return TimeoutHandler(h, time.Second, "")
+	}
+	testHandlerPanic(t, false, false, wrapper, "intentional death for testing")
+}
+
 func TestRedirectBadPath(t *testing.T) {
 	// This used to crash. It's not valid input (bad path), but it
 	// shouldn't crash.
@@ -2489,22 +2559,22 @@ func testZeroLengthPostAndResponse(t *testing.T, h2 bool) {
 	}
 }
 
-func TestHandlerPanicNil_h1(t *testing.T) { testHandlerPanic(t, false, h1Mode, nil) }
-func TestHandlerPanicNil_h2(t *testing.T) { testHandlerPanic(t, false, h2Mode, nil) }
+func TestHandlerPanicNil_h1(t *testing.T) { testHandlerPanic(t, false, h1Mode, nil, nil) }
+func TestHandlerPanicNil_h2(t *testing.T) { testHandlerPanic(t, false, h2Mode, nil, nil) }
 
 func TestHandlerPanic_h1(t *testing.T) {
-	testHandlerPanic(t, false, h1Mode, "intentional death for testing")
+	testHandlerPanic(t, false, h1Mode, nil, "intentional death for testing")
 }
 func TestHandlerPanic_h2(t *testing.T) {
-	testHandlerPanic(t, false, h2Mode, "intentional death for testing")
+	testHandlerPanic(t, false, h2Mode, nil, "intentional death for testing")
 }
 
 func TestHandlerPanicWithHijack(t *testing.T) {
 	// Only testing HTTP/1, and our http2 server doesn't support hijacking.
-	testHandlerPanic(t, true, h1Mode, "intentional death for testing")
+	testHandlerPanic(t, true, h1Mode, nil, "intentional death for testing")
 }
 
-func testHandlerPanic(t *testing.T, withHijack, h2 bool, panicValue interface{}) {
+func testHandlerPanic(t *testing.T, withHijack, h2 bool, wrapper func(Handler) Handler, panicValue interface{}) {
 	defer afterTest(t)
 	// Unlike the other tests that set the log output to ioutil.Discard
 	// to quiet the output, this test uses a pipe. The pipe serves three
@@ -2527,7 +2597,7 @@ func testHandlerPanic(t *testing.T, withHijack, h2 bool, panicValue interface{})
 	defer log.SetOutput(os.Stderr)
 	defer pw.Close()
 
-	cst := newClientServerTest(t, h2, HandlerFunc(func(w ResponseWriter, r *Request) {
+	var handler Handler = HandlerFunc(func(w ResponseWriter, r *Request) {
 		if withHijack {
 			rwc, _, err := w.(Hijacker).Hijack()
 			if err != nil {
@@ -2536,7 +2606,11 @@ func testHandlerPanic(t *testing.T, withHijack, h2 bool, panicValue interface{})
 			defer rwc.Close()
 		}
 		panic(panicValue)
-	}))
+	})
+	if wrapper != nil {
+		handler = wrapper(handler)
+	}
+	cst := newClientServerTest(t, h2, handler)
 	defer cst.close()
 
 	// Do a blocking read on the log output pipe so its logging

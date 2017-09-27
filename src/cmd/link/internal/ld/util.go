@@ -6,6 +6,7 @@ package ld
 
 import (
 	"bytes"
+	"cmd/link/internal/sym"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -92,10 +93,7 @@ func Exit(code int) {
 // Exitf logs an error message then calls Exit(2).
 func Exitf(format string, a ...interface{}) {
 	fmt.Fprintf(os.Stderr, os.Args[0]+": "+format+"\n", a...)
-	if coutbuf.f != nil {
-		coutbuf.f.Close()
-		mayberemoveoutfile()
-	}
+	nerrors++
 	Exit(2)
 }
 
@@ -105,7 +103,7 @@ func Exitf(format string, a ...interface{}) {
 //
 // Logging an error means that on exit cmd/link will delete any
 // output file and return a non-zero error code.
-func Errorf(s *Symbol, format string, args ...interface{}) {
+func Errorf(s *sym.Symbol, format string, args ...interface{}) {
 	if s != nil {
 		format = s.Name + ": " + format
 	}

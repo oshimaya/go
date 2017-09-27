@@ -136,6 +136,7 @@ var (
 	callExpr      *ast.CallExpr
 	compositeLit  *ast.CompositeLit
 	exprStmt      *ast.ExprStmt
+	forStmt       *ast.ForStmt
 	funcDecl      *ast.FuncDecl
 	funcLit       *ast.FuncLit
 	genDecl       *ast.GenDecl
@@ -250,7 +251,7 @@ func main() {
 		}
 		os.Exit(exitCode)
 	}
-	if doPackage(".", flag.Args(), nil) == nil {
+	if doPackage(flag.Args(), nil) == nil {
 		warnf("no files checked")
 	}
 	os.Exit(exitCode)
@@ -290,12 +291,12 @@ func doPackageDir(directory string) {
 	names = append(names, pkg.TestGoFiles...) // These are also in the "foo" package.
 	names = append(names, pkg.SFiles...)
 	prefixDirectory(directory, names)
-	basePkg := doPackage(directory, names, nil)
+	basePkg := doPackage(names, nil)
 	// Is there also a "foo_test" package? If so, do that one as well.
 	if len(pkg.XTestGoFiles) > 0 {
 		names = pkg.XTestGoFiles
 		prefixDirectory(directory, names)
-		doPackage(directory, names, basePkg)
+		doPackage(names, basePkg)
 	}
 }
 
@@ -312,7 +313,7 @@ type Package struct {
 
 // doPackage analyzes the single package constructed from the named files.
 // It returns the parsed Package or nil if none of the files have been checked.
-func doPackage(directory string, names []string, basePkg *Package) *Package {
+func doPackage(names []string, basePkg *Package) *Package {
 	var files []*File
 	var astFiles []*ast.File
 	fs := token.NewFileSet()
@@ -495,6 +496,8 @@ func (f *File) Visit(node ast.Node) ast.Visitor {
 		key = compositeLit
 	case *ast.ExprStmt:
 		key = exprStmt
+	case *ast.ForStmt:
+		key = forStmt
 	case *ast.FuncDecl:
 		key = funcDecl
 	case *ast.FuncLit:
