@@ -4,6 +4,7 @@ import (
 	"cmd/internal/bio"
 	"cmd/internal/objabi"
 	"cmd/internal/sys"
+	"cmd/link/internal/sym"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -92,7 +93,7 @@ type ldMachoSect struct {
 	flags   uint32
 	res1    uint32
 	res2    uint32
-	sym     *Symbol
+	sym     *sym.Symbol
 	rel     []ldMachoRel
 }
 
@@ -123,7 +124,7 @@ type ldMachoSym struct {
 	desc    uint16
 	kind    int8
 	value   uint64
-	sym     *Symbol
+	sym     *sym.Symbol
 }
 
 type ldMachoDysymtab struct {
@@ -306,12 +307,9 @@ func macholoadrel(m *ldMachoObj, sect *ldMachoSect) int {
 	if _, err := io.ReadFull(m.f, buf); err != nil {
 		return -1
 	}
-	var p []byte
-	var r *ldMachoRel
-	var v uint32
-	for i := 0; uint32(i) < sect.nreloc; i++ {
-		r = &rel[i]
-		p = buf[i*8:]
+	for i := uint32(0); i < sect.nreloc; i++ {
+		r := &rel[i]
+		p := buf[i*8:]
 		r.addr = m.e.Uint32(p)
 
 		// TODO(rsc): Wrong interpretation for big-endian bitfields?
@@ -319,7 +317,7 @@ func macholoadrel(m *ldMachoObj, sect *ldMachoSect) int {
 			// scatterbrained relocation
 			r.scattered = 1
 
-			v = r.addr >> 24
+			v := r.addr >> 24
 			r.addr &= 0xFFFFFF
 			r.type_ = uint8(v & 0xF)
 			v >>= 4
@@ -328,7 +326,7 @@ func macholoadrel(m *ldMachoObj, sect *ldMachoSect) int {
 			r.pcrel = uint8(v & 1)
 			r.value = m.e.Uint32(p[4:])
 		} else {
-			v = m.e.Uint32(p[4:])
+			v := m.e.Uint32(p[4:])
 			r.symnum = v & 0xFFFFFF
 			v >>= 24
 			r.pcrel = uint8(v & 1)
@@ -390,11 +388,9 @@ func macholoadsym(m *ldMachoObj, symtab *ldMachoSymtab) int {
 	}
 	sym := make([]ldMachoSym, symtab.nsym)
 	p := symbuf
-	var s *ldMachoSym
-	var v uint32
-	for i := 0; uint32(i) < symtab.nsym; i++ {
-		s = &sym[i]
-		v = m.e.Uint32(p)
+	for i := uint32(0); i < symtab.nsym; i++ {
+		s := &sym[i]
+		v := m.e.Uint32(p)
 		if v >= symtab.strsize {
 			return -1
 		}
@@ -433,15 +429,14 @@ func ldmacho(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string) {
 	var sect *ldMachoSect
 	var rel *ldMachoRel
 	var rpi int
-	var s *Symbol
-	var s1 *Symbol
-	var outer *Symbol
+	var s *sym.Symbol
+	var s1 *sym.Symbol
+	var outer *sym.Symbol
 	var c *ldMachoCmd
 	var symtab *ldMachoSymtab
 	var dsymtab *ldMachoDysymtab
-	var sym *ldMachoSym
-	var r []Reloc
-	var rp *Reloc
+	var r []sym.Reloc
+	var rp *sym.Reloc
 	var name string
 
 	localSymVersion := ctxt.Syms.IncVersion()
@@ -485,9 +480,9 @@ func ldmacho(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string) {
 	m.length = length
 	m.name = pn
 
-	switch SysArch.Family {
+	switch ctxt.Arch.Family {
 	default:
-		Errorf(nil, "%s: mach-o %s unimplemented", pn, SysArch.Name)
+		Errorf(nil, "%s: mach-o %s unimplemented", pn, ctxt.Arch.Name)
 		return
 
 	case sys.AMD64:
@@ -602,16 +597,16 @@ func ldmacho(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string) {
 
 		if sect.segname == "__TEXT" {
 			if sect.name == "__text" {
-				s.Type = STEXT
+				s.Type = sym.STEXT
 			} else {
-				s.Type = SRODATA
+				s.Type = sym.SRODATA
 			}
 		} else {
 			if sect.name == "__bss" {
-				s.Type = SNOPTRBSS
+				s.Type = sym.SNOPTRBSS
 				s.P = s.P[:0]
 			} else {
-				s.Type = SNOPTRDATA
+				s.Type = sym.SNOPTRDATA
 			}
 		}
 
@@ -621,35 +616,35 @@ func ldmacho(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string) {
 	// enter sub-symbols into symbol table.
 	// have to guess sizes from next symbol.
 	for i := 0; uint32(i) < symtab.nsym; i++ {
-		sym = &symtab.sym[i]
-		if sym.type_&N_STAB != 0 {
+		machsym := &symtab.sym[i]
+		if machsym.type_&N_STAB != 0 {
 			continue
 		}
 
 		// TODO: check sym->type against outer->type.
-		name = sym.name
+		name = machsym.name
 
 		if name[0] == '_' && name[1] != '\x00' {
 			name = name[1:]
 		}
 		v := 0
-		if sym.type_&N_EXT == 0 {
+		if machsym.type_&N_EXT == 0 {
 			v = localSymVersion
 		}
 		s = ctxt.Syms.Lookup(name, v)
-		if sym.type_&N_EXT == 0 {
-			s.Attr |= AttrDuplicateOK
+		if machsym.type_&N_EXT == 0 {
+			s.Attr |= sym.AttrDuplicateOK
 		}
-		sym.sym = s
-		if sym.sectnum == 0 { // undefined
+		machsym.sym = s
+		if machsym.sectnum == 0 { // undefined
 			continue
 		}
-		if uint32(sym.sectnum) > c.seg.nsect {
-			err = fmt.Errorf("reference to invalid section %d", sym.sectnum)
+		if uint32(machsym.sectnum) > c.seg.nsect {
+			err = fmt.Errorf("reference to invalid section %d", machsym.sectnum)
 			goto bad
 		}
 
-		sect = &c.seg.sect[sym.sectnum-1]
+		sect = &c.seg.sect[machsym.sectnum-1]
 		outer = sect.sym
 		if outer == nil {
 			err = fmt.Errorf("reference to invalid section %s/%s", sect.segname, sect.name)
@@ -663,22 +658,22 @@ func ldmacho(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string) {
 			Exitf("%s: duplicate symbol reference: %s in both %s and %s", pn, s.Name, s.Outer.Name, sect.sym.Name)
 		}
 
-		s.Type = outer.Type | SSUB
+		s.Type = outer.Type | sym.SSUB
 		s.Sub = outer.Sub
 		outer.Sub = s
 		s.Outer = outer
-		s.Value = int64(sym.value - sect.addr)
+		s.Value = int64(machsym.value - sect.addr)
 		if !s.Attr.CgoExportDynamic() {
 			s.Dynimplib = "" // satisfy dynimport
 		}
-		if outer.Type == STEXT {
+		if outer.Type == sym.STEXT {
 			if s.Attr.External() && !s.Attr.DuplicateOK() {
 				Errorf(s, "%s: duplicate symbol definition", pn)
 			}
-			s.Attr |= AttrExternal
+			s.Attr |= sym.AttrExternal
 		}
 
-		sym.sym = s
+		machsym.sym = s
 	}
 
 	// Sort outer lists by address, adding to textp.
@@ -702,17 +697,17 @@ func ldmacho(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string) {
 			}
 		}
 
-		if s.Type == STEXT {
+		if s.Type == sym.STEXT {
 			if s.Attr.OnList() {
 				log.Fatalf("symbol %s listed multiple times", s.Name)
 			}
-			s.Attr |= AttrOnList
+			s.Attr |= sym.AttrOnList
 			ctxt.Textp = append(ctxt.Textp, s)
 			for s1 = s.Sub; s1 != nil; s1 = s1.Sub {
 				if s1.Attr.OnList() {
 					log.Fatalf("symbol %s listed multiple times", s1.Name)
 				}
-				s1.Attr |= AttrOnList
+				s1.Attr |= sym.AttrOnList
 				ctxt.Textp = append(ctxt.Textp, s1)
 			}
 		}
@@ -729,14 +724,14 @@ func ldmacho(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string) {
 		if sect.rel == nil {
 			continue
 		}
-		r = make([]Reloc, sect.nreloc)
+		r = make([]sym.Reloc, sect.nreloc)
 		rpi = 0
 	Reloc:
 		for j = 0; uint32(j) < sect.nreloc; j++ {
 			rp = &r[rpi]
 			rel = &sect.rel[j]
 			if rel.scattered != 0 {
-				if SysArch.Family != sys.I386 {
+				if ctxt.Arch.Family != sys.I386 {
 					// mach-o only uses scattered relocation on 32-bit platforms
 					Errorf(s, "unexpected scattered relocation")
 					continue
@@ -832,7 +827,7 @@ func ldmacho(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string) {
 			rp.Off = int32(rel.addr)
 
 			// Handle X86_64_RELOC_SIGNED referencing a section (rel->extrn == 0).
-			if SysArch.Family == sys.AMD64 && rel.extrn == 0 && rel.type_ == 1 {
+			if ctxt.Arch.Family == sys.AMD64 && rel.extrn == 0 && rel.type_ == MACHO_X86_64_RELOC_SIGNED {
 				// Calculate the addend as the offset into the section.
 				//
 				// The rip-relative offset stored in the object file is encoded
@@ -855,10 +850,17 @@ func ldmacho(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string) {
 				rp.Add = int64(int32(e.Uint32(s.P[rp.Off:])))
 			}
 
+			// An unsigned internal relocation has a value offset
+			// by the section address.
+			if ctxt.Arch.Family == sys.AMD64 && rel.extrn == 0 && rel.type_ == MACHO_X86_64_RELOC_UNSIGNED {
+				secaddr = c.seg.sect[rel.symnum-1].addr
+				rp.Add -= int64(secaddr)
+			}
+
 			// For i386 Mach-O PC-relative, the addend is written such that
 			// it *is* the PC being subtracted. Use that to make
 			// it match our version of PC-relative.
-			if rel.pcrel != 0 && SysArch.Family == sys.I386 {
+			if rel.pcrel != 0 && ctxt.Arch.Family == sys.I386 {
 				rp.Add += int64(rp.Off) + int64(rp.Siz)
 			}
 			if rel.extrn == 0 {
@@ -877,7 +879,7 @@ func ldmacho(ctxt *Link, f *bio.Reader, pkg string, length int64, pn string) {
 				// include that information in the addend.
 				// We only care about the delta from the
 				// section base.
-				if SysArch.Family == sys.I386 {
+				if ctxt.Arch.Family == sys.I386 {
 					rp.Add -= int64(c.seg.sect[rel.symnum-1].addr)
 				}
 			} else {

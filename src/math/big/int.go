@@ -153,6 +153,11 @@ func (z *Int) Mul(x, y *Int) *Int {
 	// x * (-y) == -(x * y)
 	// (-x) * y == -(x * y)
 	// (-x) * (-y) == x * y
+	if x == y {
+		z.abs = z.abs.sqr(x.abs)
+		z.neg = false
+		return z
+	}
 	z.abs = z.abs.mul(x.abs, y.abs)
 	z.neg = len(z.abs) > 0 && x.neg != y.neg // 0 has no sign
 	return z
@@ -385,15 +390,20 @@ func (x *Int) IsUint64() bool {
 // ``0b'' or ``0B'' prefix selects base 2. Otherwise the selected base is 10.
 //
 func (z *Int) SetString(s string, base int) (*Int, bool) {
-	r := strings.NewReader(s)
+	return z.setFromScanner(strings.NewReader(s), base)
+}
+
+// setFromScanner implements SetString given an io.BytesScanner.
+// For documentation see comments of SetString.
+func (z *Int) setFromScanner(r io.ByteScanner, base int) (*Int, bool) {
 	if _, _, err := z.scan(r, base); err != nil {
 		return nil, false
 	}
-	// entire string must have been consumed
+	// entire content must have been consumed
 	if _, err := r.ReadByte(); err != io.EOF {
 		return nil, false
 	}
-	return z, true // err == io.EOF => scan consumed all of s
+	return z, true // err == io.EOF => scan consumed all content of r
 }
 
 // SetBytes interprets buf as the bytes of a big-endian unsigned
@@ -447,7 +457,7 @@ func (z *Int) Exp(x, y, m *Int) *Int {
 
 // GCD sets z to the greatest common divisor of a and b, which both must
 // be > 0, and returns z.
-// If x and y are not nil, GCD sets x and y such that z = a*x + b*y.
+// If x or y are not nil, GCD sets their value such that z = a*x + b*y.
 // If either a or b is <= 0, GCD sets z = x = y = 0.
 func (z *Int) GCD(x, y, a, b *Int) *Int {
 	if a.Sign() <= 0 || b.Sign() <= 0 {
@@ -468,10 +478,7 @@ func (z *Int) GCD(x, y, a, b *Int) *Int {
 	B := new(Int).Set(b)
 
 	X := new(Int)
-	Y := new(Int).SetInt64(1)
-
 	lastX := new(Int).SetInt64(1)
-	lastY := new(Int)
 
 	q := new(Int)
 	temp := new(Int)
@@ -484,15 +491,8 @@ func (z *Int) GCD(x, y, a, b *Int) *Int {
 
 		temp.Set(X)
 		X.Mul(X, q)
-		X.neg = !X.neg
-		X.Add(X, lastX)
+		X.Sub(lastX, X)
 		lastX.Set(temp)
-
-		temp.Set(Y)
-		Y.Mul(Y, q)
-		Y.neg = !Y.neg
-		Y.Add(Y, lastY)
-		lastY.Set(temp)
 	}
 
 	if x != nil {
@@ -500,7 +500,10 @@ func (z *Int) GCD(x, y, a, b *Int) *Int {
 	}
 
 	if y != nil {
-		*y = *lastY
+		// y = (z - a*x)/b
+		y.Mul(a, lastX)
+		y.Sub(A, y)
+		y.Div(y, b)
 	}
 
 	*z = *A

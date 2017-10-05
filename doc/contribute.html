@@ -88,7 +88,7 @@ script as *nix.)
 </p>
 
 <p>
-Your secret authentication token is now in a <code>.gitcookie</code> file
+Your secret authentication token is now in a <code>.gitcookies</code> file
 and Git is configured to use this file.
 </p>
 
@@ -158,7 +158,7 @@ completed and update the <code>AUTHORS</code> file.
 Changes to Go must be reviewed before they are accepted, no matter who makes the change.
 A custom git command called <code>git-codereview</code>, discussed below,
 helps manage the code review process through a Google-hosted
-<a href="https://go-review.googlesource.com/">instance</a> Gerrit.
+<a href="https://go-review.googlesource.com/">instance</a> of Gerrit.
 </p>
 
 <h3 id="git-codereview_install">Install the git-codereview command</h3>
@@ -681,8 +681,8 @@ reviewers asking them to visit the issue's URL and make comments on the change.
 When done, the reviewer adds comments through the Gerrit user interface
 and clicks "Reply" to send comments back.
 You will receive a mail notification when this happens.
-You must reply through the web interface.
-(Unlike with the old Rietveld review system, replying by mail has no effect.)
+You may reply through the web interface or
+<a href="https://gerrit-review.googlesource.com/Documentation/intro-user.html#reply-by-email">via email</a>.
 </p>
 
 <h3 id="revise">Revise and resend</h3>
@@ -696,8 +696,8 @@ all the changes and comments made in the single URL.
 </p>
 
 <p>
-You must respond to review comments through the web interface.
-(Unlike with the old Rietveld review system, responding by mail has no effect.)
+You may respond to review comments through the web interface or
+<a href="https://gerrit-review.googlesource.com/Documentation/intro-user.html#reply-by-email">via email</a>.
 </p>
 
 <p>

@@ -985,6 +985,40 @@ jmp_label_3:
 	REVSH	R1, R2               // b12fffe6
 	RBIT	R1, R2               // 312fffe6
 
+// XTAB/XTAH/XTABU/XTAHU
+	XTAB	R2@>0, R8            // 7280a8e6
+	XTAB	R2@>8, R8            // 7284a8e6
+	XTAB	R2@>16, R8           // 7288a8e6
+	XTAB	R2@>24, R8           // 728ca8e6
+	XTAH	R3@>0, R9            // 7390b9e6
+	XTAH	R3@>8, R9            // 7394b9e6
+	XTAH	R3@>16, R9           // 7398b9e6
+	XTAH	R3@>24, R9           // 739cb9e6
+	XTABU	R4@>0, R7            // 7470e7e6
+	XTABU	R4@>8, R7            // 7474e7e6
+	XTABU	R4@>16, R7           // 7478e7e6
+	XTABU	R4@>24, R7           // 747ce7e6
+	XTAHU	R5@>0, R1            // 7510f1e6
+	XTAHU	R5@>8, R1            // 7514f1e6
+	XTAHU	R5@>16, R1           // 7518f1e6
+	XTAHU	R5@>24, R1           // 751cf1e6
+	XTAB	R2@>0, R4, R8        // 7280a4e6
+	XTAB	R2@>8, R4, R8        // 7284a4e6
+	XTAB	R2@>16, R4, R8       // 7288a4e6
+	XTAB	R2@>24, R4, R8       // 728ca4e6
+	XTAH	R3@>0, R4, R9        // 7390b4e6
+	XTAH	R3@>8, R4, R9        // 7394b4e6
+	XTAH	R3@>16, R4, R9       // 7398b4e6
+	XTAH	R3@>24, R4, R9       // 739cb4e6
+	XTABU	R4@>0, R0, R7        // 7470e0e6
+	XTABU	R4@>8, R0, R7        // 7474e0e6
+	XTABU	R4@>16, R0, R7       // 7478e0e6
+	XTABU	R4@>24, R0, R7       // 747ce0e6
+	XTAHU	R5@>0, R9, R1        // 7510f9e6
+	XTAHU	R5@>8, R9, R1        // 7514f9e6
+	XTAHU	R5@>16, R9, R1       // 7518f9e6
+	XTAHU	R5@>24, R9, R1       // 751cf9e6
+
 // DIVHW R0, R1, R2: R1 / R0 -> R2
 	DIVHW	R0, R1, R2           // 11f012e7
 	DIVUHW	R0, R1, R2           // 11f032e7
@@ -1006,6 +1040,12 @@ jmp_label_3:
 	SWI	$0             // 000000ef
 	SWI	$65535         // ffff00ef
 	SWI	               // 000000ef
+
+// BFX/BFXU
+	BFX	$16, $8, R1, R2 // BFX $16, R1, $8, R2   // 5124afe7
+	BFX	$29, $2, R8                              // 5881bce7
+	BFXU	$16, $8, R1, R2 // BFXU $16, R1, $8, R2  // 5124efe7
+	BFXU	$29, $2, R8                              // 5881fce7
 
 // synthetic arithmatic
 	ADD	$0xffffffaa, R2, R3 // ADD $4294967210, R2, R3   // 55b0e0e30b3082e0
@@ -1106,8 +1146,8 @@ jmp_label_3:
 	MVN.S	R9>>R8, R7       // 3978f0e1
 	MVN.S	R9->R8, R7       // 5978f0e1
 	MVN.S	R9@>R8, R7       // 7978f0e1
-	MVN	$0xffffffae, R5  // MVN $4294967214, R5   // 51b0e0e30b50e0e1
-	MVN.S	$0xffffffae, R5  // MVN.S $4294967214, R5 // 51b0e0e30b50f0e1
+	MVN	$0xffffffbe, R5  // MVN $4294967230, R5   // 4150a0e3
+	MVN.S	$0xffffffbf, R5  // MVN.S $4294967231, R5 // 4050b0e3
 
 // MOVM
 	MOVM.IA   [R0,R2,R4,R6], (R1)        // MOVM.U [R0,R2,R4,R6], (R1)                      // 550081e8
@@ -1146,6 +1186,10 @@ jmp_label_3:
 // MOVW
 	MOVW	R3, R4                                            // 0340a0e1
 	MOVW	R9, R2                                            // 0920a0e1
+	MOVW	R5>>1, R2                                         // a520a0e1
+	MOVW	R5<<1, R2                                         // 8520a0e1
+	MOVW	R5->1, R2                                         // c520a0e1
+	MOVW	R5@>1, R2                                         // e520a0e1
 	MOVW	$0xff, R9            // MOVW $255, R9             // ff90a0e3
 	MOVW	$0xff000000, R9      // MOVW $4278190080, R9      // ff94a0e3
 	MOVW	$0xff(R0), R1        // MOVW $255(R0), R1         // ff1080e2
@@ -1388,6 +1432,18 @@ jmp_label_3:
 	MOVB.U	R0<<0(R1), R2                                     // d02011e1
 	MOVB.W	R0<<0(R1), R2                                     // d020b1e1
 	MOVB.P	R0<<0(R1), R2                                     // d02091e0
+	MOVBS	R2@>0, R8                                         // 7280afe6
+	MOVBS	R2@>8, R8                                         // 7284afe6
+	MOVBS	R2@>16, R8                                        // 7288afe6
+	MOVBS	R2@>24, R8                                        // 728cafe6
+	MOVB	R2@>0, R8                                         // 7280afe6
+	MOVB	R2@>8, R8                                         // 7284afe6
+	MOVB	R2@>16, R8                                        // 7288afe6
+	MOVB	R2@>24, R8                                        // 728cafe6
+	MOVBU	R4@>0, R7                                         // 7470efe6
+	MOVBU	R4@>8, R7                                         // 7474efe6
+	MOVBU	R4@>16, R7                                        // 7478efe6
+	MOVBU	R4@>24, R7                                        // 747cefe6
 
 // MOVH
 	MOVH	R3, R4                                            // 0340a0e1
@@ -1490,6 +1546,42 @@ jmp_label_3:
 	MOVHS	math·Exp(SB), R0     // MOVHS math.Exp(SB), R0
 	MOVHU	R0, math·Exp(SB)     // MOVHU R0, math.Exp(SB)
 	MOVHU	math·Exp(SB), R0     // MOVHU math.Exp(SB), R0
+	MOVHS	R0<<0(R1), R2                                     // f02091e1
+	MOVHS.U	R0<<0(R1), R2                                     // f02011e1
+	MOVHS.W	R0<<0(R1), R2                                     // f020b1e1
+	MOVHS.P	R0<<0(R1), R2                                     // f02091e0
+	MOVH	R0<<0(R1), R2                                     // f02091e1
+	MOVH.U	R0<<0(R1), R2                                     // f02011e1
+	MOVH.W	R0<<0(R1), R2                                     // f020b1e1
+	MOVH.P	R0<<0(R1), R2                                     // f02091e0
+	MOVHU	R0<<0(R1), R2                                     // b02091e1
+	MOVHU.U	R0<<0(R1), R2                                     // b02011e1
+	MOVHU.W	R0<<0(R1), R2                                     // b020b1e1
+	MOVHU.P	R0<<0(R1), R2                                     // b02091e0
+	MOVHS	R2, R5<<0(R1)                                     // b52081e1
+	MOVHS.U	R2, R5<<0(R1)                                     // b52001e1
+	MOVHS.W	R2, R5<<0(R1)                                     // b520a1e1
+	MOVHS.P	R2, R5<<0(R1)                                     // b52081e0
+	MOVH	R2, R5<<0(R1)                                     // b52081e1
+	MOVH.U	R2, R5<<0(R1)                                     // b52001e1
+	MOVH.W	R2, R5<<0(R1)                                     // b520a1e1
+	MOVH.P	R2, R5<<0(R1)                                     // b52081e0
+	MOVHU	R2, R5<<0(R1)                                     // b52081e1
+	MOVHU.U	R2, R5<<0(R1)                                     // b52001e1
+	MOVHU.W	R2, R5<<0(R1)                                     // b520a1e1
+	MOVHU.P	R2, R5<<0(R1)                                     // b52081e0
+	MOVHS	R3@>0, R9                                         // 7390bfe6
+	MOVHS	R3@>8, R9                                         // 7394bfe6
+	MOVHS	R3@>16, R9                                        // 7398bfe6
+	MOVHS	R3@>24, R9                                        // 739cbfe6
+	MOVH	R3@>0, R9                                         // 7390bfe6
+	MOVH	R3@>8, R9                                         // 7394bfe6
+	MOVH	R3@>16, R9                                        // 7398bfe6
+	MOVH	R3@>24, R9                                        // 739cbfe6
+	MOVHU	R5@>0, R1                                         // 7510ffe6
+	MOVHU	R5@>8, R1                                         // 7514ffe6
+	MOVHU	R5@>16, R1                                        // 7518ffe6
+	MOVHU	R5@>24, R1                                        // 751cffe6
 
 //
 // END

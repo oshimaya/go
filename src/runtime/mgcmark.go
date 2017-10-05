@@ -1356,10 +1356,7 @@ func gcmarknewobject(obj, size, scanSize uintptr) {
 //
 // The world must be stopped.
 func gcMarkTinyAllocs() {
-	for _, p := range &allp {
-		if p == nil || p.status == _Pdead {
-			break
-		}
+	for _, p := range allp {
 		c := p.mcache
 		if c == nil || c.tiny == 0 {
 			continue

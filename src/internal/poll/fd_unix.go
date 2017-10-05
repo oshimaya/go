@@ -26,6 +26,9 @@ type FD struct {
 	// Writev cache.
 	iovecs *[]syscall.Iovec
 
+	// Semaphore signaled when file is closed.
+	csema uint32
+
 	// Whether this is a streaming descriptor, as opposed to a
 	// packet-based descriptor like a UDP socket. Immutable.
 	IsStream bool
@@ -42,6 +45,7 @@ type FD struct {
 // This can be called multiple times on a single FD.
 // The net argument is a network name from the net package (e.g., "tcp"),
 // or "file".
+// Set pollable to true if fd should be managed by runtime netpoll.
 func (fd *FD) Init(net string, pollable bool) error {
 	// We don't actually care about the various network types.
 	if net == "file" {
@@ -61,6 +65,7 @@ func (fd *FD) destroy() error {
 	fd.pd.close()
 	err := CloseFunc(fd.Sysfd)
 	fd.Sysfd = -1
+	runtime_Semrelease(&fd.csema)
 	return err
 }
 
@@ -78,7 +83,11 @@ func (fd *FD) Close() error {
 	fd.pd.evict()
 	// The call to decref will call destroy if there are no other
 	// references.
-	return fd.decref()
+	err := fd.decref()
+	// Wait until the descriptor is closed. If this was the only
+	// reference, it is already closed.
+	runtime_Semacquire(&fd.csema)
+	return err
 }
 
 // Shutdown wraps the shutdown network call.

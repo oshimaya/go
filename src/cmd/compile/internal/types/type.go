@@ -162,22 +162,19 @@ type Type struct {
 }
 
 const (
-	typeLocal     = 1 << iota // created in this file
-	typeNotInHeap             // type cannot be heap allocated
+	typeNotInHeap = 1 << iota // type cannot be heap allocated
 	typeBroke                 // broken type definition
 	typeNoalg                 // suppress hash and eq algorithm generation
 	typeDeferwidth
 	typeRecur
 )
 
-func (t *Type) Local() bool      { return t.flags&typeLocal != 0 }
 func (t *Type) NotInHeap() bool  { return t.flags&typeNotInHeap != 0 }
 func (t *Type) Broke() bool      { return t.flags&typeBroke != 0 }
 func (t *Type) Noalg() bool      { return t.flags&typeNoalg != 0 }
 func (t *Type) Deferwidth() bool { return t.flags&typeDeferwidth != 0 }
 func (t *Type) Recur() bool      { return t.flags&typeRecur != 0 }
 
-func (t *Type) SetLocal(b bool)      { t.flags.set(typeLocal, b) }
 func (t *Type) SetNotInHeap(b bool)  { t.flags.set(typeNotInHeap, b) }
 func (t *Type) SetBroke(b bool)      { t.flags.set(typeBroke, b) }
 func (t *Type) SetNoalg(b bool)      { t.flags.set(typeNoalg, b) }
@@ -585,28 +582,28 @@ func SubstAny(t *Type, types *[]*Type) *Type {
 	case TPTR32, TPTR64:
 		elem := SubstAny(t.Elem(), types)
 		if elem != t.Elem() {
-			t = t.Copy()
+			t = t.copy()
 			t.Extra = Ptr{Elem: elem}
 		}
 
 	case TARRAY:
 		elem := SubstAny(t.Elem(), types)
 		if elem != t.Elem() {
-			t = t.Copy()
+			t = t.copy()
 			t.Extra.(*Array).Elem = elem
 		}
 
 	case TSLICE:
 		elem := SubstAny(t.Elem(), types)
 		if elem != t.Elem() {
-			t = t.Copy()
+			t = t.copy()
 			t.Extra = Slice{Elem: elem}
 		}
 
 	case TCHAN:
 		elem := SubstAny(t.Elem(), types)
 		if elem != t.Elem() {
-			t = t.Copy()
+			t = t.copy()
 			t.Extra.(*Chan).Elem = elem
 		}
 
@@ -614,7 +611,7 @@ func SubstAny(t *Type, types *[]*Type) *Type {
 		key := SubstAny(t.Key(), types)
 		val := SubstAny(t.Val(), types)
 		if key != t.Key() || val != t.Val() {
-			t = t.Copy()
+			t = t.copy()
 			t.Extra.(*Map).Key = key
 			t.Extra.(*Map).Val = val
 		}
@@ -624,7 +621,7 @@ func SubstAny(t *Type, types *[]*Type) *Type {
 		params := SubstAny(t.Params(), types)
 		results := SubstAny(t.Results(), types)
 		if recvs != t.Recvs() || params != t.Params() || results != t.Results() {
-			t = t.Copy()
+			t = t.copy()
 			t.FuncType().Receiver = recvs
 			t.FuncType().Results = results
 			t.FuncType().Params = params
@@ -645,7 +642,7 @@ func SubstAny(t *Type, types *[]*Type) *Type {
 			nfs[i].Type = nft
 		}
 		if nfs != nil {
-			t = t.Copy()
+			t = t.copy()
 			t.SetFields(nfs)
 		}
 	}
@@ -653,8 +650,8 @@ func SubstAny(t *Type, types *[]*Type) *Type {
 	return t
 }
 
-// Copy returns a shallow copy of the Type.
-func (t *Type) Copy() *Type {
+// copy returns a shallow copy of the Type.
+func (t *Type) copy() *Type {
 	if t == nil {
 		return nil
 	}
@@ -706,6 +703,10 @@ func (t *Type) wantEtype(et EType) {
 func (t *Type) Recvs() *Type   { return t.FuncType().Receiver }
 func (t *Type) Params() *Type  { return t.FuncType().Params }
 func (t *Type) Results() *Type { return t.FuncType().Results }
+
+func (t *Type) NumRecvs() int   { return t.FuncType().Receiver.NumFields() }
+func (t *Type) NumParams() int  { return t.FuncType().Params.NumFields() }
+func (t *Type) NumResults() int { return t.FuncType().Results.NumFields() }
 
 // Recv returns the receiver of function type t, if any.
 func (t *Type) Recv() *Field {
@@ -1317,6 +1318,23 @@ func (t *Type) SetNumElem(n int64) {
 	at.Bound = n
 }
 
+func (t *Type) NumComponents() int64 {
+	switch t.Etype {
+	case TSTRUCT:
+		if t.IsFuncArgStruct() {
+			Fatalf("NumComponents func arg struct")
+		}
+		var n int64
+		for _, f := range t.FieldSlice() {
+			n += f.Type.NumComponents()
+		}
+		return n
+	case TARRAY:
+		return t.NumElem() * t.Elem().NumComponents()
+	}
+	return 1
+}
+
 // ChanDir returns the direction of a channel type t.
 // The direction will be one of Crecv, Csend, or Cboth.
 func (t *Type) ChanDir() ChanDir {
@@ -1370,10 +1388,10 @@ func Haspointers(t *Type) bool {
 	return true
 }
 
-// HasPointer returns whether t contains heap pointer.
+// HasHeapPointer returns whether t contains a heap pointer.
 // This is used for write barrier insertion, so we ignore
 // pointers to go:notinheap types.
-func (t *Type) HasPointer() bool {
+func (t *Type) HasHeapPointer() bool {
 	if t.IsPtr() && t.Elem().NotInHeap() {
 		return false
 	}
@@ -1408,9 +1426,9 @@ func FakeRecvType() *Type {
 }
 
 var (
-	TypeInvalid *Type = newSSA("invalid")
-	TypeMem     *Type = newSSA("mem")
-	TypeFlags   *Type = newSSA("flags")
-	TypeVoid    *Type = newSSA("void")
-	TypeInt128  *Type = newSSA("int128")
+	TypeInvalid = newSSA("invalid")
+	TypeMem     = newSSA("mem")
+	TypeFlags   = newSSA("flags")
+	TypeVoid    = newSSA("void")
+	TypeInt128  = newSSA("int128")
 )
