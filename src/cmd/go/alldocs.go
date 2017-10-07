@@ -782,7 +782,7 @@
 // The -n flag causes tool to print the command that would be
 // executed but not execute it.
 //
-// For more about each tool command, see 'go tool command -h'.
+// For more about each tool command, see 'go doc cmd/<command>'.
 //
 //
 // Print Go version
@@ -808,7 +808,9 @@
 // The -n flag prints commands that would be executed.
 // The -x flag prints commands as they are executed.
 //
-// For more about build flags, see 'go help build'.
+// The build flags supported by go vet are those that control package resolution
+// and execution, such as -n, -x, -v, -tags, and -toolexec.
+// For more about these flags, see 'go help build'.
 //
 // See also: go fmt, go fix.
 //
@@ -917,8 +919,10 @@
 // comment, indicating that the package sources are included
 // for documentation only and must not be used to build the
 // package binary. This enables distribution of Go packages in
-// their compiled form alone. See the go/build package documentation
-// for more details.
+// their compiled form alone. Even binary-only packages require
+// accurate import blocks listing required dependencies, so that
+// those dependencies can be supplied when linking the resulting
+// command.
 //
 //
 // GOPATH environment variable

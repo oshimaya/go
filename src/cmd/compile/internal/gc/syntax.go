@@ -7,6 +7,7 @@
 package gc
 
 import (
+	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/syntax"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
@@ -44,7 +45,6 @@ type Node struct {
 	// - ONAME nodes that refer to local variables use it to identify their stack frame position.
 	// - ODOT, ODOTPTR, and OINDREGSP use it to indicate offset relative to their base address.
 	// - OSTRUCTKEY uses it to store the named field's offset.
-	// - OXCASE and OXFALL use it to validate the use of fallthrough.
 	// - Named OLITERALs use it to to store their ambient iota value.
 	// Possibly still more uses. If you find any, document them.
 	Xoffset int64
@@ -86,7 +86,6 @@ const (
 	_, nodeAddrtaken // address taken, even if not moved to heap
 	_, nodeImplicit
 	_, nodeIsddd    // is the argument variadic
-	_, nodeLocal    // type created in this file (see also Type.Local)
 	_, nodeDiag     // already printed error about this
 	_, nodeColas    // OAS resulting from :=
 	_, nodeNonNil   // guaranteed to be non-nil
@@ -113,7 +112,6 @@ func (n *Node) Assigned() bool              { return n.flags&nodeAssigned != 0 }
 func (n *Node) Addrtaken() bool             { return n.flags&nodeAddrtaken != 0 }
 func (n *Node) Implicit() bool              { return n.flags&nodeImplicit != 0 }
 func (n *Node) Isddd() bool                 { return n.flags&nodeIsddd != 0 }
-func (n *Node) Local() bool                 { return n.flags&nodeLocal != 0 }
 func (n *Node) Diag() bool                  { return n.flags&nodeDiag != 0 }
 func (n *Node) Colas() bool                 { return n.flags&nodeColas != 0 }
 func (n *Node) NonNil() bool                { return n.flags&nodeNonNil != 0 }
@@ -139,7 +137,6 @@ func (n *Node) SetAssigned(b bool)              { n.flags.set(nodeAssigned, b) }
 func (n *Node) SetAddrtaken(b bool)             { n.flags.set(nodeAddrtaken, b) }
 func (n *Node) SetImplicit(b bool)              { n.flags.set(nodeImplicit, b) }
 func (n *Node) SetIsddd(b bool)                 { n.flags.set(nodeIsddd, b) }
-func (n *Node) SetLocal(b bool)                 { n.flags.set(nodeLocal, b) }
 func (n *Node) SetDiag(b bool)                  { n.flags.set(nodeDiag, b) }
 func (n *Node) SetColas(b bool)                 { n.flags.set(nodeColas, b) }
 func (n *Node) SetNonNil(b bool)                { n.flags.set(nodeNonNil, b) }
@@ -369,6 +366,7 @@ type Func struct {
 	Closgen    int
 	Outerfunc  *Node // outer function (for closure)
 	FieldTrack map[*types.Sym]struct{}
+	DebugInfo  *ssa.FuncDebug
 	Ntype      *Node // signature
 	Top        int   // top context (Ecall, Eproc, etc)
 	Closure    *Node // OCLOSURE <-> ODCLFUNC
@@ -562,8 +560,7 @@ const (
 	OCONTINUE // continue
 	ODEFER    // defer Left (Left must be call)
 	OEMPTY    // no-op (empty statement)
-	OFALL     // fallthrough (after processing)
-	OXFALL    // fallthrough (before processing)
+	OFALL     // fallthrough
 	OFOR      // for Ninit; Left; Right { Nbody }
 	OFORUNTIL // for Ninit; Left; Right { Nbody } ; test applied after executing body, not before
 	OGOTO     // goto Left

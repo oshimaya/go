@@ -93,15 +93,9 @@ type PackagePublic struct {
 type PackageInternal struct {
 	// Unexported fields are not part of the public API.
 	Build        *build.Package
-	Pkgdir       string // overrides build.PkgDir
-	Imports      []*Package
-	Deps         []*Package
-	GoFiles      []string // GoFiles+CgoFiles+TestGoFiles+XTestGoFiles files, absolute paths
-	SFiles       []string
-	AllGoFiles   []string             // gofiles + IgnoredGoFiles, absolute paths
+	Imports      []*Package           // this package's direct imports
 	Target       string               // installed file for this package (may be executable)
-	Fake         bool                 // synthesized package
-	External     bool                 // synthesized external test package
+	Pkgfile      string               // where package will be (or is already) built or installed
 	ForceLibrary bool                 // this package is a library (even if named "main")
 	Cmdline      bool                 // defined by files listed on command line
 	Local        bool                 // imported via local path (./ or ../)
@@ -835,15 +829,6 @@ var GoTools = map[string]targetDir{
 	"code.google.com/p/go.tools/cmd/vet":   StalePath,
 }
 
-var raceExclude = map[string]bool{
-	"runtime/race": true,
-	"runtime/msan": true,
-	"runtime/cgo":  true,
-	"cmd/cgo":      true,
-	"syscall":      true,
-	"errors":       true,
-}
-
 var cgoExclude = map[string]bool{
 	"runtime/cgo": true,
 }
@@ -858,7 +843,7 @@ var foldPath = make(map[string]string)
 
 // load populates p using information from bp, err, which should
 // be the result of calling build.Context.Import.
-func (p *Package) load(stk *ImportStack, bp *build.Package, err error) *Package {
+func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 	p.copyBuild(bp)
 
 	// The localPrefix is the path we interpret ./ imports relative to.
@@ -875,7 +860,7 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) *Package 
 			ImportStack: stk.Copy(),
 			Err:         err.Error(),
 		}
-		return p
+		return
 	}
 
 	useBindir := p.Name == "main"
@@ -892,7 +877,7 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) *Package 
 			newPath := strings.Replace(p.ImportPath, "code.google.com/p/go.", "golang.org/x/", 1)
 			e := fmt.Sprintf("the %v command has moved; use %v instead.", p.ImportPath, newPath)
 			p.Error = &PackageError{Err: e}
-			return p
+			return
 		}
 		_, elem := filepath.Split(p.Dir)
 		full := cfg.BuildContext.GOOS + "_" + cfg.BuildContext.GOARCH + "/" + elem
@@ -940,86 +925,53 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) *Package 
 		}
 	}
 
-	ImportPaths := p.Imports
-	// Packages that use cgo import runtime/cgo implicitly.
-	// Packages that use cgo also import syscall implicitly,
-	// to wrap errno.
-	// Exclude certain packages to avoid circular dependencies.
+	// Build augmented import list to add implicit dependencies.
+	// Be careful not to add imports twice, just to avoid confusion.
+	importPaths := p.Imports
+	addImport := func(path string) {
+		for _, p := range importPaths {
+			if path == p {
+				return
+			}
+		}
+		importPaths = append(importPaths, path)
+	}
+
+	// Cgo translation adds imports of "runtime/cgo" and "syscall",
+	// except for certain packages, to avoid circular dependencies.
 	if len(p.CgoFiles) > 0 && (!p.Standard || !cgoExclude[p.ImportPath]) {
-		ImportPaths = append(ImportPaths, "runtime/cgo")
+		addImport("runtime/cgo")
 	}
 	if len(p.CgoFiles) > 0 && (!p.Standard || !cgoSyscallExclude[p.ImportPath]) {
-		ImportPaths = append(ImportPaths, "syscall")
+		addImport("syscall")
 	}
 
-	if cfg.BuildContext.CgoEnabled && p.Name == "main" && !p.Goroot {
-		// Currently build modes c-shared, pie (on systems that do not
-		// support PIE with internal linking mode), plugin, and
-		// -linkshared force external linking mode, as of course does
-		// -ldflags=-linkmode=external. External linking mode forces
-		// an import of runtime/cgo.
-		pieCgo := cfg.BuildBuildmode == "pie" && (cfg.BuildContext.GOOS != "linux" || cfg.BuildContext.GOARCH != "amd64")
-		linkmodeExternal := false
-		for i, a := range cfg.BuildLdflags {
-			if a == "-linkmode=external" {
-				linkmodeExternal = true
-			}
-			if a == "-linkmode" && i+1 < len(cfg.BuildLdflags) && cfg.BuildLdflags[i+1] == "external" {
-				linkmodeExternal = true
-			}
-		}
-		if cfg.BuildBuildmode == "c-shared" || cfg.BuildBuildmode == "plugin" || pieCgo || cfg.BuildLinkshared || linkmodeExternal {
-			ImportPaths = append(ImportPaths, "runtime/cgo")
+	// The linker loads implicit dependencies.
+	if p.Name == "main" && !p.Internal.ForceLibrary {
+		for _, dep := range LinkerDeps(p) {
+			addImport(dep)
 		}
 	}
 
-	// Everything depends on runtime, except runtime, its internal
-	// subpackages, and unsafe.
-	if !p.Standard || (p.ImportPath != "runtime" && !strings.HasPrefix(p.ImportPath, "runtime/internal/") && p.ImportPath != "unsafe") {
-		ImportPaths = append(ImportPaths, "runtime")
-		// When race detection enabled everything depends on runtime/race.
-		// Exclude certain packages to avoid circular dependencies.
-		if cfg.BuildRace && (!p.Standard || !raceExclude[p.ImportPath]) {
-			ImportPaths = append(ImportPaths, "runtime/race")
-		}
-		// MSan uses runtime/msan.
-		if cfg.BuildMSan && (!p.Standard || !raceExclude[p.ImportPath]) {
-			ImportPaths = append(ImportPaths, "runtime/msan")
-		}
-		// On ARM with GOARM=5, everything depends on math for the link.
-		if p.Name == "main" && cfg.Goarch == "arm" {
-			ImportPaths = append(ImportPaths, "math")
-		}
+	// If runtime/internal/sys/zversion.go changes, it very likely means the
+	// compiler has been recompiled with that new version, so all existing
+	// archives are now stale. Make everything appear to import runtime/internal/sys,
+	// so that in this situation everything will appear stale and get recompiled.
+	// Due to the rules for visibility of internal packages, things outside runtime
+	// must import runtime, and runtime imports runtime/internal/sys.
+	// Content-based staleness that includes a check of the compiler version
+	// will make this hack unnecessary; once that lands, this whole comment
+	// and switch statement should be removed.
+	switch {
+	case p.Standard && p.ImportPath == "runtime/internal/sys":
+		// nothing
+	case p.Standard && p.ImportPath == "unsafe":
+		// nothing - not a real package, and used by runtime
+	case p.Standard && strings.HasPrefix(p.ImportPath, "runtime"):
+		addImport("runtime/internal/sys")
+	default:
+		addImport("runtime")
 	}
-
-	// Runtime and its internal packages depend on runtime/internal/sys,
-	// so that they pick up the generated zversion.go file.
-	// This can be an issue particularly for runtime/internal/atomic;
-	// see issue 13655.
-	if p.Standard && (p.ImportPath == "runtime" || strings.HasPrefix(p.ImportPath, "runtime/internal/")) && p.ImportPath != "runtime/internal/sys" {
-		ImportPaths = append(ImportPaths, "runtime/internal/sys")
-	}
-
-	// Build list of full paths to all Go files in the package,
-	// for use by commands like go fmt.
-	p.Internal.GoFiles = str.StringList(p.GoFiles, p.CgoFiles, p.TestGoFiles, p.XTestGoFiles)
-	for i := range p.Internal.GoFiles {
-		p.Internal.GoFiles[i] = filepath.Join(p.Dir, p.Internal.GoFiles[i])
-	}
-	sort.Strings(p.Internal.GoFiles)
-
-	p.Internal.SFiles = str.StringList(p.SFiles)
-	for i := range p.Internal.SFiles {
-		p.Internal.SFiles[i] = filepath.Join(p.Dir, p.Internal.SFiles[i])
-	}
-	sort.Strings(p.Internal.SFiles)
-
-	p.Internal.AllGoFiles = str.StringList(p.IgnoredGoFiles)
-	for i := range p.Internal.AllGoFiles {
-		p.Internal.AllGoFiles[i] = filepath.Join(p.Dir, p.Internal.AllGoFiles[i])
-	}
-	p.Internal.AllGoFiles = append(p.Internal.AllGoFiles, p.Internal.GoFiles...)
-	sort.Strings(p.Internal.AllGoFiles)
 
 	// Check for case-insensitive collision of input files.
 	// To avoid problems on case-insensitive files, we reject any package
@@ -1046,23 +998,12 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) *Package 
 			ImportStack: stk.Copy(),
 			Err:         fmt.Sprintf("case-insensitive file name collision: %q and %q", f1, f2),
 		}
-		return p
+		return
 	}
 
 	// Build list of imported packages and full dependency list.
 	imports := make([]*Package, 0, len(p.Imports))
-	deps := make(map[string]*Package)
-	save := func(path string, p1 *Package) {
-		// The same import path could produce an error or not,
-		// depending on what tries to import it.
-		// Prefer to record entries with errors, so we can report them.
-		p0 := deps[path]
-		if p0 == nil || p1.Error != nil && (p0.Error == nil || len(p0.Error.ImportStack) > len(p1.Error.ImportStack)) {
-			deps[path] = p1
-		}
-	}
-
-	for i, path := range ImportPaths {
+	for i, path := range importPaths {
 		if path == "C" {
 			continue
 		}
@@ -1079,21 +1020,37 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) *Package 
 		}
 
 		path = p1.ImportPath
-		ImportPaths[i] = path
+		importPaths[i] = path
 		if i < len(p.Imports) {
 			p.Imports[i] = path
 		}
 
-		save(path, p1)
 		imports = append(imports, p1)
-		for _, dep := range p1.Internal.Deps {
-			save(dep.ImportPath, dep)
-		}
 		if p1.Incomplete {
 			p.Incomplete = true
 		}
 	}
 	p.Internal.Imports = imports
+
+	deps := make(map[string]*Package)
+	var q []*Package
+	q = append(q, imports...)
+	for i := 0; i < len(q); i++ {
+		p1 := q[i]
+		path := p1.ImportPath
+		// The same import path could produce an error or not,
+		// depending on what tries to import it.
+		// Prefer to record entries with errors, so we can report them.
+		p0 := deps[path]
+		if p0 == nil || p1.Error != nil && (p0.Error == nil || len(p0.Error.ImportStack) > len(p1.Error.ImportStack)) {
+			deps[path] = p1
+			for _, p2 := range p1.Internal.Imports {
+				if deps[p2.ImportPath] != p2 {
+					q = append(q, p2)
+				}
+			}
+		}
+	}
 
 	p.Deps = make([]string, 0, len(deps))
 	for dep := range deps {
@@ -1105,7 +1062,6 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) *Package 
 		if p1 == nil {
 			panic("impossible: missing entry in package cache for " + dep + " imported by " + p.ImportPath)
 		}
-		p.Internal.Deps = append(p.Internal.Deps, p1)
 		if p1.Error != nil {
 			p.DepsErrors = append(p.DepsErrors, p1.Error)
 		}
@@ -1137,7 +1093,7 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) *Package 
 			ImportStack: stk.Copy(),
 			Err:         fmt.Sprintf("C source files not allowed when not using cgo or SWIG: %s", strings.Join(p.CFiles, " ")),
 		}
-		return p
+		return
 	}
 
 	// Check for case-insensitive collisions of import paths.
@@ -1149,7 +1105,7 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) *Package 
 			ImportStack: stk.Copy(),
 			Err:         fmt.Sprintf("case-insensitive import collision: %q and %q", p.ImportPath, other),
 		}
-		return p
+		return
 	}
 
 	if p.BinaryOnly {
@@ -1161,7 +1117,83 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) *Package 
 	} else {
 		computeBuildID(p)
 	}
-	return p
+}
+
+// LinkerDeps returns the list of linker-induced dependencies for p.
+func LinkerDeps(p *Package) []string {
+	var deps []string
+
+	// External linking mode forces an import of runtime/cgo.
+	if cfg.ExternalLinkingForced() {
+		deps = append(deps, "runtime/cgo")
+	}
+	// On ARM with GOARM=5, it forces an import of math, for soft floating point.
+	if cfg.Goarch == "arm" {
+		deps = append(deps, "math")
+	}
+	// Using the race detector forces an import of runtime/race.
+	if cfg.BuildRace {
+		deps = append(deps, "runtime/race")
+	}
+	// Using memory sanitizer forces an import of runtime/msan.
+	if cfg.BuildMSan {
+		deps = append(deps, "runtime/msan")
+	}
+
+	return deps
+}
+
+// mkAbs rewrites list, which must be paths relative to p.Dir,
+// into a sorted list of absolute paths. It edits list in place but for
+// convenience also returns list back to its caller.
+func (p *Package) mkAbs(list []string) []string {
+	for i, f := range list {
+		list[i] = filepath.Join(p.Dir, f)
+	}
+	sort.Strings(list)
+	return list
+}
+
+// InternalGoFiles returns the list of Go files being built for the package,
+// using absolute paths.
+func (p *Package) InternalGoFiles() []string {
+	return p.mkAbs(str.StringList(p.GoFiles, p.CgoFiles, p.TestGoFiles, p.XTestGoFiles))
+}
+
+// InternalGoFiles returns the list of all Go files possibly relevant for the package,
+// using absolute paths. "Possibly relevant" means that files are not excluded
+// due to build tags, but files with names beginning with . or _ are still excluded.
+func (p *Package) InternalAllGoFiles() []string {
+	var extra []string
+	for _, f := range p.IgnoredGoFiles {
+		if f != "" && f[0] != '.' || f[0] != '_' {
+			extra = append(extra, f)
+		}
+	}
+	return p.mkAbs(str.StringList(extra, p.GoFiles, p.CgoFiles, p.TestGoFiles, p.XTestGoFiles))
+}
+
+// InternalDeps returns the full dependency list for p,
+// built by traversing p.Internal.Imports, their .Internal.Imports, and so on.
+// It guarantees that the returned list has only one package per ImportPath
+// and that "test" copies of a package are returned in preference to "real" ones.
+func (p *Package) InternalDeps() []*Package {
+	// Note: breadth-first search here to ensure that test-augmented copies
+	// of a package under test are found before the "real" ones
+	// (the real ones are deeper in the import graph).
+	// Since we're building the slice anyway, it doesn't cost anything.
+	all := []*Package{p}
+	have := map[string]bool{p.ImportPath: true, "unsafe": true}
+	// Note: Not a range loop because all is growing during the loop.
+	for i := 0; i < len(all); i++ {
+		for _, p1 := range all[i].Internal.Imports {
+			if !have[p1.ImportPath] {
+				have[p1.ImportPath] = true
+				all = append(all, p1)
+			}
+		}
+	}
+	return all[1:] // slice off p itself
 }
 
 // usesSwig reports whether the package needs to run SWIG.
@@ -1531,7 +1563,7 @@ func isStale(p *Package) (bool, string) {
 	}
 
 	// Package is stale if a dependency is.
-	for _, p1 := range p.Internal.Deps {
+	for _, p1 := range p.Internal.Imports {
 		if p1.Stale {
 			return true, "stale dependency"
 		}
@@ -1569,7 +1601,7 @@ func isStale(p *Package) (bool, string) {
 	}
 
 	// Package is stale if a dependency is, or if a dependency is newer.
-	for _, p1 := range p.Internal.Deps {
+	for _, p1 := range p.Internal.Imports {
 		if p1.Internal.Target != "" && olderThan(p1.Internal.Target) {
 			return true, "newer dependency"
 		}
@@ -1645,15 +1677,8 @@ func isStale(p *Package) (bool, string) {
 	return false, ""
 }
 
-// computeBuildID computes the build ID for p, leaving it in p.Internal.BuildID.
-// Build ID is a hash of the information we want to detect changes in.
-// See the long comment in isStale for details.
-func computeBuildID(p *Package) {
-	h := sha1.New()
-
-	// Include the list of files compiled as part of the package.
-	// This lets us detect removed files. See issue 3895.
-	inputFiles := str.StringList(
+func pkgInputFiles(p *Package) []string {
+	return str.StringList(
 		p.GoFiles,
 		p.CgoFiles,
 		p.CFiles,
@@ -1666,6 +1691,40 @@ func computeBuildID(p *Package) {
 		p.SwigFiles,
 		p.SwigCXXFiles,
 	)
+}
+
+// PluginPath computes the package path for a plugin main package.
+//
+// This is typically the import path of the main package p, unless the
+// plugin is being built directly from source files. In that case we
+// combine the package build ID with the contents of the main package
+// source files. This allows us to identify two different plugins
+// built from two source files with the same name.
+func PluginPath(p *Package) string {
+	if p.ImportPath != "command-line-arguments" {
+		return p.ImportPath
+	}
+	h := sha1.New()
+	fmt.Fprintf(h, "build ID: %s\n", p.Internal.BuildID)
+	for _, file := range str.StringList(p.GoFiles, p.CgoFiles, p.SFiles) {
+		data, err := ioutil.ReadFile(filepath.Join(p.Dir, file))
+		if err != nil {
+			base.Fatalf("go: %s", err)
+		}
+		h.Write(data)
+	}
+	return fmt.Sprintf("plugin/unnamed-%x", h.Sum(nil))
+}
+
+// computeBuildID computes the build ID for p, leaving it in p.Internal.BuildID.
+// Build ID is a hash of the information we want to detect changes in.
+// See the long comment in isStale for details.
+func computeBuildID(p *Package) {
+	h := sha1.New()
+
+	// Include the list of files compiled as part of the package.
+	// This lets us detect removed files. See issue 3895.
+	inputFiles := pkgInputFiles(p)
 	for _, file := range inputFiles {
 		fmt.Fprintf(h, "file %s\n", file)
 	}
@@ -1700,7 +1759,7 @@ func computeBuildID(p *Package) {
 	// people use the same GOPATH but switch between
 	// different Go releases. See issue 10702.
 	// This is also a better fix for issue 8290.
-	for _, p1 := range p.Internal.Deps {
+	for _, p1 := range p.Internal.Imports {
 		fmt.Fprintf(h, "dep %s %s\n", p1.ImportPath, p1.Internal.BuildID)
 	}
 

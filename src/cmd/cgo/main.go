@@ -24,6 +24,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"cmd/internal/objabi"
 )
 
 // A Package collects information about the package we're going to write.
@@ -54,6 +56,7 @@ type File struct {
 	Calls    []*Call             // all calls to C.xxx in AST
 	ExpFunc  []*ExpFunc          // exported functions for this file
 	Name     map[string]*Name    // map from Go name to Name
+	NamePos  map[*Name]token.Pos // map from Name to position of the first reference
 }
 
 func nameKeys(m map[string]*Name) []string {
@@ -75,7 +78,7 @@ type Call struct {
 type Ref struct {
 	Name    *Name
 	Expr    *ast.Expr
-	Context string // "type", "expr", "call", or "call2"
+	Context astContext
 }
 
 func (r *Ref) Pos() token.Pos {
@@ -88,7 +91,7 @@ type Name struct {
 	Mangle   string // name used in generated Go
 	C        string // name used in C
 	Define   string // #define expansion
-	Kind     string // "iconst", "uconst", "fconst", "sconst", "type", "var", "fpvar", "func", "not-type"
+	Kind     string // "iconst", "fconst", "sconst", "type", "var", "fpvar", "func", "macro", "not-type"
 	Type     *Type  // the type of xxx
 	FuncType *FuncType
 	AddError bool
@@ -100,12 +103,12 @@ func (n *Name) IsVar() bool {
 	return n.Kind == "var" || n.Kind == "fpvar"
 }
 
-// IsConst reports whether Kind is either "iconst", "uconst", "fconst" or "sconst"
+// IsConst reports whether Kind is either "iconst", "fconst" or "sconst"
 func (n *Name) IsConst() bool {
 	return strings.HasSuffix(n.Kind, "const")
 }
 
-// A ExpFunc is an exported function, callable from C.
+// An ExpFunc is an exported function, callable from C.
 // Such functions are identified in the Go input file
 // by doc comments containing the line //export ExpName
 type ExpFunc struct {
@@ -200,6 +203,7 @@ var importSyscall = flag.Bool("import_syscall", true, "import syscall in generat
 var goarch, goos string
 
 func main() {
+	objabi.AddVersionFlag() // -V
 	flag.Usage = usage
 	flag.Parse()
 
@@ -300,7 +304,7 @@ func main() {
 		p.Translate(f)
 		for _, cref := range f.Ref {
 			switch cref.Context {
-			case "call", "call2":
+			case ctxCall, ctxCall2:
 				if cref.Name.Kind != "type" {
 					break
 				}

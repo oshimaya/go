@@ -48,8 +48,6 @@ var (
 )
 
 func init() {
-	flag.Var(&Linkmode, "linkmode", "set link `mode`")
-	flag.Var(&Buildmode, "buildmode", "set build `mode`")
 	flag.Var(&rpath, "r", "set the ELF dynamic linker search `path` to dir1:dir2:...")
 }
 
@@ -100,8 +98,9 @@ var (
 )
 
 // Main is the main entry point for the linker code.
-func Main() {
-	ctxt := linknew(SysArch)
+func Main(arch *sys.Arch, theArch Arch) {
+	Thearch = theArch
+	ctxt := linknew(arch)
 	ctxt.Bso = bufio.NewWriter(os.Stdout)
 
 	// For testing behavior of go command when tools crash silently.
@@ -114,12 +113,14 @@ func Main() {
 	}
 
 	// TODO(matloob): define these above and then check flag values here
-	if SysArch.Family == sys.AMD64 && objabi.GOOS == "plan9" {
+	if ctxt.Arch.Family == sys.AMD64 && objabi.GOOS == "plan9" {
 		flag.BoolVar(&Flag8, "8", false, "use 64-bit addresses in symbol table")
 	}
+	flag.Var(&ctxt.LinkMode, "linkmode", "set link `mode`")
+	flag.Var(&ctxt.BuildMode, "buildmode", "set build `mode`")
 	objabi.Flagfn1("B", "add an ELF NT_GNU_BUILD_ID `note` when using ELF", addbuildinfo)
 	objabi.Flagfn1("L", "add specified `directory` to library path", func(a string) { Lflag(ctxt, a) })
-	objabi.Flagfn0("V", "print version and exit", doversion)
+	objabi.AddVersionFlag() // -V
 	objabi.Flagfn1("X", "add string value `definition` of the form importpath.name=value", func(s string) { addstrdata1(ctxt, s) })
 	objabi.Flagcount("v", "print link trace", &ctxt.Debugvlog)
 	objabi.Flagfn1("importcfg", "read import configuration from `file`", ctxt.readImportCfg)
@@ -139,11 +140,11 @@ func Main() {
 	}
 
 	startProfile()
-	if Buildmode == BuildmodeUnset {
-		Buildmode = BuildmodeExe
+	if ctxt.BuildMode == BuildModeUnset {
+		ctxt.BuildMode = BuildModeExe
 	}
 
-	if Buildmode != BuildmodeShared && flag.NArg() != 1 {
+	if ctxt.BuildMode != BuildModeShared && flag.NArg() != 1 {
 		usage()
 	}
 
@@ -173,8 +174,8 @@ func Main() {
 		ctxt.Logf("HEADER = -H%d -T0x%x -D0x%x -R0x%x\n", Headtype, uint64(*FlagTextAddr), uint64(*FlagDataAddr), uint32(*FlagRound))
 	}
 
-	switch Buildmode {
-	case BuildmodeShared:
+	switch ctxt.BuildMode {
+	case BuildModeShared:
 		for i := 0; i < flag.NArg(); i++ {
 			arg := flag.Arg(i)
 			parts := strings.SplitN(arg, "=", 2)
@@ -188,7 +189,7 @@ func Main() {
 			pkglistfornote = append(pkglistfornote, '\n')
 			addlibpath(ctxt, "command line", "command line", file, pkgpath, "")
 		}
-	case BuildmodePlugin:
+	case BuildModePlugin:
 		addlibpath(ctxt, "command line", "command line", flag.Arg(0), *flagPluginPath, "")
 	default:
 		addlibpath(ctxt, "command line", "command line", flag.Arg(0), "main", "")

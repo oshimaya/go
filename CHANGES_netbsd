@@ -1,5 +1,8 @@
 # NetBSD specific changes
 ## HEAD
+- arm
+  * change cmesg alignment from 4 to 8 when netbsd/arm beacuse this is sizeof(long long) though 32bit.
+    see also system header include/arm/cdefs.h.
 - all
   * remove original change  for EABI padding in src/runtime/defs1_netbsd_arm.go
     and  src/cmd/link/internal/ld/elf.go because thease have been merged in

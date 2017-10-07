@@ -448,6 +448,10 @@ func nodbool(b bool) *Node {
 	return c
 }
 
+func nodstr(s string) *Node {
+	return nodlit(Val{s})
+}
+
 // treecopy recursively copies n, with the exception of
 // ONAME, OLITERAL, OTYPE, and non-iota ONONAME leaves.
 // Copies of iota ONONAME nodes are assigned the current
@@ -1667,7 +1671,7 @@ func structargs(tl *types.Type, mustname bool) []*Node {
 //	rcvr - U
 //	method - M func (t T)(), a TFIELD type struct
 //	newnam - the eventual mangled name of this function
-func genwrapper(rcvr *types.Type, method *types.Field, newnam *types.Sym, iface int) {
+func genwrapper(rcvr *types.Type, method *types.Field, newnam *types.Sym, iface bool) {
 	if false && Debug['r'] != 0 {
 		fmt.Printf("genwrapper rcvrtype=%v method=%v newnam=%v\n", rcvr, method, newnam)
 	}
@@ -1684,7 +1688,7 @@ func genwrapper(rcvr *types.Type, method *types.Field, newnam *types.Sym, iface 
 
 	t := nod(OTFUNC, nil, nil)
 	l := []*Node{this}
-	if iface != 0 && rcvr.Width < int64(Widthptr) {
+	if iface && rcvr.Width < int64(Widthptr) {
 		// Building method for interface table and receiver
 		// is smaller than the single pointer-sized word
 		// that the interface call will pass in.
@@ -1742,9 +1746,7 @@ func genwrapper(rcvr *types.Type, method *types.Field, newnam *types.Sym, iface 
 		as := nod(OAS, this.Left, nod(OCONVNOP, dot, nil))
 		as.Right.Type = rcvr
 		fn.Nbody.Append(as)
-		n := nod(ORETJMP, nil, nil)
-		n.Left = newname(methodsym(method.Sym, methodrcvr, false))
-		fn.Nbody.Append(n)
+		fn.Nbody.Append(nodSym(ORETJMP, nil, methodsym(method.Sym, methodrcvr, false)))
 		// When tail-calling, we can't use a frame pointer.
 		fn.Func.SetNoFramePointer(true)
 	} else {
@@ -1752,7 +1754,7 @@ func genwrapper(rcvr *types.Type, method *types.Field, newnam *types.Sym, iface 
 		call := nod(OCALL, dot, nil)
 		call.List.Set(args)
 		call.SetIsddd(isddd)
-		if method.Type.Results().NumFields() > 0 {
+		if method.Type.NumResults() > 0 {
 			n := nod(ORETURN, nil, nil)
 			n.List.Set1(call)
 			call = n
@@ -1765,7 +1767,7 @@ func genwrapper(rcvr *types.Type, method *types.Field, newnam *types.Sym, iface 
 		dumplist("genwrapper body", fn.Nbody)
 	}
 
-	funcbody(fn)
+	funcbody()
 	Curfn = fn
 	types.Popdcl()
 	if debug_dclstack != 0 {
@@ -1843,11 +1845,12 @@ func implements(t, iface *types.Type, m, samename **types.Field, ptr *int) bool 
 	// and then do one loop.
 
 	if t.IsInterface() {
+	Outer:
 		for _, im := range iface.Fields().Slice() {
 			for _, tm := range t.Fields().Slice() {
 				if tm.Sym == im.Sym {
 					if eqtype(tm.Type, im.Type) {
-						goto found
+						continue Outer
 					}
 					*m = im
 					*samename = tm
@@ -1860,7 +1863,6 @@ func implements(t, iface *types.Type, m, samename **types.Field, ptr *int) bool 
 			*samename = nil
 			*ptr = 0
 			return false
-		found:
 		}
 
 		return true

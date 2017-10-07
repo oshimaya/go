@@ -7,7 +7,6 @@ package gc
 import (
 	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/types"
-	"cmd/internal/bio"
 	"cmd/internal/obj"
 	"cmd/internal/src"
 	"sync"
@@ -15,7 +14,7 @@ import (
 
 const (
 	BADWIDTH        = types.BADWIDTH
-	MaxStackVarSize = 10 * 1024 * 1024
+	maxStackVarSize = 10 * 1024 * 1024
 )
 
 // isRuntimePkg reports whether p is package runtime.
@@ -84,8 +83,6 @@ var pragcgobuf string
 var outfile string
 var linkobj string
 var dolinkobj bool
-
-var bout *bio.Writer
 
 // nerrors is the number of compiler errors reported
 // since the last call to saveerrors.
@@ -201,7 +198,7 @@ var compiling_runtime bool
 // Compiling the standard library
 var compiling_std bool
 
-var compiling_wrappers int
+var compiling_wrappers bool
 
 var use_writebarrier bool
 
@@ -293,4 +290,8 @@ var (
 	typedmemmove,
 	typedmemclr,
 	Udiv *obj.LSym
+
+	// GO386=387
+	ControlWord64trunc,
+	ControlWord32 *obj.LSym
 )

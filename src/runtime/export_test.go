@@ -152,12 +152,19 @@ func RunSchedLocalQueueEmptyTest(iters int) {
 	}
 }
 
-var StringHash = stringHash
-var BytesHash = bytesHash
-var Int32Hash = int32Hash
-var Int64Hash = int64Hash
-var EfaceHash = efaceHash
-var IfaceHash = ifaceHash
+var (
+	StringHash = stringHash
+	BytesHash  = bytesHash
+	Int32Hash  = int32Hash
+	Int64Hash  = int64Hash
+	MemHash    = memhash
+	MemHash32  = memhash32
+	MemHash64  = memhash64
+	EfaceHash  = efaceHash
+	IfaceHash  = ifaceHash
+)
+
+var UseAeshash = &useAeshash
 
 func MemclrBytes(b []byte) {
 	s := (*slice)(unsafe.Pointer(&b))
@@ -368,4 +375,23 @@ func (rw *RWMutex) Lock() {
 
 func (rw *RWMutex) Unlock() {
 	rw.rw.unlock()
+}
+
+func MapBuckets(m map[int]int) int {
+	h := *(**hmap)(unsafe.Pointer(&m))
+	return 1 << h.B
+}
+
+func LockOSCounts() (external, internal uint32) {
+	g := getg()
+	if g.m.lockedExt+g.m.lockedInt == 0 {
+		if g.lockedm != 0 {
+			panic("lockedm on non-locked goroutine")
+		}
+	} else {
+		if g.lockedm == 0 {
+			panic("nil lockedm on locked goroutine")
+		}
+	}
+	return g.m.lockedExt, g.m.lockedInt
 }

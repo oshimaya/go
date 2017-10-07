@@ -204,7 +204,7 @@ func driverArgs(ci driver.Conn, ds *driverStmt, args []interface{}) ([]driver.Na
 		}
 	}
 
-	// Check the length of arguments after convertion to allow for omitted
+	// Check the length of arguments after conversion to allow for omitted
 	// arguments.
 	if want != -1 && len(nvargs) != want {
 		return nil, fmt.Errorf("sql: expected %d arguments, got %d", want, len(nvargs))
@@ -233,6 +233,12 @@ func convertAssign(dest, src interface{}) error {
 				return errNilPtr
 			}
 			*d = []byte(s)
+			return nil
+		case *RawBytes:
+			if d == nil {
+				return errNilPtr
+			}
+			*d = append((*d)[:0], s...)
 			return nil
 		}
 	case []byte:
@@ -272,6 +278,12 @@ func convertAssign(dest, src interface{}) error {
 				return errNilPtr
 			}
 			*d = []byte(s.Format(time.RFC3339Nano))
+			return nil
+		case *RawBytes:
+			if d == nil {
+				return errNilPtr
+			}
+			*d = s.AppendFormat((*d)[:0], time.RFC3339Nano)
 			return nil
 		}
 	case nil:
