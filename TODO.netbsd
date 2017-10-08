@@ -1,4 +1,1 @@
-arm:
-  go test syscall -test.run=TestPassFD Failed
-  syscall_unix_test.go:212: child process ReadAll: "", <nil>; 
-    want "Hello from child process!\n"
+(none)

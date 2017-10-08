@@ -1301,7 +1301,6 @@ func elfwritenetbsdsig() int {
 	Cput(0)
 
 	Thearch.Lput(ELF_NOTE_NETBSD_VERSION)
-
 	if SysArch.Family == sys.ARM {
 		mArch := []byte("earm\x00")
 		switch obj.GOARM {
@@ -2370,16 +2369,21 @@ func Asmbelf(ctxt *Link, symo int64) {
 		case obj.Hnetbsd:
 			sh = elfshname(".note.netbsd.ident")
 			resoff -= int64(elfnetbsdsig(sh, uint64(startva), uint64(resoff)))
-			if SysArch.Family == sys.ARM {
-				sh = elfshname(".note.netbsd.march")
-				resoff -= int64(elfnetbsdarmsig(sh, uint64(startva), uint64(resoff)))
-			}
 
 		case obj.Hopenbsd:
 			sh = elfshname(".note.openbsd.ident")
 			resoff -= int64(elfopenbsdsig(sh, uint64(startva), uint64(resoff)))
 		}
 
+		pnote = newElfPhdr()
+		pnote.type_ = PT_NOTE
+		pnote.flags = PF_R
+		phsh(pnote, sh)
+	}
+	if Headtype == obj.Hnetbsd && SysArch.Family == sys.ARM {
+		var sh *ElfShdr
+		sh = elfshname(".note.netbsd.march")
+		resoff -= int64(elfnetbsdarmsig(sh, uint64(startva), uint64(resoff)))
 		pnote = newElfPhdr()
 		pnote.type_ = PT_NOTE
 		pnote.flags = PF_R
