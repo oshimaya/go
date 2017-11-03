@@ -1927,7 +1927,7 @@ func Asmbelf(ctxt *Link, symo int64) {
 		pnote.flags = PF_R
 		phsh(pnote, sh)
 	}
-	if Headtype == objabi.Hnetbsd && ctxt.Arch.Family == sys.ARM {
+	if ctxt.HeadType == objabi.Hnetbsd && ctxt.Arch.Family == sys.ARM {
 		var sh *ElfShdr
 		sh = elfshname(".note.netbsd.march")
 		resoff -= int64(elfnetbsdarmsig(sh, uint64(startva), uint64(resoff)))
