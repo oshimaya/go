@@ -67,7 +67,9 @@ var bootstrapDirs = []string{
 	"cmd/link/internal/arm",
 	"cmd/link/internal/arm64",
 	"cmd/link/internal/ld",
+	"cmd/link/internal/loadelf",
 	"cmd/link/internal/loadmacho",
+	"cmd/link/internal/loadpe",
 	"cmd/link/internal/mips",
 	"cmd/link/internal/mips64",
 	"cmd/link/internal/objfile",
@@ -75,12 +77,14 @@ var bootstrapDirs = []string{
 	"cmd/link/internal/s390x",
 	"cmd/link/internal/sym",
 	"cmd/link/internal/x86",
+	"container/heap",
 	"debug/dwarf",
 	"debug/elf",
 	"debug/macho",
 	"debug/pe",
 	"math/big",
 	"math/bits",
+	"sort",
 }
 
 // File prefixes that are ignored by go/build anyway, and cause
@@ -102,7 +106,7 @@ func bootstrapBuildTools() {
 	if goroot_bootstrap == "" {
 		goroot_bootstrap = pathf("%s/go1.4", os.Getenv("HOME"))
 	}
-	xprintf("##### Building Go toolchain using %s.\n", goroot_bootstrap)
+	xprintf("Building Go toolchain1 using %s.\n", goroot_bootstrap)
 
 	mkzbootstrap(pathf("%s/src/cmd/internal/objabi/zbootstrap.go", goroot))
 
@@ -178,8 +182,10 @@ func bootstrapBuildTools() {
 		pathf("%s/bin/go", goroot_bootstrap),
 		"install",
 		"-gcflags=-l",
-		"-tags=math_big_pure_go",
-		"-v",
+		"-tags=math_big_pure_go compiler_bootstrap",
+	}
+	if vflag > 0 {
+		cmd = append(cmd, "-v")
 	}
 	if tool := os.Getenv("GOBOOTSTRAP_TOOLEXEC"); tool != "" {
 		cmd = append(cmd, "-toolexec="+tool)
@@ -198,7 +204,9 @@ func bootstrapBuildTools() {
 		}
 	}
 
-	xprintf("\n")
+	if vflag > 0 {
+		xprintf("\n")
+	}
 }
 
 var ssaRewriteFileSubstring = filepath.FromSlash("src/cmd/compile/internal/ssa/rewrite")

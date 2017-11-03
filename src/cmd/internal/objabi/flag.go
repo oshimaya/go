@@ -47,6 +47,7 @@ func (versionFlag) Set(s string) error {
 	name := os.Args[0]
 	name = name[strings.LastIndex(name, `/`)+1:]
 	name = name[strings.LastIndex(name, `\`)+1:]
+	name = strings.TrimSuffix(name, ".exe")
 	p := Expstring()
 	if p == DefaultExpstring() {
 		p = ""
@@ -94,7 +95,15 @@ func (c *count) Set(s string) error {
 	return nil
 }
 
+func (c *count) Get() interface{} {
+	return int(*c)
+}
+
 func (c *count) IsBoolFlag() bool {
+	return true
+}
+
+func (c *count) IsCountFlag() bool {
 	return true
 }
 

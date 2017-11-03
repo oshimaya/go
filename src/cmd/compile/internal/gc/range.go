@@ -7,12 +7,13 @@ package gc
 import (
 	"cmd/compile/internal/types"
 	"cmd/internal/objabi"
+	"cmd/internal/sys"
 	"unicode/utf8"
 )
 
 // range
 func typecheckrange(n *Node) {
-	var toomany int
+	var toomany bool
 	var why string
 	var t1 *types.Type
 	var t2 *types.Type
@@ -49,10 +50,10 @@ func typecheckrange(n *Node) {
 	}
 	n.Type = t
 
-	toomany = 0
+	toomany = false
 	switch t.Etype {
 	default:
-		yyerror("cannot range over %L", n.Right)
+		yyerrorl(n.Pos, "cannot range over %L", n.Right)
 		goto out
 
 	case TARRAY, TSLICE:
@@ -65,14 +66,14 @@ func typecheckrange(n *Node) {
 
 	case TCHAN:
 		if !t.ChanDir().CanRecv() {
-			yyerror("invalid operation: range %v (receive from send-only type %v)", n.Right, n.Right.Type)
+			yyerrorl(n.Pos, "invalid operation: range %v (receive from send-only type %v)", n.Right, n.Right.Type)
 			goto out
 		}
 
 		t1 = t.Elem()
 		t2 = nil
 		if n.List.Len() == 2 {
-			toomany = 1
+			toomany = true
 		}
 
 	case TSTRING:
@@ -80,8 +81,8 @@ func typecheckrange(n *Node) {
 		t2 = types.Runetype
 	}
 
-	if n.List.Len() > 2 || toomany != 0 {
-		yyerror("too many variables in range")
+	if n.List.Len() > 2 || toomany {
+		yyerrorl(n.Pos, "too many variables in range")
 	}
 
 	v1 = nil
@@ -108,7 +109,7 @@ func typecheckrange(n *Node) {
 		if v1.Name != nil && v1.Name.Defn == n {
 			v1.Type = t1
 		} else if v1.Type != nil && assignop(t1, v1.Type, &why) == 0 {
-			yyerror("cannot assign type %v to %L in range%s", t1, v1, why)
+			yyerrorl(n.Pos, "cannot assign type %v to %L in range%s", t1, v1, why)
 		}
 		checkassign(n, v1)
 	}
@@ -117,7 +118,7 @@ func typecheckrange(n *Node) {
 		if v2.Name != nil && v2.Name.Defn == n {
 			v2.Type = t2
 		} else if v2.Type != nil && assignop(t2, v2.Type, &why) == 0 {
-			yyerror("cannot assign type %v to %L in range%s", t2, v2, why)
+			yyerrorl(n.Pos, "cannot assign type %v to %L in range%s", t2, v2, why)
 		}
 		checkassign(n, v2)
 	}
@@ -135,6 +136,22 @@ out:
 	decldepth++
 	typecheckslice(n.Nbody.Slice(), Etop)
 	decldepth--
+}
+
+func cheapComputableIndex(width int64) bool {
+	switch thearch.LinkArch.Family {
+	// MIPS does not have R+R addressing
+	// Arm64 may lack ability to generate this code in our assembler,
+	// but the architecture supports it.
+	case sys.PPC64, sys.S390X:
+		return width == 1
+	case sys.AMD64, sys.I386, sys.ARM64, sys.ARM:
+		switch width {
+		case 1, 2, 4, 8:
+			return true
+		}
+	}
+	return false
 }
 
 // walkrange transforms various forms of ORANGE into
@@ -202,56 +219,75 @@ func walkrange(n *Node) *Node {
 
 		hv1 := temp(types.Types[TINT])
 		hn := temp(types.Types[TINT])
-		var hp *Node
 
 		init = append(init, nod(OAS, hv1, nil))
 		init = append(init, nod(OAS, hn, nod(OLEN, ha, nil)))
 
-		if v2 != nil {
-			hp = temp(types.NewPtr(n.Type.Elem()))
-			tmp := nod(OINDEX, ha, nodintconst(0))
-			tmp.SetBounded(true)
-			init = append(init, nod(OAS, hp, nod(OADDR, tmp, nil)))
-		}
-
 		n.Left = nod(OLT, hv1, hn)
 		n.Right = nod(OAS, hv1, nod(OADD, hv1, nodintconst(1)))
-		if v1 == nil {
-			body = nil
-		} else if v2 == nil {
-			body = []*Node{nod(OAS, v1, hv1)}
-		} else { // for i,a := range thing { body }
-			if objabi.Preemptibleloops_enabled != 0 {
-				// Doing this transformation makes a bounds check removal less trivial; see #20711
-				// TODO enhance the preemption check insertion so that this transformation is not necessary.
-				ifGuard = nod(OIF, nil, nil)
-				ifGuard.Left = nod(OLT, hv1, hn)
-				translatedLoopOp = OFORUNTIL
-			}
 
+		// for range ha { body }
+		if v1 == nil {
+			break
+		}
+
+		// for v1 := range ha { body }
+		if v2 == nil {
+			body = []*Node{nod(OAS, v1, hv1)}
+			break
+		}
+
+		// for v1, v2 := range ha { body }
+		if cheapComputableIndex(n.Type.Elem().Width) {
+			// v1, v2 = hv1, ha[hv1]
+			tmp := nod(OINDEX, ha, hv1)
+			tmp.SetBounded(true)
+			// Use OAS2 to correctly handle assignments
+			// of the form "v1, a[v1] := range".
 			a := nod(OAS2, nil, nil)
 			a.List.Set2(v1, v2)
-			a.Rlist.Set2(hv1, nod(OIND, hp, nil))
+			a.Rlist.Set2(hv1, tmp)
 			body = []*Node{a}
-
-			// Advance pointer as part of increment.
-			// We used to advance the pointer before executing the loop body,
-			// but doing so would make the pointer point past the end of the
-			// array during the final iteration, possibly causing another unrelated
-			// piece of memory not to be garbage collected until the loop finished.
-			// Advancing during the increment ensures that the pointer p only points
-			// pass the end of the array during the final "p++; i++; if(i >= len(x)) break;",
-			// after which p is dead, so it cannot confuse the collector.
-			tmp := nod(OADD, hp, nodintconst(t.Elem().Width))
-
-			tmp.Type = hp.Type
-			tmp.SetTypecheck(1)
-			tmp.Right.Type = types.Types[types.Tptr]
-			tmp.Right.SetTypecheck(1)
-			a = nod(OAS, hp, tmp)
-			a = typecheck(a, Etop)
-			n.Right.Ninit.Set1(a)
+			break
 		}
+
+		if objabi.Preemptibleloops_enabled != 0 {
+			// Doing this transformation makes a bounds check removal less trivial; see #20711
+			// TODO enhance the preemption check insertion so that this transformation is not necessary.
+			ifGuard = nod(OIF, nil, nil)
+			ifGuard.Left = nod(OLT, hv1, hn)
+			translatedLoopOp = OFORUNTIL
+		}
+
+		hp := temp(types.NewPtr(n.Type.Elem()))
+		tmp := nod(OINDEX, ha, nodintconst(0))
+		tmp.SetBounded(true)
+		init = append(init, nod(OAS, hp, nod(OADDR, tmp, nil)))
+
+		// Use OAS2 to correctly handle assignments
+		// of the form "v1, a[v1] := range".
+		a := nod(OAS2, nil, nil)
+		a.List.Set2(v1, v2)
+		a.Rlist.Set2(hv1, nod(OIND, hp, nil))
+		body = append(body, a)
+
+		// Advance pointer as part of increment.
+		// We used to advance the pointer before executing the loop body,
+		// but doing so would make the pointer point past the end of the
+		// array during the final iteration, possibly causing another unrelated
+		// piece of memory not to be garbage collected until the loop finished.
+		// Advancing during the increment ensures that the pointer p only points
+		// pass the end of the array during the final "p++; i++; if(i >= len(x)) break;",
+		// after which p is dead, so it cannot confuse the collector.
+		tmp = nod(OADD, hp, nodintconst(t.Elem().Width))
+
+		tmp.Type = hp.Type
+		tmp.SetTypecheck(1)
+		tmp.Right.Type = types.Types[types.Tptr]
+		tmp.Right.SetTypecheck(1)
+		a = nod(OAS, hp, tmp)
+		a = typecheck(a, Etop)
+		n.Right.Ninit.Set1(a)
 
 	case TMAP:
 		// orderstmt allocated the iterator for us.

@@ -73,7 +73,7 @@ func putelfsyment(out *OutBuf, off int, addr int64, size int64, info int, shndx 
 	}
 }
 
-var numelfsym int = 1 // 0 is reserved
+var numelfsym = 1 // 0 is reserved
 
 var elfbind int
 
@@ -128,7 +128,7 @@ func putelfsym(ctxt *Link, x *sym.Symbol, s string, t SymbolType, addr int64, go
 	// maybe one day STB_WEAK.
 	bind := STB_GLOBAL
 
-	if x.Version != 0 || (x.Type&sym.SHIDDEN != 0) || x.Attr.Local() {
+	if x.Version != 0 || x.Attr.VisibilityHidden() || x.Attr.Local() {
 		bind = STB_LOCAL
 	}
 
@@ -145,7 +145,12 @@ func putelfsym(ctxt *Link, x *sym.Symbol, s string, t SymbolType, addr int64, go
 		addr -= int64(xo.Sect.Vaddr)
 	}
 	other := STV_DEFAULT
-	if x.Type&sym.SHIDDEN != 0 {
+	if x.Attr.VisibilityHidden() {
+		// TODO(mwhudson): We only set AttrVisibilityHidden in ldelf, i.e. when
+		// internally linking. But STV_HIDDEN visibility only matters in object
+		// files and shared libraries, and as we are a long way from implementing
+		// internal linking for shared libraries and only create object files when
+		// externally linking, I don't think this makes a lot of sense.
 		other = STV_HIDDEN
 	}
 	if ctxt.Arch.Family == sys.PPC64 && typ == STT_FUNC && x.Attr.Shared() && x.Name != "runtime.duffzero" && x.Name != "runtime.duffcopy" {
@@ -226,7 +231,7 @@ func putplan9sym(ctxt *Link, x *sym.Symbol, s string, typ SymbolType, addr int64
 
 	case AutoSym, ParamSym, FrameSym:
 		l := 4
-		if Headtype == objabi.Hplan9 && ctxt.Arch.Family == sys.AMD64 && !Flag8 {
+		if ctxt.HeadType == objabi.Hplan9 && ctxt.Arch.Family == sys.AMD64 && !Flag8 {
 			ctxt.Out.Write32b(uint32(addr >> 32))
 			l = 8
 		}
@@ -581,7 +586,7 @@ func (ctxt *Link) symtab() {
 		moduledata.AddUint(ctxt.Arch, 0)
 	}
 	if ctxt.BuildMode == BuildModePlugin {
-		addgostring(ctxt, moduledata, "go.link.thispluginpath", *flagPluginPath)
+		addgostring(ctxt, moduledata, "go.link.thispluginpath", objabi.PathToPrefix(*flagPluginPath))
 
 		pkghashes := ctxt.Syms.Lookup("go.link.pkghashes", 0)
 		pkghashes.Attr |= sym.AttrReachable
@@ -592,7 +597,7 @@ func (ctxt *Link) symtab() {
 			// pkghashes[i].name
 			addgostring(ctxt, pkghashes, fmt.Sprintf("go.link.pkgname.%d", i), l.Pkg)
 			// pkghashes[i].linktimehash
-			addgostring(ctxt, pkghashes, fmt.Sprintf("go.link.pkglinkhash.%d", i), string(l.Hash))
+			addgostring(ctxt, pkghashes, fmt.Sprintf("go.link.pkglinkhash.%d", i), l.Hash)
 			// pkghashes[i].runtimehash
 			hash := ctxt.Syms.ROLookup("go.link.pkghash."+l.Pkg, 0)
 			pkghashes.AddAddr(ctxt.Arch, hash)
@@ -639,6 +644,19 @@ func (ctxt *Link) symtab() {
 		moduledata.AddAddr(ctxt.Arch, modulehashes)
 		moduledata.AddUint(ctxt.Arch, uint64(len(ctxt.Shlibs)))
 		moduledata.AddUint(ctxt.Arch, uint64(len(ctxt.Shlibs)))
+	} else {
+		moduledata.AddUint(ctxt.Arch, 0) // modulename
+		moduledata.AddUint(ctxt.Arch, 0)
+		moduledata.AddUint(ctxt.Arch, 0) // moduleshashes slice
+		moduledata.AddUint(ctxt.Arch, 0)
+		moduledata.AddUint(ctxt.Arch, 0)
+	}
+
+	hasmain := ctxt.BuildMode == BuildModeExe || ctxt.BuildMode == BuildModePIE
+	if hasmain {
+		moduledata.AddUint8(1)
+	} else {
+		moduledata.AddUint8(0)
 	}
 
 	// The rest of moduledata is zero initialized.

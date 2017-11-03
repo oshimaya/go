@@ -1074,15 +1074,14 @@ func (v Value) MapIndex(key Value) Value {
 	typ := tt.elem
 	fl := (v.flag | key.flag).ro()
 	fl |= flag(typ.Kind())
-	if ifaceIndir(typ) {
-		// Copy result so future changes to the map
-		// won't change the underlying value.
-		c := unsafe_New(typ)
-		typedmemmove(typ, c, e)
-		return Value{typ, c, fl | flagIndir}
-	} else {
+	if !ifaceIndir(typ) {
 		return Value{typ, *(*unsafe.Pointer)(e), fl}
 	}
+	// Copy result so future changes to the map
+	// won't change the underlying value.
+	c := unsafe_New(typ)
+	typedmemmove(typ, c, e)
+	return Value{typ, c, fl | flagIndir}
 }
 
 // MapKeys returns a slice containing all the keys present in the map,
@@ -1864,6 +1863,8 @@ func AppendSlice(s, t Value) Value {
 // It returns the number of elements copied.
 // Dst and src each must have kind Slice or Array, and
 // dst and src must have the same element type.
+//
+// As a special case, src can have kind String if the element type of dst is kind Uint8.
 func Copy(dst, src Value) int {
 	dk := dst.kind()
 	if dk != Array && dk != Slice {
@@ -1875,14 +1876,20 @@ func Copy(dst, src Value) int {
 	dst.mustBeExported()
 
 	sk := src.kind()
+	var stringCopy bool
 	if sk != Array && sk != Slice {
-		panic(&ValueError{"reflect.Copy", sk})
+		stringCopy = sk == String && dst.typ.Elem().Kind() == Uint8
+		if !stringCopy {
+			panic(&ValueError{"reflect.Copy", sk})
+		}
 	}
 	src.mustBeExported()
 
 	de := dst.typ.Elem()
-	se := src.typ.Elem()
-	typesMustMatch("reflect.Copy", de, se)
+	if !stringCopy {
+		se := src.typ.Elem()
+		typesMustMatch("reflect.Copy", de, se)
+	}
 
 	var ds, ss sliceHeader
 	if dk == Array {
@@ -1896,8 +1903,13 @@ func Copy(dst, src Value) int {
 		ss.Data = src.ptr
 		ss.Len = src.Len()
 		ss.Cap = ss.Len
-	} else {
+	} else if sk == Slice {
 		ss = *(*sliceHeader)(src.ptr)
+	} else {
+		sh := *(*stringHeader)(src.ptr)
+		ss.Data = sh.Data
+		ss.Len = sh.Len
+		ss.Cap = sh.Len
 	}
 
 	return typedslicecopy(de.common(), ds, ss)

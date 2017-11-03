@@ -35,6 +35,7 @@ import (
 	"cmd/internal/sys"
 	"cmd/link/internal/ld"
 	"cmd/link/internal/sym"
+	"debug/elf"
 	"fmt"
 	"log"
 )
@@ -69,21 +70,21 @@ func elfreloc1(ctxt *ld.Link, r *sym.Reloc, sectoff int64) bool {
 	case objabi.R_ADDR:
 		switch r.Siz {
 		case 4:
-			ctxt.Out.Write8(ld.R_MIPS_32)
+			ctxt.Out.Write8(uint8(elf.R_MIPS_32))
 		case 8:
-			ctxt.Out.Write8(ld.R_MIPS_64)
+			ctxt.Out.Write8(uint8(elf.R_MIPS_64))
 		default:
 			return false
 		}
 	case objabi.R_ADDRMIPS:
-		ctxt.Out.Write8(ld.R_MIPS_LO16)
+		ctxt.Out.Write8(uint8(elf.R_MIPS_LO16))
 	case objabi.R_ADDRMIPSU:
-		ctxt.Out.Write8(ld.R_MIPS_HI16)
+		ctxt.Out.Write8(uint8(elf.R_MIPS_HI16))
 	case objabi.R_ADDRMIPSTLS:
-		ctxt.Out.Write8(ld.R_MIPS_TLS_TPREL_LO16)
+		ctxt.Out.Write8(uint8(elf.R_MIPS_TLS_TPREL_LO16))
 	case objabi.R_CALLMIPS,
 		objabi.R_JMPMIPS:
-		ctxt.Out.Write8(ld.R_MIPS_26)
+		ctxt.Out.Write8(uint8(elf.R_MIPS_26))
 	}
 	ctxt.Out.Write64(uint64(r.Xadd))
 
@@ -178,7 +179,7 @@ func asmb(ctxt *ld.Link) {
 		ctxt.Logf("%5.2f asmb\n", ld.Cputime())
 	}
 
-	if ld.Iself {
+	if ctxt.IsELF {
 		ld.Asmbelfsetup()
 	}
 
@@ -225,9 +226,9 @@ func asmb(ctxt *ld.Link) {
 		if ctxt.Debugvlog != 0 {
 			ctxt.Logf("%5.2f sym\n", ld.Cputime())
 		}
-		switch ld.Headtype {
+		switch ctxt.HeadType {
 		default:
-			if ld.Iself {
+			if ctxt.IsELF {
 				symo = uint32(ld.Segdwarf.Fileoff + ld.Segdwarf.Filelen)
 				symo = uint32(ld.Rnd(int64(symo), int64(*ld.FlagRound)))
 			}
@@ -237,9 +238,9 @@ func asmb(ctxt *ld.Link) {
 		}
 
 		ctxt.Out.SeekSet(int64(symo))
-		switch ld.Headtype {
+		switch ctxt.HeadType {
 		default:
-			if ld.Iself {
+			if ctxt.IsELF {
 				if ctxt.Debugvlog != 0 {
 					ctxt.Logf("%5.2f elfsym\n", ld.Cputime())
 				}
@@ -269,7 +270,7 @@ func asmb(ctxt *ld.Link) {
 		ctxt.Logf("%5.2f header\n", ld.Cputime())
 	}
 	ctxt.Out.SeekSet(0)
-	switch ld.Headtype {
+	switch ctxt.HeadType {
 	default:
 	case objabi.Hplan9: /* plan 9 */
 		magic := uint32(4*18*18 + 7)

@@ -229,7 +229,7 @@ func TestFormats(t *testing.T) {
 			}
 		}
 		if mismatch {
-			t.Errorf("knownFormats is out of date; please run with -v to regenerate")
+			t.Errorf("knownFormats is out of date; please 'go test -v fmt_test.go > foo', then extract new definition of knownFormats from foo")
 		}
 	}
 
@@ -606,7 +606,6 @@ var knownFormats = map[string]string{
 	"[16]byte %x":                                     "",
 	"[]*cmd/compile/internal/gc.Node %v":              "",
 	"[]*cmd/compile/internal/gc.Sig %#v":              "",
-	"[]*cmd/compile/internal/ssa.Block %+v":           "",
 	"[]*cmd/compile/internal/ssa.Value %v":            "",
 	"[][]cmd/compile/internal/ssa.SlotID %v":          "",
 	"[]byte %s":                                       "",
@@ -614,6 +613,7 @@ var knownFormats = map[string]string{
 	"[]cmd/compile/internal/ssa.Edge %v":              "",
 	"[]cmd/compile/internal/ssa.ID %v":                "",
 	"[]cmd/compile/internal/ssa.VarLocList %v":        "",
+	"[]cmd/compile/internal/syntax.token %s":          "",
 	"[]string %v":                                     "",
 	"bool %v":                                         "",
 	"byte %08b":                                       "",
@@ -685,6 +685,7 @@ var knownFormats = map[string]string{
 	"int32 %x":                                        "",
 	"int64 %+d":                                       "",
 	"int64 %-10d":                                     "",
+	"int64 %.5d":                                      "",
 	"int64 %X":                                        "",
 	"int64 %d":                                        "",
 	"int64 %v":                                        "",

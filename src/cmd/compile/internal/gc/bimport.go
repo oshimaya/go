@@ -187,7 +187,8 @@ func Import(imp *types.Pkg, in *bufio.Reader) {
 		// them only for functions with inlineable bodies. funchdr does
 		// parameter renaming which doesn't matter if we don't have a body.
 
-		if f := p.funcList[i]; f != nil {
+		inlCost := p.int()
+		if f := p.funcList[i]; f != nil && f.Func.Inl.Len() == 0 {
 			// function not yet imported - read body and set it
 			funchdr(f)
 			body := p.stmtList()
@@ -200,6 +201,7 @@ func Import(imp *types.Pkg, in *bufio.Reader) {
 				body = []*Node{nod(OEMPTY, nil, nil)}
 			}
 			f.Func.Inl.Set(body)
+			f.Func.InlCost = int32(inlCost)
 			funcbody()
 		} else {
 			// function already imported - read body but discard declarations
@@ -355,12 +357,13 @@ func (p *importer) obj(tag int) {
 
 		sig := functypefield(nil, params, result)
 		importsym(p.imp, sym, ONAME)
-		if asNode(sym.Def) != nil && asNode(sym.Def).Op == ONAME {
+		if old := asNode(sym.Def); old != nil && old.Op == ONAME {
 			// function was imported before (via another import)
-			if !eqtype(sig, asNode(sym.Def).Type) {
-				p.formatErrorf("inconsistent definition for func %v during import\n\t%v\n\t%v", sym, asNode(sym.Def).Type, sig)
+			if !eqtype(sig, old.Type) {
+				p.formatErrorf("inconsistent definition for func %v during import\n\t%v\n\t%v", sym, old.Type, sig)
 			}
-			p.funcList = append(p.funcList, nil)
+			n := asNode(old.Type.Nname())
+			p.funcList = append(p.funcList, n)
 			break
 		}
 
@@ -369,6 +372,8 @@ func (p *importer) obj(tag int) {
 		declare(n, PFUNC)
 		p.funcList = append(p.funcList, n)
 		importlist = append(importlist, n)
+
+		sig.SetNname(asTypesNode(n))
 
 		if Debug['E'] > 0 {
 			fmt.Printf("import [%q] func %v \n", p.imp.Path, n)
@@ -516,17 +521,19 @@ func (p *importer) typ() *types.Type {
 			nointerface := p.bool()
 
 			mt := functypefield(recv[0], params, result)
-			addmethod(sym, mt, false, nointerface)
+			oldm := addmethod(sym, mt, false, nointerface)
 
 			if dup {
 				// An earlier import already declared this type and its methods.
 				// Discard the duplicate method declaration.
-				p.funcList = append(p.funcList, nil)
+				n := asNode(oldm.Type.Nname())
+				p.funcList = append(p.funcList, n)
 				continue
 			}
 
 			n := newfuncnamel(mpos, methodname(sym, recv[0].Type))
 			n.Type = mt
+			n.SetClass(PFUNC)
 			checkwidth(n.Type)
 			p.funcList = append(p.funcList, n)
 			importlist = append(importlist, n)
@@ -536,7 +543,7 @@ func (p *importer) typ() *types.Type {
 			// (dotmeth's type).Nname.Inl, and dotmeth's type has been pulled
 			// out by typecheck's lookdot as this $$.ttype. So by providing
 			// this back link here we avoid special casing there.
-			n.Type.FuncType().Nname = asTypesNode(n)
+			mt.SetNname(asTypesNode(n))
 
 			if Debug['E'] > 0 {
 				fmt.Printf("import [%q] meth %v \n", p.imp.Path, n)

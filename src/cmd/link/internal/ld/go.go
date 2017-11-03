@@ -171,7 +171,7 @@ func loadcgo(ctxt *Link, file string, pkg string, p string) {
 				// to force a link of foo.so.
 				havedynamic = 1
 
-				if Headtype == objabi.Hdarwin {
+				if ctxt.HeadType == objabi.Hdarwin {
 					machoadddynlib(lib, ctxt.LinkMode)
 				} else {
 					dynlib = append(dynlib, lib)
@@ -298,7 +298,7 @@ func adddynlib(ctxt *Link, lib string) {
 	}
 	seenlib[lib] = true
 
-	if Iself {
+	if ctxt.IsELF {
 		s := ctxt.Syms.Lookup(".dynstr", 0)
 		if s.Size == 0 {
 			Addstring(s, "")
@@ -314,11 +314,11 @@ func Adddynsym(ctxt *Link, s *sym.Symbol) {
 		return
 	}
 
-	if Iself {
+	if ctxt.IsELF {
 		elfadddynsym(ctxt, s)
-	} else if Headtype == objabi.Hdarwin {
+	} else if ctxt.HeadType == objabi.Hdarwin {
 		Errorf(s, "adddynsym: missed symbol (Extname=%s)", s.Extname)
-	} else if Headtype == objabi.Hwindows {
+	} else if ctxt.HeadType == objabi.Hwindows {
 		// already taken care of
 	} else {
 		Errorf(s, "adddynsym: unsupported binary format")
@@ -358,7 +358,7 @@ func fieldtrack(ctxt *Link) {
 }
 
 func (ctxt *Link) addexport() {
-	if Headtype == objabi.Hdarwin {
+	if ctxt.HeadType == objabi.Hdarwin {
 		return
 	}
 

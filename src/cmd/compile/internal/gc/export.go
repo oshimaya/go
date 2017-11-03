@@ -83,7 +83,7 @@ func autoexport(n *Node, ctxt Class) {
 	if (ctxt != PEXTERN && ctxt != PFUNC) || dclcontext != PEXTERN {
 		return
 	}
-	if n.Type != nil && n.Type.IsKind(TFUNC) && n.Type.Recv() != nil { // method
+	if n.Type != nil && n.Type.IsKind(TFUNC) && n.IsMethod() {
 		return
 	}
 
@@ -112,10 +112,10 @@ func reexportdep(n *Node) {
 	switch n.Op {
 	case ONAME:
 		switch n.Class() {
-		// methods will be printed along with their type
-		// nodes for T.Method expressions
 		case PFUNC:
-			if n.Left != nil && n.Left.Op == OTYPE {
+			// methods will be printed along with their type
+			// nodes for T.Method expressions
+			if n.isMethodExpression() {
 				break
 			}
 

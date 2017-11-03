@@ -2506,6 +2506,37 @@ func TestRedirect(t *testing.T) {
 	}
 }
 
+// Test that Content-Type header is set for GET and HEAD requests.
+func TestRedirectContentTypeAndBody(t *testing.T) {
+	var tests = []struct {
+		method   string
+		wantCT   string
+		wantBody string
+	}{
+		{MethodGet, "text/html; charset=utf-8", "<a href=\"/foo\">Found</a>.\n\n"},
+		{MethodHead, "text/html; charset=utf-8", ""},
+		{MethodPost, "", ""},
+		{MethodDelete, "", ""},
+		{"foo", "", ""},
+	}
+	for _, tt := range tests {
+		req := httptest.NewRequest(tt.method, "http://example.com/qux/", nil)
+		rec := httptest.NewRecorder()
+		Redirect(rec, req, "/foo", 302)
+		if got, want := rec.Header().Get("Content-Type"), tt.wantCT; got != want {
+			t.Errorf("Redirect(%q) generated Content-Type header %q; want %q", tt.method, got, want)
+		}
+		resp := rec.Result()
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := string(body), tt.wantBody; got != want {
+			t.Errorf("Redirect(%q) generated Body %q; want %q", tt.method, got, want)
+		}
+	}
+}
+
 // TestZeroLengthPostAndResponse exercises an optimization done by the Transport:
 // when there is no body (either because the method doesn't permit a body, or an
 // explicit Content-Length of zero is present), then the transport can re-use the
@@ -2765,15 +2796,28 @@ func testRequestLimit(t *testing.T, h2 bool) {
 		req.Header.Set(fmt.Sprintf("header%05d", i), fmt.Sprintf("val%05d", i))
 	}
 	res, err := cst.c.Do(req)
-	if err != nil {
+	if res != nil {
+		defer res.Body.Close()
+	}
+	if h2 {
+		// In HTTP/2, the result depends on a race. If the client has received the
+		// server's SETTINGS before RoundTrip starts sending the request, then RoundTrip
+		// will fail with an error. Otherwise, the client should receive a 431 from the
+		// server.
+		if err == nil && res.StatusCode != 431 {
+			t.Fatalf("expected 431 response status; got: %d %s", res.StatusCode, res.Status)
+		}
+	} else {
+		// In HTTP/1, we expect a 431 from the server.
 		// Some HTTP clients may fail on this undefined behavior (server replying and
 		// closing the connection while the request is still being written), but
 		// we do support it (at least currently), so we expect a response below.
-		t.Fatalf("Do: %v", err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 431 {
-		t.Fatalf("expected 431 response status; got: %d %s", res.StatusCode, res.Status)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		if res.StatusCode != 431 {
+			t.Fatalf("expected 431 response status; got: %d %s", res.StatusCode, res.Status)
+		}
 	}
 }
 

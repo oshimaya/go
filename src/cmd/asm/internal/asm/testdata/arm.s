@@ -57,7 +57,7 @@ TEXT	foo(SB), DUPOK|NOSPLIT, $0
 //		outcode($1, $2, &$3, 0, &$5);
 //	}
 	MOVW.S	R1, R2
-	MOVW.S	$1, R2
+	MOVW	$1, R2
 	MOVW.S	R1<<R2, R3
 
 //
@@ -155,18 +155,6 @@ TEXT	foo(SB), DUPOK|NOSPLIT, $0
 //		outcode($1, $2, &$5, int32($3.Reg), &$7);
 //	}
 	STREX	R1, (R2), R3 // STREX (R2), R1, R3
-
-//	LTYPE9 cond reg ',' ireg
-//	{
-//		outcode($1, $2, &$5, int32($3.Reg), &$3);
-//	}
-	STREX	R1, (R2) // STREX (R2), R1, R1
-
-//	LTYPE9 cond comma ireg ',' reg
-//	{
-//		outcode($1, $2, &$4, int32($6.Reg), &$6);
-//	}
-	STREX	(R2), R3 // STREX (R2), R3, R3
 
 //
 // word
@@ -771,21 +759,21 @@ TEXT	foo(SB), DUPOK|NOSPLIT, $0
 	B	jmp_label_0 // JMP     // ffffffea
 jmp_label_0:
 	ADD	$0, R0, R0
-	BEQ	jmp_label_0 // BEQ 521 // fdffff0a
-	BNE	jmp_label_0 // BNE 521 // fcffff1a
-	BCS	jmp_label_0 // BCS 521 // fbffff2a
-	BCC	jmp_label_0 // BCC 521 // faffff3a
-	BMI	jmp_label_0 // BMI 521 // f9ffff4a
-	BPL	jmp_label_0 // BPL 521 // f8ffff5a
-	BVS	jmp_label_0 // BVS 521 // f7ffff6a
-	BVC	jmp_label_0 // BVC 521 // f6ffff7a
-	BHI	jmp_label_0 // BHI 521 // f5ffff8a
-	BLS	jmp_label_0 // BLS 521 // f4ffff9a
-	BGE	jmp_label_0 // BGE 521 // f3ffffaa
-	BLT	jmp_label_0 // BLT 521 // f2ffffba
-	BGT	jmp_label_0 // BGT 521 // f1ffffca
-	BLE	jmp_label_0 // BLE 521 // f0ffffda
-	B	jmp_label_0 // JMP 521 // efffffea
+	BEQ	jmp_label_0 // BEQ 519 // fdffff0a
+	BNE	jmp_label_0 // BNE 519 // fcffff1a
+	BCS	jmp_label_0 // BCS 519 // fbffff2a
+	BCC	jmp_label_0 // BCC 519 // faffff3a
+	BMI	jmp_label_0 // BMI 519 // f9ffff4a
+	BPL	jmp_label_0 // BPL 519 // f8ffff5a
+	BVS	jmp_label_0 // BVS 519 // f7ffff6a
+	BVC	jmp_label_0 // BVC 519 // f6ffff7a
+	BHI	jmp_label_0 // BHI 519 // f5ffff8a
+	BLS	jmp_label_0 // BLS 519 // f4ffff9a
+	BGE	jmp_label_0 // BGE 519 // f3ffffaa
+	BLT	jmp_label_0 // BLT 519 // f2ffffba
+	BGT	jmp_label_0 // BGT 519 // f1ffffca
+	BLE	jmp_label_0 // BLE 519 // f0ffffda
+	B	jmp_label_0 // JMP 519 // efffffea
 	B	0(PC)    // JMP 0(PC)  // feffffea
 jmp_label_1:
 	B	jmp_label_1 // JMP     // feffffea
@@ -816,21 +804,21 @@ jmp_label_1:
 	BL	jmp_label_2 // CALL        // ffffffeb
 jmp_label_2:
 	ADD	$0, R0, R0
-	BL.EQ	jmp_label_2 // CALL.EQ 562 // fdffff0b
-	BL.NE	jmp_label_2 // CALL.NE 562 // fcffff1b
-	BL.CS	jmp_label_2 // CALL.CS 562 // fbffff2b
-	BL.CC	jmp_label_2 // CALL.CC 562 // faffff3b
-	BL.MI	jmp_label_2 // CALL.MI 562 // f9ffff4b
-	BL.PL	jmp_label_2 // CALL.PL 562 // f8ffff5b
-	BL.VS	jmp_label_2 // CALL.VS 562 // f7ffff6b
-	BL.VC	jmp_label_2 // CALL.VC 562 // f6ffff7b
-	BL.HI	jmp_label_2 // CALL.HI 562 // f5ffff8b
-	BL.LS	jmp_label_2 // CALL.LS 562 // f4ffff9b
-	BL.GE	jmp_label_2 // CALL.GE 562 // f3ffffab
-	BL.LT	jmp_label_2 // CALL.LT 562 // f2ffffbb
-	BL.GT	jmp_label_2 // CALL.GT 562 // f1ffffcb
-	BL.LE	jmp_label_2 // CALL.LE 562 // f0ffffdb
-	BL	jmp_label_2 // CALL 562    // efffffeb
+	BL.EQ	jmp_label_2 // CALL.EQ 560 // fdffff0b
+	BL.NE	jmp_label_2 // CALL.NE 560 // fcffff1b
+	BL.CS	jmp_label_2 // CALL.CS 560 // fbffff2b
+	BL.CC	jmp_label_2 // CALL.CC 560 // faffff3b
+	BL.MI	jmp_label_2 // CALL.MI 560 // f9ffff4b
+	BL.PL	jmp_label_2 // CALL.PL 560 // f8ffff5b
+	BL.VS	jmp_label_2 // CALL.VS 560 // f7ffff6b
+	BL.VC	jmp_label_2 // CALL.VC 560 // f6ffff7b
+	BL.HI	jmp_label_2 // CALL.HI 560 // f5ffff8b
+	BL.LS	jmp_label_2 // CALL.LS 560 // f4ffff9b
+	BL.GE	jmp_label_2 // CALL.GE 560 // f3ffffab
+	BL.LT	jmp_label_2 // CALL.LT 560 // f2ffffbb
+	BL.GT	jmp_label_2 // CALL.GT 560 // f1ffffcb
+	BL.LE	jmp_label_2 // CALL.LE 560 // f0ffffdb
+	BL	jmp_label_2 // CALL 560    // efffffeb
 	BL	0(PC)    // CALL 0(PC)     // feffffeb
 jmp_label_3:
 	BL	jmp_label_3 // CALL        // feffffeb
@@ -1128,8 +1116,6 @@ jmp_label_3:
 // MVN
 	MVN	$0xff, R1        // MVN $255, R1          // ff10e0e3
 	MVN	$0xff000000, R1  // MVN $4278190080, R1   // ff14e0e3
-	MVN.S	$0xff, R1        // MVN.S $255, R1        // ff10f0e3
-	MVN.S	$0xff000000, R1  // MVN.S $4278190080, R1 // ff14f0e3
 	MVN	R9<<30, R7       // 097fe0e1
 	MVN	R9>>30, R7       // 297fe0e1
 	MVN	R9->30, R7       // 497fe0e1
@@ -1147,7 +1133,6 @@ jmp_label_3:
 	MVN.S	R9->R8, R7       // 5978f0e1
 	MVN.S	R9@>R8, R7       // 7978f0e1
 	MVN	$0xffffffbe, R5  // MVN $4294967230, R5   // 4150a0e3
-	MVN.S	$0xffffffbf, R5  // MVN.S $4294967231, R5 // 4050b0e3
 
 // MOVM
 	MOVM.IA   [R0,R2,R4,R6], (R1)        // MOVM.U [R0,R2,R4,R6], (R1)                      // 550081e8
@@ -1185,15 +1170,23 @@ jmp_label_3:
 
 // MOVW
 	MOVW	R3, R4                                            // 0340a0e1
+	MOVW.S	R3, R4                                            // 0340b0e1
 	MOVW	R9, R2                                            // 0920a0e1
+	MOVW.S	R9, R2                                            // 0920b0e1
 	MOVW	R5>>1, R2                                         // a520a0e1
+	MOVW.S	R5>>1, R2                                         // a520b0e1
 	MOVW	R5<<1, R2                                         // 8520a0e1
+	MOVW.S	R5<<1, R2                                         // 8520b0e1
 	MOVW	R5->1, R2                                         // c520a0e1
+	MOVW.S	R5->1, R2                                         // c520b0e1
 	MOVW	R5@>1, R2                                         // e520a0e1
+	MOVW.S	R5@>1, R2                                         // e520b0e1
 	MOVW	$0xff, R9            // MOVW $255, R9             // ff90a0e3
 	MOVW	$0xff000000, R9      // MOVW $4278190080, R9      // ff94a0e3
 	MOVW	$0xff(R0), R1        // MOVW $255(R0), R1         // ff1080e2
+	MOVW.S	$0xff(R0), R1        // MOVW.S $255(R0), R1       // ff1090e2
 	MOVW	$-0xff(R0), R1       // MOVW $-255(R0), R1        // ff1040e2
+	MOVW.S	$-0xff(R0), R1       // MOVW.S $-255(R0), R1      // ff1050e2
 	MOVW	$0xffffffae, R1      // MOVW $4294967214, R1      // 5110e0e3
 	MOVW	$0xaaaaaaaa, R1      // MOVW $2863311530, R1
 	MOVW	R1, (R2)                                          // 001082e5

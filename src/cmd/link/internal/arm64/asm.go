@@ -35,6 +35,7 @@ import (
 	"cmd/internal/sys"
 	"cmd/link/internal/ld"
 	"cmd/link/internal/sym"
+	"debug/elf"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -103,35 +104,35 @@ func elfreloc1(ctxt *ld.Link, r *sym.Reloc, sectoff int64) bool {
 	case objabi.R_ADDR:
 		switch r.Siz {
 		case 4:
-			ctxt.Out.Write64(ld.R_AARCH64_ABS32 | uint64(elfsym)<<32)
+			ctxt.Out.Write64(uint64(elf.R_AARCH64_ABS32) | uint64(elfsym)<<32)
 		case 8:
-			ctxt.Out.Write64(ld.R_AARCH64_ABS64 | uint64(elfsym)<<32)
+			ctxt.Out.Write64(uint64(elf.R_AARCH64_ABS64) | uint64(elfsym)<<32)
 		default:
 			return false
 		}
 	case objabi.R_ADDRARM64:
 		// two relocations: R_AARCH64_ADR_PREL_PG_HI21 and R_AARCH64_ADD_ABS_LO12_NC
-		ctxt.Out.Write64(ld.R_AARCH64_ADR_PREL_PG_HI21 | uint64(elfsym)<<32)
+		ctxt.Out.Write64(uint64(elf.R_AARCH64_ADR_PREL_PG_HI21) | uint64(elfsym)<<32)
 		ctxt.Out.Write64(uint64(r.Xadd))
 		ctxt.Out.Write64(uint64(sectoff + 4))
-		ctxt.Out.Write64(ld.R_AARCH64_ADD_ABS_LO12_NC | uint64(elfsym)<<32)
+		ctxt.Out.Write64(uint64(elf.R_AARCH64_ADD_ABS_LO12_NC) | uint64(elfsym)<<32)
 	case objabi.R_ARM64_TLS_LE:
-		ctxt.Out.Write64(ld.R_AARCH64_TLSLE_MOVW_TPREL_G0 | uint64(elfsym)<<32)
+		ctxt.Out.Write64(uint64(elf.R_AARCH64_TLSLE_MOVW_TPREL_G0) | uint64(elfsym)<<32)
 	case objabi.R_ARM64_TLS_IE:
-		ctxt.Out.Write64(ld.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 | uint64(elfsym)<<32)
+		ctxt.Out.Write64(uint64(elf.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21) | uint64(elfsym)<<32)
 		ctxt.Out.Write64(uint64(r.Xadd))
 		ctxt.Out.Write64(uint64(sectoff + 4))
-		ctxt.Out.Write64(ld.R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC | uint64(elfsym)<<32)
+		ctxt.Out.Write64(uint64(elf.R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC) | uint64(elfsym)<<32)
 	case objabi.R_ARM64_GOTPCREL:
-		ctxt.Out.Write64(ld.R_AARCH64_ADR_GOT_PAGE | uint64(elfsym)<<32)
+		ctxt.Out.Write64(uint64(elf.R_AARCH64_ADR_GOT_PAGE) | uint64(elfsym)<<32)
 		ctxt.Out.Write64(uint64(r.Xadd))
 		ctxt.Out.Write64(uint64(sectoff + 4))
-		ctxt.Out.Write64(ld.R_AARCH64_LD64_GOT_LO12_NC | uint64(elfsym)<<32)
+		ctxt.Out.Write64(uint64(elf.R_AARCH64_LD64_GOT_LO12_NC) | uint64(elfsym)<<32)
 	case objabi.R_CALLARM64:
 		if r.Siz != 4 {
 			return false
 		}
-		ctxt.Out.Write64(ld.R_AARCH64_CALL26 | uint64(elfsym)<<32)
+		ctxt.Out.Write64(uint64(elf.R_AARCH64_CALL26) | uint64(elfsym)<<32)
 
 	}
 	ctxt.Out.Write64(uint64(r.Xadd))
@@ -238,7 +239,7 @@ func archreloc(ctxt *ld.Link, r *sym.Reloc, s *sym.Symbol, val *int64) bool {
 			// (https://sourceware.org/bugzilla/show_bug.cgi?id=18270). So
 			// we convert the adrp; ld64 + R_ARM64_GOTPCREL into adrp;
 			// add + R_ADDRARM64.
-			if !(r.Sym.Version != 0 || (r.Sym.Type&sym.SHIDDEN != 0) || r.Sym.Attr.Local()) && r.Sym.Type == sym.STEXT && ctxt.DynlinkingGo() {
+			if !(r.Sym.Version != 0 || r.Sym.Attr.VisibilityHidden() || r.Sym.Attr.Local()) && r.Sym.Type == sym.STEXT && ctxt.DynlinkingGo() {
 				if o2&0xffc00000 != 0xf9400000 {
 					ld.Errorf(s, "R_ARM64_GOTPCREL against unexpected instruction %x", o2)
 				}
@@ -272,7 +273,7 @@ func archreloc(ctxt *ld.Link, r *sym.Reloc, s *sym.Symbol, val *int64) bool {
 			// the BR26 relocation should be fully resolved at link time.
 			// That is the reason why the next if block is disabled. When the bug in ld64
 			// is fixed, we can enable this block and also enable duff's device in cmd/7g.
-			if false && ld.Headtype == objabi.Hdarwin {
+			if false && ctxt.HeadType == objabi.Hdarwin {
 				var o0, o1 uint32
 
 				if ctxt.Arch.ByteOrder == binary.BigEndian {
@@ -345,8 +346,8 @@ func archreloc(ctxt *ld.Link, r *sym.Reloc, s *sym.Symbol, val *int64) bool {
 		return true
 	case objabi.R_ARM64_TLS_LE:
 		r.Done = false
-		if ld.Headtype != objabi.Hlinux {
-			ld.Errorf(s, "TLS reloc on unsupported OS %v", ld.Headtype)
+		if ctxt.HeadType != objabi.Hlinux {
+			ld.Errorf(s, "TLS reloc on unsupported OS %v", ctxt.HeadType)
 		}
 		// The TCB is two pointers. This is not documented anywhere, but is
 		// de facto part of the ABI.
@@ -378,7 +379,7 @@ func asmb(ctxt *ld.Link) {
 		ctxt.Logf("%5.2f asmb\n", ld.Cputime())
 	}
 
-	if ld.Iself {
+	if ctxt.IsELF {
 		ld.Asmbelfsetup()
 	}
 
@@ -416,7 +417,7 @@ func asmb(ctxt *ld.Link) {
 	ld.Dwarfblk(ctxt, int64(ld.Segdwarf.Vaddr), int64(ld.Segdwarf.Filelen))
 
 	machlink := uint32(0)
-	if ld.Headtype == objabi.Hdarwin {
+	if ctxt.HeadType == objabi.Hdarwin {
 		machlink = uint32(ld.Domacholink(ctxt))
 	}
 
@@ -430,9 +431,9 @@ func asmb(ctxt *ld.Link) {
 		if ctxt.Debugvlog != 0 {
 			ctxt.Logf("%5.2f sym\n", ld.Cputime())
 		}
-		switch ld.Headtype {
+		switch ctxt.HeadType {
 		default:
-			if ld.Iself {
+			if ctxt.IsELF {
 				symo = uint32(ld.Segdwarf.Fileoff + ld.Segdwarf.Filelen)
 				symo = uint32(ld.Rnd(int64(symo), int64(*ld.FlagRound)))
 			}
@@ -445,9 +446,9 @@ func asmb(ctxt *ld.Link) {
 		}
 
 		ctxt.Out.SeekSet(int64(symo))
-		switch ld.Headtype {
+		switch ctxt.HeadType {
 		default:
-			if ld.Iself {
+			if ctxt.IsELF {
 				if ctxt.Debugvlog != 0 {
 					ctxt.Logf("%5.2f elfsym\n", ld.Cputime())
 				}
@@ -482,7 +483,7 @@ func asmb(ctxt *ld.Link) {
 		ctxt.Logf("%5.2f header\n", ld.Cputime())
 	}
 	ctxt.Out.SeekSet(0)
-	switch ld.Headtype {
+	switch ctxt.HeadType {
 	default:
 	case objabi.Hplan9: /* plan 9 */
 		ctxt.Out.Write32(0x647)                      /* magic */

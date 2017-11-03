@@ -176,13 +176,13 @@ func emitPcln(ctxt *Link, s *sym.Symbol) bool {
 	if s == nil {
 		return true
 	}
-	if ctxt.BuildMode == BuildModePlugin && Headtype == objabi.Hdarwin && onlycsymbol(s) {
+	if ctxt.BuildMode == BuildModePlugin && ctxt.HeadType == objabi.Hdarwin && onlycsymbol(s) {
 		return false
 	}
 	// We want to generate func table entries only for the "lowest level" symbols,
 	// not containers of subsymbols.
-	if s.Type&sym.SCONTAINER != 0 {
-		return false
+	if s.Attr.Container() {
+		return true
 	}
 	return true
 }
@@ -213,10 +213,10 @@ func (ctxt *Link) pclntab() {
 	//	offset to file table [4 bytes]
 	nfunc := int32(0)
 
-	// Find container symbols, mark them with sym.SCONTAINER
+	// Find container symbols and mark them as such.
 	for _, s := range ctxt.Textp {
 		if s.Outer != nil {
-			s.Outer.Type |= sym.SCONTAINER
+			s.Outer.Attr |= sym.AttrContainer
 		}
 	}
 

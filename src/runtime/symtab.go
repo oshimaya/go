@@ -375,6 +375,8 @@ type moduledata struct {
 	modulename   string
 	modulehashes []modulehash
 
+	hasmain uint8 // 1 if module contains the main function, 0 otherwise
+
 	gcdatamask, gcbssmask bitvector
 
 	typemap map[typeOff]*_type // offset to *_rtype in previous module
@@ -472,9 +474,8 @@ func modulesinit() {
 	// contains the main function.
 	//
 	// See Issue #18729.
-	mainText := funcPC(main_main)
 	for i, md := range *modules {
-		if md.text <= mainText && mainText <= md.etext {
+		if md.hasmain != 0 {
 			(*modules)[0] = md
 			(*modules)[i] = &firstmoduledata
 			break
@@ -641,7 +642,6 @@ func findfunc(pc uintptr) funcInfo {
 		idx = uint32(len(datap.ftab) - 1)
 	}
 	if pc < datap.ftab[idx].entry {
-
 		// With multiple text sections, the idx might reference a function address that
 		// is higher than the pc being searched, so search backward until the matching address is found.
 
@@ -652,7 +652,6 @@ func findfunc(pc uintptr) funcInfo {
 			throw("findfunc: bad findfunctab entry idx")
 		}
 	} else {
-
 		// linear search to find func with pc >= entry.
 		for datap.ftab[idx+1].entry <= pc {
 			idx++

@@ -129,20 +129,17 @@ func (v *bottomUpVisitor) visitcode(n *Node, min uint32) uint32 {
 	min = v.visitcodelist(n.Nbody, min)
 	min = v.visitcodelist(n.Rlist, min)
 
-	if n.Op == OCALLFUNC || n.Op == OCALLMETH {
-		fn := n.Left
-		if n.Op == OCALLMETH {
-			fn = asNode(n.Left.Sym.Def)
-		}
+	switch n.Op {
+	case OCALLFUNC, OCALLMETH:
+		fn := asNode(n.Left.Type.Nname())
 		if fn != nil && fn.Op == ONAME && fn.Class() == PFUNC && fn.Name.Defn != nil {
 			m := v.visit(fn.Name.Defn)
 			if m < min {
 				min = m
 			}
 		}
-	}
 
-	if n.Op == OCLOSURE {
+	case OCLOSURE:
 		m := v.visit(n.Func.Closure)
 		if m < min {
 			min = m
@@ -205,9 +202,7 @@ const (
 // allowed level when a loop is encountered. Using -2 suffices to
 // pass all the tests we have written so far, which we assume matches
 // the level of complexity we want the escape analysis code to handle.
-const (
-	MinLevel = -2
-)
+const MinLevel = -2
 
 // A Level encodes the reference state and context applied to
 // (stack, heap) allocated memory.
@@ -1279,16 +1274,14 @@ func parsetag(note string) uint16 {
 // to the second output (and if there are more than two outputs, there is no flow to those.)
 func describeEscape(em uint16) string {
 	var s string
-	if em&EscMask == EscUnknown {
+	switch em & EscMask {
+	case EscUnknown:
 		s = "EscUnknown"
-	}
-	if em&EscMask == EscNone {
+	case EscNone:
 		s = "EscNone"
-	}
-	if em&EscMask == EscHeap {
+	case EscHeap:
 		s = "EscHeap"
-	}
-	if em&EscMask == EscReturn {
+	case EscReturn:
 		s = "EscReturn"
 	}
 	if em&EscContentEscapes != 0 {

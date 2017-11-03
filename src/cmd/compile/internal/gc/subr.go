@@ -166,20 +166,22 @@ func Warnl(line src.XPos, fmt_ string, args ...interface{}) {
 func Fatalf(fmt_ string, args ...interface{}) {
 	flusherrors()
 
-	fmt.Printf("%v: internal compiler error: ", linestr(lineno))
-	fmt.Printf(fmt_, args...)
-	fmt.Printf("\n")
-
-	// If this is a released compiler version, ask for a bug report.
-	if strings.HasPrefix(objabi.Version, "release") {
+	if Debug_panic != 0 || nsavederrors+nerrors == 0 {
+		fmt.Printf("%v: internal compiler error: ", linestr(lineno))
+		fmt.Printf(fmt_, args...)
 		fmt.Printf("\n")
-		fmt.Printf("Please file a bug report including a short program that triggers the error.\n")
-		fmt.Printf("https://golang.org/issue/new\n")
-	} else {
-		// Not a release; dump a stack trace, too.
-		fmt.Println()
-		os.Stdout.Write(debug.Stack())
-		fmt.Println()
+
+		// If this is a released compiler version, ask for a bug report.
+		if strings.HasPrefix(objabi.Version, "go") {
+			fmt.Printf("\n")
+			fmt.Printf("Please file a bug report including a short program that triggers the error.\n")
+			fmt.Printf("https://golang.org/issue/new\n")
+		} else {
+			// Not a release; dump a stack trace, too.
+			fmt.Println()
+			os.Stdout.Write(debug.Stack())
+			fmt.Println()
+		}
 	}
 
 	hcrash()
@@ -255,9 +257,6 @@ func restrictlookup(name string, pkg *types.Pkg) *types.Sym {
 // find all the exported symbols in package opkg
 // and make them available in the current package
 func importdot(opkg *types.Pkg, pack *Node) {
-	var s1 *types.Sym
-	var pkgerror string
-
 	n := 0
 	for _, s := range opkg.Syms {
 		if s.Def == nil {
@@ -266,9 +265,9 @@ func importdot(opkg *types.Pkg, pack *Node) {
 		if !exportname(s.Name) || strings.ContainsRune(s.Name, 0xb7) { // 0xb7 = center dot
 			continue
 		}
-		s1 = lookup(s.Name)
+		s1 := lookup(s.Name)
 		if s1.Def != nil {
-			pkgerror = fmt.Sprintf("during import %q", opkg.Path)
+			pkgerror := fmt.Sprintf("during import %q", opkg.Path)
 			redeclare(s1, pkgerror)
 			continue
 		}
@@ -928,6 +927,14 @@ func convertop(src *types.Type, dst *types.Type, why *string) Op {
 		return OCONVNOP
 	}
 
+	// src is map and dst is a pointer to corresponding hmap.
+	// This rule is needed for the implementation detail that
+	// go gc maps are implemented as a pointer to a hmap struct.
+	if src.Etype == TMAP && dst.IsPtr() &&
+		src.MapType().Hmap == dst.Elem() {
+		return OCONVNOP
+	}
+
 	return 0
 }
 
@@ -1131,53 +1138,42 @@ func updateHasCall(n *Node) {
 	if n == nil {
 		return
 	}
+	n.SetHasCall(calcHasCall(n))
+}
 
-	b := false
+func calcHasCall(n *Node) bool {
 	if n.Ninit.Len() != 0 {
 		// TODO(mdempsky): This seems overly conservative.
-		b = true
-		goto out
+		return true
 	}
 
 	switch n.Op {
 	case OLITERAL, ONAME, OTYPE:
-		if b || n.HasCall() {
+		if n.HasCall() {
 			Fatalf("OLITERAL/ONAME/OTYPE should never have calls: %+v", n)
 		}
-		return
-	case OAS:
-		if needwritebarrier(n.Left) {
-			b = true
-			goto out
-		}
+		return false
 	case OCALL, OCALLFUNC, OCALLMETH, OCALLINTER:
-		b = true
-		goto out
+		return true
 	case OANDAND, OOROR:
 		// hard with instrumented code
 		if instrumenting {
-			b = true
-			goto out
+			return true
 		}
 	case OINDEX, OSLICE, OSLICEARR, OSLICE3, OSLICE3ARR, OSLICESTR,
 		OIND, ODOTPTR, ODOTTYPE, ODIV, OMOD:
 		// These ops might panic, make sure they are done
 		// before we start marshaling args for a call. See issue 16760.
-		b = true
-		goto out
+		return true
 	}
 
 	if n.Left != nil && n.Left.HasCall() {
-		b = true
-		goto out
+		return true
 	}
 	if n.Right != nil && n.Right.HasCall() {
-		b = true
-		goto out
+		return true
 	}
-
-out:
-	n.SetHasCall(b)
+	return false
 }
 
 func badtype(op Op, tl *types.Type, tr *types.Type) {
@@ -1389,6 +1385,7 @@ func adddot1(s *types.Sym, t *types.Type, d int, save **types.Field, ignorecase 
 		return
 	}
 	t.SetRecur(true)
+	defer t.SetRecur(false)
 
 	var u *types.Type
 	d--
@@ -1398,7 +1395,7 @@ func adddot1(s *types.Sym, t *types.Type, d int, save **types.Field, ignorecase 
 		// below for embedded fields.
 		c = lookdot0(s, t, save, ignorecase)
 		if c != 0 {
-			goto out
+			return c, false
 		}
 	}
 
@@ -1407,7 +1404,7 @@ func adddot1(s *types.Sym, t *types.Type, d int, save **types.Field, ignorecase 
 		u = u.Elem()
 	}
 	if !u.IsStruct() && !u.IsInterface() {
-		goto out
+		return c, false
 	}
 
 	for _, f := range u.Fields().Slice() {
@@ -1416,8 +1413,7 @@ func adddot1(s *types.Sym, t *types.Type, d int, save **types.Field, ignorecase 
 		}
 		if d < 0 {
 			// Found an embedded field at target depth.
-			more = true
-			goto out
+			return c, true
 		}
 		a, more1 := adddot1(s, f.Type, d, save, ignorecase)
 		if a != 0 && c == 0 {
@@ -1429,8 +1425,6 @@ func adddot1(s *types.Sym, t *types.Type, d int, save **types.Field, ignorecase 
 		}
 	}
 
-out:
-	t.SetRecur(false)
 	return c, more
 }
 
@@ -1559,21 +1553,18 @@ func expand1(t *types.Type, top, followptr bool) {
 		u = u.Elem()
 	}
 
-	if !u.IsStruct() && !u.IsInterface() {
-		goto out
+	if u.IsStruct() || u.IsInterface() {
+		for _, f := range u.Fields().Slice() {
+			if f.Embedded == 0 {
+				continue
+			}
+			if f.Sym == nil {
+				continue
+			}
+			expand1(f.Type, false, followptr)
+		}
 	}
 
-	for _, f := range u.Fields().Slice() {
-		if f.Embedded == 0 {
-			continue
-		}
-		if f.Sym == nil {
-			continue
-		}
-		expand1(f.Type, false, followptr)
-	}
-
-out:
 	t.SetRecur(false)
 }
 
@@ -1674,6 +1665,12 @@ func structargs(tl *types.Type, mustname bool) []*Node {
 func genwrapper(rcvr *types.Type, method *types.Field, newnam *types.Sym, iface bool) {
 	if false && Debug['r'] != 0 {
 		fmt.Printf("genwrapper rcvrtype=%v method=%v newnam=%v\n", rcvr, method, newnam)
+	}
+
+	// Only generate (*T).M wrappers for T.M in T's own package.
+	if rcvr.IsPtr() && rcvr.Elem() == method.Type.Recv().Type &&
+		rcvr.Elem().Sym != nil && rcvr.Elem().Sym.Pkg != localpkg {
+		return
 	}
 
 	lineno = autogeneratedPos
@@ -1803,35 +1800,32 @@ func hashmem(t *types.Type) *Node {
 	return n
 }
 
-func ifacelookdot(s *types.Sym, t *types.Type, followptr *bool, ignorecase bool) *types.Field {
-	*followptr = false
-
+func ifacelookdot(s *types.Sym, t *types.Type, ignorecase bool) (m *types.Field, followptr bool) {
 	if t == nil {
-		return nil
+		return nil, false
 	}
 
-	var m *types.Field
 	path, ambig := dotpath(s, t, &m, ignorecase)
 	if path == nil {
 		if ambig {
 			yyerror("%v.%v is ambiguous", t, s)
 		}
-		return nil
+		return nil, false
 	}
 
 	for _, d := range path {
 		if d.field.Type.IsPtr() {
-			*followptr = true
+			followptr = true
 			break
 		}
 	}
 
 	if m.Type.Etype != TFUNC || m.Type.Recv() == nil {
 		yyerror("%v.%v is a field, not a method", t, s)
-		return nil
+		return nil, followptr
 	}
 
-	return m
+	return m, followptr
 }
 
 func implements(t, iface *types.Type, m, samename **types.Field, ptr *int) bool {
@@ -1876,11 +1870,10 @@ func implements(t, iface *types.Type, m, samename **types.Field, ptr *int) bool 
 		if im.Broke() {
 			continue
 		}
-		var followptr bool
-		tm := ifacelookdot(im.Sym, t, &followptr, false)
+		tm, followptr := ifacelookdot(im.Sym, t, false)
 		if tm == nil || tm.Nointerface() || !eqtype(tm.Type, im.Type) {
 			if tm == nil {
-				tm = ifacelookdot(im.Sym, t, &followptr, true)
+				tm, followptr = ifacelookdot(im.Sym, t, true)
 			}
 			*m = im
 			*samename = tm

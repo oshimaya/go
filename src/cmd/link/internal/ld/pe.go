@@ -91,6 +91,26 @@ const (
 	IMAGE_SUBSYSTEM_WINDOWS_CUI          = 3
 )
 
+// TODO(crawshaw): add these constants to debug/pe.
+const (
+	// TODO: the Microsoft doco says IMAGE_SYM_DTYPE_ARRAY is 3 and IMAGE_SYM_DTYPE_FUNCTION is 2
+	IMAGE_SYM_TYPE_NULL      = 0
+	IMAGE_SYM_TYPE_STRUCT    = 8
+	IMAGE_SYM_DTYPE_FUNCTION = 0x20
+	IMAGE_SYM_DTYPE_ARRAY    = 0x30
+	IMAGE_SYM_CLASS_EXTERNAL = 2
+	IMAGE_SYM_CLASS_STATIC   = 3
+
+	IMAGE_REL_I386_DIR32  = 0x0006
+	IMAGE_REL_I386_SECREL = 0x000B
+	IMAGE_REL_I386_REL32  = 0x0014
+
+	IMAGE_REL_AMD64_ADDR64 = 0x0001
+	IMAGE_REL_AMD64_ADDR32 = 0x0002
+	IMAGE_REL_AMD64_REL32  = 0x0004
+	IMAGE_REL_AMD64_SECREL = 0x000B
+)
+
 // Copyright 2009 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
@@ -660,7 +680,7 @@ func (f *peFile) writeSymbols(ctxt *Link) {
 			}
 		}
 		class := IMAGE_SYM_CLASS_EXTERNAL
-		if s.Version != 0 || (s.Type&sym.SHIDDEN != 0) || s.Attr.Local() {
+		if s.Version != 0 || s.Attr.VisibilityHidden() || s.Attr.Local() {
 			class = IMAGE_SYM_CLASS_STATIC
 		}
 		f.writeSymbol(ctxt.Out, s, value, sect, typ, uint8(class))
@@ -828,7 +848,14 @@ func (f *peFile) writeOptionalHeader(ctxt *Link) {
 	// runtime/cgo/gcc_windows_{386,amd64}.c and the correspondent
 	// CreateThread parameter in runtime.newosproc.
 	oh64.SizeOfStackReserve = 0x00200000
-	oh64.SizeOfStackCommit = 0x00200000 - 0x2000 // account for 2 guard pages
+	if !iscgo {
+		oh64.SizeOfStackCommit = 0x00001000
+	} else {
+		// TODO(brainman): Maybe remove optional header writing altogether for cgo.
+		// For cgo it is the external linker that is building final executable.
+		// And it probably does not use any information stored in optional header.
+		oh64.SizeOfStackCommit = 0x00200000 - 0x2000 // account for 2 guard pages
+	}
 
 	// 32-bit is trickier since there much less address space to
 	// work with. Here we use large stacks only in cgo binaries as
@@ -838,7 +865,7 @@ func (f *peFile) writeOptionalHeader(ctxt *Link) {
 		oh.SizeOfStackCommit = 0x00001000
 	} else {
 		oh.SizeOfStackReserve = 0x00100000
-		oh.SizeOfStackCommit = 0x00100000 - 0x2000
+		oh.SizeOfStackCommit = 0x00100000 - 0x2000 // account for 2 guard pages
 	}
 
 	oh64.SizeOfHeapReserve = 0x00100000
@@ -1013,7 +1040,8 @@ func initdynimport(ctxt *Link) *Dll {
 		dynamic.Type = sym.SWINDOWS
 		for d := dr; d != nil; d = d.next {
 			for m = d.ms; m != nil; m = m.next {
-				m.s.Type = sym.SWINDOWS | sym.SSUB
+				m.s.Type = sym.SWINDOWS
+				m.s.Attr |= sym.AttrSubSymbol
 				m.s.Sub = dynamic.Sub
 				dynamic.Sub = m.s
 				m.s.Value = dynamic.Size

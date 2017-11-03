@@ -67,12 +67,24 @@ TEXT runtime·exit(SB),NOSPLIT,$0
 	INT $3	// not reached
 	RET
 
-TEXT runtime·exit1(SB),NOSPLIT,$0
+TEXT exit1<>(SB),NOSPLIT,$0
 	MOVL	$SYS_exit, AX
 	MOVL	code+0(FP), BX
 	INVOKE_SYSCALL
 	INT $3	// not reached
 	RET
+
+// func exitThread(wait *uint32)
+TEXT runtime·exitThread(SB),NOSPLIT,$0-4
+	MOVL	wait+0(FP), AX
+	// We're done using the stack.
+	MOVL	$0, (AX)
+	MOVL	$1, AX	// exit (just this thread)
+	MOVL	$0, BX	// exit code
+	INT	$0x80	// no stack; must not use CALL
+	// We may not even have a stack any more.
+	INT	$3
+	JMP	0(PC)
 
 TEXT runtime·open(SB),NOSPLIT,$0
 	MOVL	$SYS_open, AX
@@ -191,12 +203,34 @@ TEXT runtime·mincore(SB),NOSPLIT,$0-16
 	RET
 
 // func walltime() (sec int64, nsec int32)
-TEXT runtime·walltime(SB), NOSPLIT, $32
+TEXT runtime·walltime(SB), NOSPLIT, $16
+	// Stack layout, depending on call path:
+	//  x(SP)   vDSO            INVOKE_SYSCALL
+	//    12    ts.tv_nsec      ts.tv_nsec
+	//     8    ts.tv_sec       ts.tv_sec
+	//     4    &ts             -
+	//     0    CLOCK_<id>      -
+	//
+	// If we take the vDSO path, we're calling a function with gcc calling convention.
+	// We're guaranteed 128 bytes on entry. We've taken 16, and the call uses another 4,
+	// leaving 108 for __vdso_clock_gettime to use.
+	MOVL	runtime·__vdso_clock_gettime_sym(SB), AX
+	CMPL	AX, $0
+	JEQ	fallback
+
+	LEAL	8(SP), BX	// &ts (struct timespec)
+	MOVL	BX, 4(SP)
+	MOVL	$0, 0(SP)	// CLOCK_REALTIME
+	CALL	AX
+	JMP finish
+
+fallback:
 	MOVL	$SYS_clock_gettime, AX
 	MOVL	$0, BX		// CLOCK_REALTIME
 	LEAL	8(SP), CX
-	MOVL	$0, DX
 	INVOKE_SYSCALL
+
+finish:
 	MOVL	8(SP), AX	// sec
 	MOVL	12(SP), BX	// nsec
 
@@ -208,12 +242,25 @@ TEXT runtime·walltime(SB), NOSPLIT, $32
 
 // int64 nanotime(void) so really
 // void nanotime(int64 *nsec)
-TEXT runtime·nanotime(SB), NOSPLIT, $32
+TEXT runtime·nanotime(SB), NOSPLIT, $16
+	// See comments above in walltime() about stack space usage and layout.
+	MOVL	runtime·__vdso_clock_gettime_sym(SB), AX
+	CMPL	AX, $0
+	JEQ	fallback
+
+	LEAL	8(SP), BX	// &ts (struct timespec)
+	MOVL	BX, 4(SP)
+	MOVL	$1, 0(SP)	// CLOCK_MONOTONIC
+	CALL	AX
+	JMP finish
+
+fallback:
 	MOVL	$SYS_clock_gettime, AX
 	MOVL	$1, BX		// CLOCK_MONOTONIC
 	LEAL	8(SP), CX
-	MOVL	$0, DX
 	INVOKE_SYSCALL
+
+finish:
 	MOVL	8(SP), AX	// sec
 	MOVL	12(SP), BX	// nsec
 
@@ -312,10 +359,15 @@ TEXT runtime·mmap(SB),NOSPLIT,$0
 	SHRL	$12, BP
 	INVOKE_SYSCALL
 	CMPL	AX, $0xfffff001
-	JLS	3(PC)
+	JLS	ok
 	NOTL	AX
 	INCL	AX
-	MOVL	AX, ret+24(FP)
+	MOVL	$0, p+24(FP)
+	MOVL	AX, err+28(FP)
+	RET
+ok:
+	MOVL	AX, p+24(FP)
+	MOVL	$0, err+28(FP)
 	RET
 
 TEXT runtime·munmap(SB),NOSPLIT,$0
@@ -432,7 +484,7 @@ TEXT runtime·clone(SB),NOSPLIT,$0
 
 nog:
 	CALL	SI	// fn()
-	CALL	runtime·exit1(SB)
+	CALL	exit1<>(SB)
 	MOVL	$0x1234, 0x1005
 
 TEXT runtime·sigaltstack(SB),NOSPLIT,$-8

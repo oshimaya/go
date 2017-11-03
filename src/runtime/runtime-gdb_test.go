@@ -76,7 +76,7 @@ import "fmt"
 import "runtime"
 var gslice []string
 func main() {
-	mapvar := make(map[string]string,5)
+	mapvar := make(map[string]string, 13)
 	mapvar["abc"] = "def"
 	mapvar["ghi"] = "jkl"
 	strvar := "abc"
@@ -198,8 +198,10 @@ func testGdbPython(t *testing.T, cgo bool) {
 		t.Fatalf("info goroutines failed: %s", bl)
 	}
 
-	printMapvarRe := regexp.MustCompile(`\Q = map[string]string = {["abc"] = "def", ["ghi"] = "jkl"}\E$`)
-	if bl := blocks["print mapvar"]; !printMapvarRe.MatchString(bl) {
+	printMapvarRe1 := regexp.MustCompile(`\Q = map[string]string = {["abc"] = "def", ["ghi"] = "jkl"}\E$`)
+	printMapvarRe2 := regexp.MustCompile(`\Q = map[string]string = {["ghi"] = "jkl", ["abc"] = "def"}\E$`)
+	if bl := blocks["print mapvar"]; !printMapvarRe1.MatchString(bl) &&
+		!printMapvarRe2.MatchString(bl) {
 		t.Fatalf("print mapvar failed: %s", bl)
 	}
 
@@ -427,6 +429,7 @@ func TestGdbConst(t *testing.T) {
 		"-ex", "print main.largeConstant",
 		"-ex", "print main.minusOne",
 		"-ex", "print 'runtime._MSpanInUse'",
+		"-ex", "print 'runtime._PageSize'",
 		filepath.Join(dir, "a.exe"),
 	}
 	got, _ := exec.Command("gdb", args...).CombinedOutput()
@@ -435,7 +438,7 @@ func TestGdbConst(t *testing.T) {
 
 	t.Logf("output %q", sgot)
 
-	if !strings.Contains(sgot, "\n$1 = 42\n$2 = 18446744073709551615\n$3 = -1\n$4 = 1 '\\001'") {
+	if !strings.Contains(sgot, "\n$1 = 42\n$2 = 18446744073709551615\n$3 = -1\n$4 = 1 '\\001'\n$5 = 8192") {
 		t.Fatalf("output mismatch")
 	}
 }

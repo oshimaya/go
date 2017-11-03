@@ -60,8 +60,12 @@ type Link struct {
 
 	Loaded bool // set after all inputs have been loaded as symbols
 
-	LinkMode  LinkMode
-	BuildMode BuildMode
+	IsELF    bool
+	HeadType objabi.HeadType
+
+	linkShared bool // link against installed Go shared libraries
+	LinkMode   LinkMode
+	BuildMode  BuildMode
 
 	Tlsg         *sym.Symbol
 	Libdir       []string
@@ -96,9 +100,9 @@ func (ctxt *Link) FixedFrameSize() int64 {
 	}
 }
 
-func (l *Link) Logf(format string, args ...interface{}) {
-	fmt.Fprintf(l.Bso, format, args...)
-	l.Bso.Flush()
+func (ctxt *Link) Logf(format string, args ...interface{}) {
+	fmt.Fprintf(ctxt.Bso, format, args...)
+	ctxt.Bso.Flush()
 }
 
 func addImports(ctxt *Link, l *sym.Library, pn string) {

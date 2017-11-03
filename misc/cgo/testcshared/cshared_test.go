@@ -42,15 +42,15 @@ func TestMain(m *testing.M) {
 
 	// Directory where cgo headers and outputs will be installed.
 	// The installation directory format varies depending on the platform.
-	installdir = path.Join("pkg", fmt.Sprintf("%s_%s_testcshared_shared", GOOS, GOARCH))
+	installdir = path.Join("pkg", fmt.Sprintf("%s_%s_testcshared", GOOS, GOARCH))
 	switch GOOS {
 	case "darwin":
 		libSuffix = "dylib"
-		installdir = path.Join("pkg", fmt.Sprintf("%s_%s_testcshared", GOOS, GOARCH))
 	case "windows":
 		libSuffix = "dll"
 	default:
 		libSuffix = "so"
+		installdir = path.Join("pkg", fmt.Sprintf("%s_%s_testcshared_shared", GOOS, GOARCH))
 	}
 
 	androiddir = fmt.Sprintf("/data/local/tmp/testcshared-%d", os.Getpid())
@@ -210,7 +210,9 @@ func runExe(t *testing.T, env []string, args ...string) string {
 
 func runCC(t *testing.T, args ...string) string {
 	t.Helper()
-	return run(t, nil, append(cc, args...)...)
+	// This function is run in parallel, so append to a copy of cc
+	// rather than cc itself.
+	return run(t, nil, append(append([]string(nil), cc...), args...)...)
 }
 
 func createHeaders() error {

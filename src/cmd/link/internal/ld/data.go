@@ -110,6 +110,10 @@ func trampoline(ctxt *Link, s *sym.Symbol) {
 func relocsym(ctxt *Link, s *sym.Symbol) {
 	for ri := int32(0); ri < int32(len(s.R)); ri++ {
 		r := &s.R[ri]
+		if r.Done {
+			// Relocation already processed by an earlier phase.
+			continue
+		}
 		r.Done = true
 		off := r.Off
 		siz := int32(r.Siz)
@@ -122,7 +126,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 			continue
 		}
 
-		if r.Sym != nil && (r.Sym.Type&(sym.SMASK|sym.SHIDDEN) == 0 || r.Sym.Type&sym.SMASK == sym.SXREF) {
+		if r.Sym != nil && ((r.Sym.Type == 0 && !r.Sym.Attr.VisibilityHidden()) || r.Sym.Type == sym.SXREF) {
 			// When putting the runtime but not main into a shared library
 			// these symbols are undefined and that's OK.
 			if ctxt.BuildMode == BuildModeShared {
@@ -145,10 +149,16 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 		if r.Siz == 0 { // informational relocation - no work to do
 			continue
 		}
+		if r.Type == objabi.R_DWARFFILEREF {
+			// These should have been processed previously during
+			// line table writing.
+			Errorf(s, "orphan R_DWARFFILEREF reloc to %v", r.Sym.Name)
+			continue
+		}
 
 		// We need to be able to reference dynimport symbols when linking against
 		// shared libraries, and Solaris needs it always
-		if Headtype != objabi.Hsolaris && r.Sym != nil && r.Sym.Type == sym.SDYNIMPORT && !ctxt.DynlinkingGo() {
+		if ctxt.HeadType != objabi.Hsolaris && r.Sym != nil && r.Sym.Type == sym.SDYNIMPORT && !ctxt.DynlinkingGo() && !r.Sym.Attr.SubSymbol() {
 			if !(ctxt.Arch.Family == sys.PPC64 && ctxt.LinkMode == LinkExternal && r.Sym.Name == ".TOC.") {
 				Errorf(s, "unhandled relocation for %s (type %d (%s) rtype %d (%s))", r.Sym.Name, r.Sym.Type, r.Sym.Type, r.Type, sym.RelocName(ctxt.Arch, r.Type))
 			}
@@ -189,7 +199,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 		case objabi.R_TLS_LE:
 			isAndroidX86 := objabi.GOOS == "android" && (ctxt.Arch.InFamily(sys.AMD64, sys.I386))
 
-			if ctxt.LinkMode == LinkExternal && Iself && !isAndroidX86 {
+			if ctxt.LinkMode == LinkExternal && ctxt.IsELF && !isAndroidX86 {
 				r.Done = false
 				if r.Sym == nil {
 					r.Sym = ctxt.Tlsg
@@ -203,7 +213,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				break
 			}
 
-			if Iself && ctxt.Arch.Family == sys.ARM {
+			if ctxt.IsELF && ctxt.Arch.Family == sys.ARM {
 				// On ELF ARM, the thread pointer is 8 bytes before
 				// the start of the thread-local data block, so add 8
 				// to the actual TLS offset (r->sym->value).
@@ -212,17 +222,17 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				// related to the fact that our own TLS storage happens
 				// to take up 8 bytes.
 				o = 8 + r.Sym.Value
-			} else if Iself || Headtype == objabi.Hplan9 || Headtype == objabi.Hdarwin || isAndroidX86 {
+			} else if ctxt.IsELF || ctxt.HeadType == objabi.Hplan9 || ctxt.HeadType == objabi.Hdarwin || isAndroidX86 {
 				o = int64(ctxt.Tlsoffset) + r.Add
-			} else if Headtype == objabi.Hwindows {
+			} else if ctxt.HeadType == objabi.Hwindows {
 				o = r.Add
 			} else {
-				log.Fatalf("unexpected R_TLS_LE relocation for %v", Headtype)
+				log.Fatalf("unexpected R_TLS_LE relocation for %v", ctxt.HeadType)
 			}
 		case objabi.R_TLS_IE:
 			isAndroidX86 := objabi.GOOS == "android" && (ctxt.Arch.InFamily(sys.AMD64, sys.I386))
 
-			if ctxt.LinkMode == LinkExternal && Iself && !isAndroidX86 {
+			if ctxt.LinkMode == LinkExternal && ctxt.IsELF && !isAndroidX86 {
 				r.Done = false
 				if r.Sym == nil {
 					r.Sym = ctxt.Tlsg
@@ -235,7 +245,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				}
 				break
 			}
-			if ctxt.BuildMode == BuildModePIE && Iself {
+			if ctxt.BuildMode == BuildModePIE && ctxt.IsELF {
 				// We are linking the final executable, so we
 				// can optimize any TLS IE relocation to LE.
 				if Thearch.TLSIEtoLE == nil {
@@ -268,11 +278,11 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				r.Xsym = rs
 
 				o = r.Xadd
-				if Iself {
+				if ctxt.IsELF {
 					if ctxt.Arch.Family == sys.AMD64 {
 						o = 0
 					}
-				} else if Headtype == objabi.Hdarwin {
+				} else if ctxt.HeadType == objabi.Hdarwin {
 					// ld64 for arm64 has a bug where if the address pointed to by o exists in the
 					// symbol table (dynid >= 0), or is inside a symbol that exists in the symbol
 					// table, then it will add o twice into the relocated value.
@@ -286,10 +296,10 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 							o += Symaddr(rs)
 						}
 					}
-				} else if Headtype == objabi.Hwindows {
+				} else if ctxt.HeadType == objabi.Hwindows {
 					// nothing to do
 				} else {
-					Errorf(s, "unhandled pcrel relocation to %s on %v", rs.Name, Headtype)
+					Errorf(s, "unhandled pcrel relocation to %s on %v", rs.Name, ctxt.HeadType)
 				}
 
 				break
@@ -306,19 +316,29 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				Errorf(s, "non-pc-relative relocation address for %s is too big: %#x (%#x + %#x)", r.Sym.Name, uint64(o), Symaddr(r.Sym), r.Add)
 				errorexit()
 			}
-		case objabi.R_DWARFREF:
+		case objabi.R_DWARFSECREF:
 			if r.Sym.Sect == nil {
 				Errorf(s, "missing DWARF section for relocation target %s", r.Sym.Name)
 			}
 
 			if ctxt.LinkMode == LinkExternal {
 				r.Done = false
+
+				// On most platforms, the external linker needs to adjust DWARF references
+				// as it combines DWARF sections. However, on Darwin, dsymutil does the
+				// DWARF linking, and it understands how to follow section offsets.
+				// Leaving in the relocation records confuses it (see
+				// https://golang.org/issue/22068) so drop them for Darwin.
+				if ctxt.HeadType == objabi.Hdarwin {
+					r.Done = true
+				}
+
 				// PE code emits IMAGE_REL_I386_SECREL and IMAGE_REL_AMD64_SECREL
-				// for R_DWARFREF relocations, while R_ADDR is replaced with
+				// for R_DWARFSECREF relocations, while R_ADDR is replaced with
 				// IMAGE_REL_I386_DIR32, IMAGE_REL_AMD64_ADDR64 and IMAGE_REL_AMD64_ADDR32.
-				// Do not replace R_DWARFREF with R_ADDR for windows -
+				// Do not replace R_DWARFSECREF with R_ADDR for windows -
 				// let PE code emit correct relocations.
-				if Headtype != objabi.Hwindows {
+				if ctxt.HeadType != objabi.Hwindows {
 					r.Type = objabi.R_ADDR
 				}
 
@@ -326,7 +346,7 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				r.Xadd = r.Add + Symaddr(r.Sym) - int64(r.Sym.Sect.Vaddr)
 
 				o = r.Xadd
-				if Iself && ctxt.Arch.Family == sys.AMD64 {
+				if ctxt.IsELF && ctxt.Arch.Family == sys.AMD64 {
 					o = 0
 				}
 				break
@@ -347,9 +367,14 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				o = Symaddr(r.Sym) - int64(r.Sym.Sect.Vaddr) + r.Add
 			}
 
+		case objabi.R_ADDRCUOFF:
+			// debug_range and debug_loc elements use this relocation type to get an
+			// offset from the start of the compile unit.
+			o = Symaddr(r.Sym) + r.Add - Symaddr(r.Sym.Lib.Textp[0])
+
 			// r->sym can be null when CALL $(constant) is transformed from absolute PC to relative PC call.
 		case objabi.R_GOTPCREL:
-			if ctxt.DynlinkingGo() && Headtype == objabi.Hdarwin && r.Sym != nil && r.Sym.Type != sym.SCONST {
+			if ctxt.DynlinkingGo() && ctxt.HeadType == objabi.Hdarwin && r.Sym != nil && r.Sym.Type != sym.SCONST {
 				r.Done = false
 				r.Xadd = r.Add
 				r.Xadd -= int64(r.Siz) // relative to address after the relocated chunk
@@ -380,11 +405,11 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 				r.Xsym = rs
 
 				o = r.Xadd
-				if Iself {
+				if ctxt.IsELF {
 					if ctxt.Arch.Family == sys.AMD64 {
 						o = 0
 					}
-				} else if Headtype == objabi.Hdarwin {
+				} else if ctxt.HeadType == objabi.Hdarwin {
 					if r.Type == objabi.R_CALL {
 						if rs.Type != sym.SHOSTOBJ {
 							o += int64(uint64(Symaddr(rs)) - rs.Sect.Vaddr)
@@ -396,12 +421,12 @@ func relocsym(ctxt *Link, s *sym.Symbol) {
 					} else {
 						o += int64(r.Siz)
 					}
-				} else if Headtype == objabi.Hwindows && ctxt.Arch.Family == sys.AMD64 { // only amd64 needs PCREL
+				} else if ctxt.HeadType == objabi.Hwindows && ctxt.Arch.Family == sys.AMD64 { // only amd64 needs PCREL
 					// PE/COFF's PC32 relocation uses the address after the relocated
 					// bytes as the base. Compensate by skewing the addend.
 					o += int64(r.Siz)
 				} else {
-					Errorf(s, "unhandled pcrel relocation to %s on %v", rs.Name, Headtype)
+					Errorf(s, "unhandled pcrel relocation to %s on %v", rs.Name, ctxt.HeadType)
 				}
 
 				break
@@ -521,7 +546,7 @@ func windynrelocsym(ctxt *Link, s *sym.Symbol) {
 }
 
 func dynrelocsym(ctxt *Link, s *sym.Symbol) {
-	if Headtype == objabi.Hwindows {
+	if ctxt.HeadType == objabi.Hwindows {
 		if ctxt.LinkMode == LinkInternal {
 			windynrelocsym(ctxt, s)
 		}
@@ -551,7 +576,7 @@ func dynrelocsym(ctxt *Link, s *sym.Symbol) {
 func dynreloc(ctxt *Link, data *[sym.SXREF][]*sym.Symbol) {
 	// -d suppresses dynamic loader format, so we may as well not
 	// compute these sections or mark their symbols as reachable.
-	if *FlagD && Headtype != objabi.Hwindows {
+	if *FlagD && ctxt.HeadType != objabi.Hwindows {
 		return
 	}
 	if ctxt.Debugvlog != 0 {
@@ -566,7 +591,7 @@ func dynreloc(ctxt *Link, data *[sym.SXREF][]*sym.Symbol) {
 			dynrelocsym(ctxt, s)
 		}
 	}
-	if Iself {
+	if ctxt.IsELF {
 		elfdynhash(ctxt)
 	}
 }
@@ -640,7 +665,7 @@ func CodeblkPad(ctxt *Link, addr int64, size int64, pad []byte) {
 
 func blk(ctxt *Link, syms []*sym.Symbol, addr, size int64, pad []byte) {
 	for i, s := range syms {
-		if s.Type&sym.SSUB == 0 && s.Value >= addr {
+		if !s.Attr.SubSymbol() && s.Value >= addr {
 			syms = syms[i:]
 			break
 		}
@@ -648,7 +673,7 @@ func blk(ctxt *Link, syms []*sym.Symbol, addr, size int64, pad []byte) {
 
 	eaddr := addr + size
 	for _, s := range syms {
-		if s.Type&sym.SSUB != 0 {
+		if s.Attr.SubSymbol() {
 			continue
 		}
 		if s.Value >= eaddr {
@@ -772,10 +797,11 @@ func addstrdata1(ctxt *Link, arg string) {
 	if eq < 0 || dot < 0 {
 		Exitf("-X flag requires argument of the form importpath.name=value")
 	}
-	pkg := objabi.PathToPrefix(arg[:dot])
+	pkg := arg[:dot]
 	if ctxt.BuildMode == BuildModePlugin && pkg == "main" {
 		pkg = *flagPluginPath
 	}
+	pkg = objabi.PathToPrefix(pkg)
 	addstrdata(ctxt, pkg+arg[dot:eq], arg[eq+1:])
 }
 
@@ -999,7 +1025,7 @@ func (ctxt *Link) dodata() {
 		ctxt.Logf("%5.2f dodata\n", Cputime())
 	}
 
-	if ctxt.DynlinkingGo() && Headtype == objabi.Hdarwin {
+	if ctxt.DynlinkingGo() && ctxt.HeadType == objabi.Hdarwin {
 		// The values in moduledata are filled out by relocations
 		// pointing to the addresses of these special symbols.
 		// Typically these symbols have no size and are not laid
@@ -1042,7 +1068,7 @@ func (ctxt *Link) dodata() {
 	// Collect data symbols by type into data.
 	var data [sym.SXREF][]*sym.Symbol
 	for _, s := range ctxt.Syms.Allsym {
-		if !s.Attr.Reachable() || s.Attr.Special() {
+		if !s.Attr.Reachable() || s.Attr.Special() || s.Attr.SubSymbol() {
 			continue
 		}
 		if s.Type <= sym.STEXT || s.Type >= sym.SXREF {
@@ -1057,7 +1083,7 @@ func (ctxt *Link) dodata() {
 	// symbol, which is itself data.
 	//
 	// On darwin, we need the symbol table numbers for dynreloc.
-	if Headtype == objabi.Hdarwin {
+	if ctxt.HeadType == objabi.Hdarwin {
 		machosymorder(ctxt)
 	}
 	dynreloc(ctxt, &data)
@@ -1196,7 +1222,7 @@ func (ctxt *Link) dodata() {
 	checkdatsize(ctxt, datsize, sym.SNOPTRDATA)
 	sect.Length = uint64(datsize) - sect.Vaddr
 
-	hasinitarr := *FlagLinkshared
+	hasinitarr := ctxt.linkShared
 
 	/* shared library initializer */
 	switch ctxt.BuildMode {
@@ -1279,7 +1305,7 @@ func (ctxt *Link) dodata() {
 
 	if len(data[sym.STLSBSS]) > 0 {
 		var sect *sym.Section
-		if Iself && (ctxt.LinkMode == LinkExternal || !*FlagD) {
+		if ctxt.IsELF && (ctxt.LinkMode == LinkExternal || !*FlagD) {
 			sect = addsection(ctxt.Arch, &Segdata, ".tbss", 06)
 			sect.Align = int32(ctxt.Arch.PtrSize)
 			sect.Vaddr = 0
@@ -1310,7 +1336,7 @@ func (ctxt *Link) dodata() {
 	 * segtext.
 	 */
 	var segro *sym.Segment
-	if Iself && ctxt.LinkMode == LinkInternal {
+	if ctxt.IsELF && ctxt.LinkMode == LinkInternal {
 		segro = &Segrodata
 	} else {
 		segro = &Segtext
@@ -1602,7 +1628,7 @@ func (ctxt *Link) dodata() {
 }
 
 func dodataSect(ctxt *Link, symn sym.SymKind, syms []*sym.Symbol) (result []*sym.Symbol, maxAlign int32) {
-	if Headtype == objabi.Hdarwin {
+	if ctxt.HeadType == objabi.Hdarwin {
 		// Some symbols may no longer belong in syms
 		// due to movement in machosymorder.
 		newSyms := make([]*sym.Symbol, 0, len(syms))
@@ -1633,7 +1659,7 @@ func dodataSect(ctxt *Link, symn sym.SymKind, syms []*sym.Symbol) (result []*sym
 		// If the usually-special section-marker symbols are being laid
 		// out as regular symbols, put them either at the beginning or
 		// end of their section.
-		if ctxt.DynlinkingGo() && Headtype == objabi.Hdarwin {
+		if ctxt.DynlinkingGo() && ctxt.HeadType == objabi.Hdarwin {
 			switch s.Name {
 			case "runtime.text", "runtime.bss", "runtime.data", "runtime.types":
 				head = s
@@ -1680,7 +1706,7 @@ func dodataSect(ctxt *Link, symn sym.SymKind, syms []*sym.Symbol) (result []*sym
 		syms[len(syms)-1] = tail
 	}
 
-	if Iself && symn == sym.SELFROSECT {
+	if ctxt.IsELF && symn == sym.SELFROSECT {
 		// Make .rela and .rela.plt contiguous, the ELF ABI requires this
 		// and Solaris actually cares.
 		reli, plti := -1, -1
@@ -1722,7 +1748,7 @@ func dodataSect(ctxt *Link, symn sym.SymKind, syms []*sym.Symbol) (result []*sym
 // at the very beginning of the text segment.
 // This ``header'' is read by cmd/go.
 func (ctxt *Link) textbuildid() {
-	if Iself || ctxt.BuildMode == BuildModePlugin || *flagBuildid == "" {
+	if ctxt.IsELF || ctxt.BuildMode == BuildModePlugin || *flagBuildid == "" {
 		return
 	}
 
@@ -1754,7 +1780,7 @@ func (ctxt *Link) textaddress() {
 	text := ctxt.Syms.Lookup("runtime.text", 0)
 	text.Sect = sect
 
-	if ctxt.DynlinkingGo() && Headtype == objabi.Hdarwin {
+	if ctxt.DynlinkingGo() && ctxt.HeadType == objabi.Hdarwin {
 		etext := ctxt.Syms.Lookup("runtime.etext", 0)
 		etext.Sect = sect
 
@@ -1803,7 +1829,7 @@ func (ctxt *Link) textaddress() {
 // will not need to create new text sections, and so no need to return sect and n.
 func assignAddress(ctxt *Link, sect *sym.Section, n int, s *sym.Symbol, va uint64, isTramp bool) (*sym.Section, int, uint64) {
 	s.Sect = sect
-	if s.Type&sym.SSUB != 0 {
+	if s.Attr.SubSymbol() {
 		return sect, n, va
 	}
 	if s.Align != 0 {
@@ -1830,8 +1856,7 @@ func assignAddress(ctxt *Link, sect *sym.Section, n int, s *sym.Symbol, va uint6
 
 	// Only break at outermost syms.
 
-	if ctxt.Arch.InFamily(sys.PPC64) && s.Outer == nil && Iself && ctxt.LinkMode == LinkExternal && va-sect.Vaddr+funcsize+maxSizeTrampolinesPPC64(s, isTramp) > 0x1c00000 {
-
+	if ctxt.Arch.InFamily(sys.PPC64) && s.Outer == nil && ctxt.IsELF && ctxt.LinkMode == LinkExternal && va-sect.Vaddr+funcsize+maxSizeTrampolinesPPC64(s, isTramp) > 0x1c00000 {
 		// Set the length for the previous text section
 		sect.Length = va - sect.Vaddr
 
@@ -1863,7 +1888,7 @@ func (ctxt *Link) address() {
 
 	Segtext.Length = va - uint64(*FlagTextAddr)
 	Segtext.Filelen = Segtext.Length
-	if Headtype == objabi.Hnacl {
+	if ctxt.HeadType == objabi.Hnacl {
 		va += 32 // room for the "halt sled"
 	}
 
@@ -1920,10 +1945,10 @@ func (ctxt *Link) address() {
 	Segdata.Vaddr = va
 	Segdata.Fileoff = va - Segtext.Vaddr + Segtext.Fileoff
 	Segdata.Filelen = 0
-	if Headtype == objabi.Hwindows {
+	if ctxt.HeadType == objabi.Hwindows {
 		Segdata.Fileoff = Segtext.Fileoff + uint64(Rnd(int64(Segtext.Length), PEFILEALIGN))
 	}
-	if Headtype == objabi.Hplan9 {
+	if ctxt.HeadType == objabi.Hplan9 {
 		Segdata.Fileoff = Segtext.Fileoff + Segtext.Filelen
 	}
 	var data *sym.Section
@@ -1931,11 +1956,11 @@ func (ctxt *Link) address() {
 	var bss *sym.Section
 	var noptrbss *sym.Section
 	for i, s := range Segdata.Sections {
-		if Iself && s.Name == ".tbss" {
+		if ctxt.IsELF && s.Name == ".tbss" {
 			continue
 		}
 		vlen := int64(s.Length)
-		if i+1 < len(Segdata.Sections) && !(Iself && Segdata.Sections[i+1].Name == ".tbss") {
+		if i+1 < len(Segdata.Sections) && !(ctxt.IsELF && Segdata.Sections[i+1].Name == ".tbss") {
 			vlen = int64(Segdata.Sections[i+1].Vaddr - s.Vaddr)
 		}
 		s.Vaddr = va
@@ -1962,7 +1987,7 @@ func (ctxt *Link) address() {
 	Segdwarf.Vaddr = va
 	Segdwarf.Fileoff = Segdata.Fileoff + uint64(Rnd(int64(Segdata.Filelen), int64(*FlagRound)))
 	Segdwarf.Filelen = 0
-	if Headtype == objabi.Hwindows {
+	if ctxt.HeadType == objabi.Hwindows {
 		Segdwarf.Fileoff = Segdata.Fileoff + uint64(Rnd(int64(Segdata.Filelen), int64(PEFILEALIGN)))
 	}
 	for i, s := range Segdwarf.Sections {
@@ -1972,7 +1997,7 @@ func (ctxt *Link) address() {
 		}
 		s.Vaddr = va
 		va += uint64(vlen)
-		if Headtype == objabi.Hwindows {
+		if ctxt.HeadType == objabi.Hwindows {
 			va = uint64(Rnd(int64(va), PEFILEALIGN))
 		}
 		Segdwarf.Length = va - Segdwarf.Vaddr
@@ -2028,13 +2053,12 @@ func (ctxt *Link) address() {
 	// their section Vaddr, using n for index
 	n := 1
 	for _, sect := range Segtext.Sections[1:] {
-		if sect.Name == ".text" {
-			symname := fmt.Sprintf("runtime.text.%d", n)
-			ctxt.xdefine(symname, sym.STEXT, int64(sect.Vaddr))
-			n++
-		} else {
+		if sect.Name != ".text" {
 			break
 		}
+		symname := fmt.Sprintf("runtime.text.%d", n)
+		ctxt.xdefine(symname, sym.STEXT, int64(sect.Vaddr))
+		n++
 	}
 
 	ctxt.xdefine("runtime.rodata", sym.SRODATA, int64(rodata.Vaddr))

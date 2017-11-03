@@ -35,7 +35,7 @@ import (
 var pkgDeps = map[string][]string{
 	// L0 is the lowest level, core, nearly unavoidable packages.
 	"errors":                  {},
-	"io":                      {"errors", "sync"},
+	"io":                      {"errors", "sync", "sync/atomic"},
 	"runtime":                 {"unsafe", "runtime/internal/atomic", "runtime/internal/sys"},
 	"runtime/internal/sys":    {},
 	"runtime/internal/atomic": {"unsafe", "runtime/internal/sys"},
@@ -101,7 +101,7 @@ var pkgDeps = map[string][]string{
 	"crypto/cipher":       {"L2", "crypto/subtle"},
 	"crypto/subtle":       {},
 	"encoding/base32":     {"L2"},
-	"encoding/base64":     {"L2"},
+	"encoding/base64":     {"L2", "encoding/binary"},
 	"encoding/binary":     {"L2", "reflect"},
 	"hash":                {"L2"}, // interfaces
 	"hash/adler32":        {"L2", "hash"},

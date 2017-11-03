@@ -35,6 +35,7 @@ import (
 	"cmd/internal/sys"
 	"cmd/link/internal/ld"
 	"cmd/link/internal/sym"
+	"debug/elf"
 	"log"
 )
 
@@ -57,7 +58,7 @@ func gentext(ctxt *ld.Link) {
 	} else {
 		switch ctxt.BuildMode {
 		case ld.BuildModeCArchive:
-			if !ld.Iself {
+			if !ctxt.IsELF {
 				return
 			}
 		case ld.BuildModePIE, ld.BuildModeCShared, ld.BuildModePlugin:
@@ -177,18 +178,20 @@ func adddynrel(ctxt *ld.Link, s *sym.Symbol, r *sym.Reloc) bool {
 		}
 
 		// Handle relocations found in ELF object files.
-	case 256 + ld.R_386_PC32:
+	case 256 + objabi.RelocType(elf.R_386_PC32):
 		if targ.Type == sym.SDYNIMPORT {
 			ld.Errorf(s, "unexpected R_386_PC32 relocation for dynamic symbol %s", targ.Name)
 		}
-		if targ.Type == 0 || targ.Type == sym.SXREF {
+		// TODO(mwhudson): the test of VisibilityHidden here probably doesn't make
+		// sense and should be removed when someone has thought about it properly.
+		if (targ.Type == 0 || targ.Type == sym.SXREF) && !targ.Attr.VisibilityHidden() {
 			ld.Errorf(s, "unknown symbol %s in pcrel", targ.Name)
 		}
 		r.Type = objabi.R_PCREL
 		r.Add += 4
 		return true
 
-	case 256 + ld.R_386_PLT32:
+	case 256 + objabi.RelocType(elf.R_386_PLT32):
 		r.Type = objabi.R_PCREL
 		r.Add += 4
 		if targ.Type == sym.SDYNIMPORT {
@@ -199,7 +202,7 @@ func adddynrel(ctxt *ld.Link, s *sym.Symbol, r *sym.Reloc) bool {
 
 		return true
 
-	case 256 + ld.R_386_GOT32, 256 + ld.R_386_GOT32X:
+	case 256 + objabi.RelocType(elf.R_386_GOT32), 256 + objabi.RelocType(elf.R_386_GOT32X):
 		if targ.Type != sym.SDYNIMPORT {
 			// have symbol
 			if r.Off >= 2 && s.P[r.Off-2] == 0x8b {
@@ -230,17 +233,17 @@ func adddynrel(ctxt *ld.Link, s *sym.Symbol, r *sym.Reloc) bool {
 		r.Add += int64(targ.Got)
 		return true
 
-	case 256 + ld.R_386_GOTOFF:
+	case 256 + objabi.RelocType(elf.R_386_GOTOFF):
 		r.Type = objabi.R_GOTOFF
 		return true
 
-	case 256 + ld.R_386_GOTPC:
+	case 256 + objabi.RelocType(elf.R_386_GOTPC):
 		r.Type = objabi.R_PCREL
 		r.Sym = ctxt.Syms.Lookup(".got", 0)
 		r.Add += 4
 		return true
 
-	case 256 + ld.R_386_32:
+	case 256 + objabi.RelocType(elf.R_386_32):
 		if targ.Type == sym.SDYNIMPORT {
 			ld.Errorf(s, "unexpected R_386_32 relocation for dynamic symbol %s", targ.Name)
 		}
@@ -303,17 +306,17 @@ func adddynrel(ctxt *ld.Link, s *sym.Symbol, r *sym.Reloc) bool {
 		if s.Type != sym.SDATA {
 			break
 		}
-		if ld.Iself {
+		if ctxt.IsELF {
 			ld.Adddynsym(ctxt, targ)
 			rel := ctxt.Syms.Lookup(".rel", 0)
 			rel.AddAddrPlus(ctxt.Arch, s, int64(r.Off))
-			rel.AddUint32(ctxt.Arch, ld.ELF32_R_INFO(uint32(targ.Dynid), ld.R_386_32))
+			rel.AddUint32(ctxt.Arch, ld.ELF32_R_INFO(uint32(targ.Dynid), uint32(elf.R_386_32)))
 			r.Type = objabi.R_CONST // write r->add during relocsym
 			r.Sym = nil
 			return true
 		}
 
-		if ld.Headtype == objabi.Hdarwin && s.Size == int64(ctxt.Arch.PtrSize) && r.Off == 0 {
+		if ctxt.HeadType == objabi.Hdarwin && s.Size == int64(ctxt.Arch.PtrSize) && r.Off == 0 {
 			// Mach-O relocations are a royal pain to lay out.
 			// They use a compact stateful bytecode representation
 			// that is too much bother to deal with.
@@ -327,7 +330,8 @@ func adddynrel(ctxt *ld.Link, s *sym.Symbol, r *sym.Reloc) bool {
 			ld.Adddynsym(ctxt, targ)
 
 			got := ctxt.Syms.Lookup(".got", 0)
-			s.Type = got.Type | sym.SSUB
+			s.Type = got.Type
+			s.Attr |= sym.AttrSubSymbol
 			s.Outer = got
 			s.Sub = got.Sub
 			got.Sub = s
@@ -351,16 +355,16 @@ func elfreloc1(ctxt *ld.Link, r *sym.Reloc, sectoff int64) bool {
 		return false
 	case objabi.R_ADDR:
 		if r.Siz == 4 {
-			ctxt.Out.Write32(ld.R_386_32 | uint32(elfsym)<<8)
+			ctxt.Out.Write32(uint32(elf.R_386_32) | uint32(elfsym)<<8)
 		} else {
 			return false
 		}
 	case objabi.R_GOTPCREL:
 		if r.Siz == 4 {
-			ctxt.Out.Write32(ld.R_386_GOTPC)
+			ctxt.Out.Write32(uint32(elf.R_386_GOTPC))
 			if r.Xsym.Name != "_GLOBAL_OFFSET_TABLE_" {
 				ctxt.Out.Write32(uint32(sectoff))
-				ctxt.Out.Write32(ld.R_386_GOT32 | uint32(elfsym)<<8)
+				ctxt.Out.Write32(uint32(elf.R_386_GOT32) | uint32(elfsym)<<8)
 			}
 		} else {
 			return false
@@ -368,30 +372,30 @@ func elfreloc1(ctxt *ld.Link, r *sym.Reloc, sectoff int64) bool {
 	case objabi.R_CALL:
 		if r.Siz == 4 {
 			if r.Xsym.Type == sym.SDYNIMPORT {
-				ctxt.Out.Write32(ld.R_386_PLT32 | uint32(elfsym)<<8)
+				ctxt.Out.Write32(uint32(elf.R_386_PLT32) | uint32(elfsym)<<8)
 			} else {
-				ctxt.Out.Write32(ld.R_386_PC32 | uint32(elfsym)<<8)
+				ctxt.Out.Write32(uint32(elf.R_386_PC32) | uint32(elfsym)<<8)
 			}
 		} else {
 			return false
 		}
 	case objabi.R_PCREL:
 		if r.Siz == 4 {
-			ctxt.Out.Write32(ld.R_386_PC32 | uint32(elfsym)<<8)
+			ctxt.Out.Write32(uint32(elf.R_386_PC32) | uint32(elfsym)<<8)
 		} else {
 			return false
 		}
 	case objabi.R_TLS_LE:
 		if r.Siz == 4 {
-			ctxt.Out.Write32(ld.R_386_TLS_LE | uint32(elfsym)<<8)
+			ctxt.Out.Write32(uint32(elf.R_386_TLS_LE) | uint32(elfsym)<<8)
 		} else {
 			return false
 		}
 	case objabi.R_TLS_IE:
 		if r.Siz == 4 {
-			ctxt.Out.Write32(ld.R_386_GOTPC)
+			ctxt.Out.Write32(uint32(elf.R_386_GOTPC))
 			ctxt.Out.Write32(uint32(sectoff))
-			ctxt.Out.Write32(ld.R_386_TLS_GOTIE | uint32(elfsym)<<8)
+			ctxt.Out.Write32(uint32(elf.R_386_TLS_GOTIE) | uint32(elfsym)<<8)
 		} else {
 			return false
 		}
@@ -467,7 +471,7 @@ func pereloc1(arch *sys.Arch, out *ld.OutBuf, s *sym.Symbol, r *sym.Reloc, secto
 	default:
 		return false
 
-	case objabi.R_DWARFREF:
+	case objabi.R_DWARFSECREF:
 		v = ld.IMAGE_REL_I386_SECREL
 
 	case objabi.R_ADDR:
@@ -538,7 +542,7 @@ func addpltsym(ctxt *ld.Link, s *sym.Symbol) {
 
 	ld.Adddynsym(ctxt, s)
 
-	if ld.Iself {
+	if ctxt.IsELF {
 		plt := ctxt.Syms.Lookup(".plt", 0)
 		got := ctxt.Syms.Lookup(".got.plt", 0)
 		rel := ctxt.Syms.Lookup(".rel.plt", 0)
@@ -568,10 +572,10 @@ func addpltsym(ctxt *ld.Link, s *sym.Symbol) {
 		// rel
 		rel.AddAddrPlus(ctxt.Arch, got, got.Size-4)
 
-		rel.AddUint32(ctxt.Arch, ld.ELF32_R_INFO(uint32(s.Dynid), ld.R_386_JMP_SLOT))
+		rel.AddUint32(ctxt.Arch, ld.ELF32_R_INFO(uint32(s.Dynid), uint32(elf.R_386_JMP_SLOT)))
 
 		s.Plt = int32(plt.Size - 16)
-	} else if ld.Headtype == objabi.Hdarwin {
+	} else if ctxt.HeadType == objabi.Hdarwin {
 		// Same laziness as in 6l.
 
 		plt := ctxt.Syms.Lookup(".plt", 0)
@@ -601,11 +605,11 @@ func addgotsym(ctxt *ld.Link, s *sym.Symbol) {
 	s.Got = int32(got.Size)
 	got.AddUint32(ctxt.Arch, 0)
 
-	if ld.Iself {
+	if ctxt.IsELF {
 		rel := ctxt.Syms.Lookup(".rel", 0)
 		rel.AddAddrPlus(ctxt.Arch, got, int64(s.Got))
-		rel.AddUint32(ctxt.Arch, ld.ELF32_R_INFO(uint32(s.Dynid), ld.R_386_GLOB_DAT))
-	} else if ld.Headtype == objabi.Hdarwin {
+		rel.AddUint32(ctxt.Arch, ld.ELF32_R_INFO(uint32(s.Dynid), uint32(elf.R_386_GLOB_DAT)))
+	} else if ctxt.HeadType == objabi.Hdarwin {
 		ctxt.Syms.Lookup(".linkedit.got", 0).AddUint32(ctxt.Arch, uint32(s.Dynid))
 	} else {
 		ld.Errorf(s, "addgotsym: unsupported binary format")
@@ -617,7 +621,7 @@ func asmb(ctxt *ld.Link) {
 		ctxt.Logf("%5.2f asmb\n", ld.Cputime())
 	}
 
-	if ld.Iself {
+	if ctxt.IsELF {
 		ld.Asmbelfsetup()
 	}
 
@@ -657,7 +661,7 @@ func asmb(ctxt *ld.Link) {
 	ld.Dwarfblk(ctxt, int64(ld.Segdwarf.Vaddr), int64(ld.Segdwarf.Filelen))
 
 	machlink := uint32(0)
-	if ld.Headtype == objabi.Hdarwin {
+	if ctxt.HeadType == objabi.Hdarwin {
 		machlink = uint32(ld.Domacholink(ctxt))
 	}
 
@@ -670,9 +674,9 @@ func asmb(ctxt *ld.Link) {
 		if ctxt.Debugvlog != 0 {
 			ctxt.Logf("%5.2f sym\n", ld.Cputime())
 		}
-		switch ld.Headtype {
+		switch ctxt.HeadType {
 		default:
-			if ld.Iself {
+			if ctxt.IsELF {
 				symo = uint32(ld.Segdwarf.Fileoff + ld.Segdwarf.Filelen)
 				symo = uint32(ld.Rnd(int64(symo), int64(*ld.FlagRound)))
 			}
@@ -689,9 +693,9 @@ func asmb(ctxt *ld.Link) {
 		}
 
 		ctxt.Out.SeekSet(int64(symo))
-		switch ld.Headtype {
+		switch ctxt.HeadType {
 		default:
-			if ld.Iself {
+			if ctxt.IsELF {
 				if ctxt.Debugvlog != 0 {
 					ctxt.Logf("%5.2f elfsym\n", ld.Cputime())
 				}
@@ -731,7 +735,7 @@ func asmb(ctxt *ld.Link) {
 		ctxt.Logf("%5.2f headr\n", ld.Cputime())
 	}
 	ctxt.Out.SeekSet(0)
-	switch ld.Headtype {
+	switch ctxt.HeadType {
 	default:
 	case objabi.Hplan9: /* plan9 */
 		magic := int32(4*11*11 + 7)

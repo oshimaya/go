@@ -242,7 +242,7 @@ var allAsmTests = []*asmTests{
 	{
 		arch:    "arm",
 		os:      "linux",
-		imports: []string{"math/bits"},
+		imports: []string{"math/bits", "runtime"},
 		tests:   linuxARMTests,
 	},
 	{
@@ -468,7 +468,7 @@ var linuxAMD64Tests = []*asmTest{
 			*t = T2{}
 		}
 		`,
-		pos: []string{"\tXORPS\tX., X", "\tMOVUPS\tX., \\(.*\\)", "\tMOVQ\t\\$0, 16\\(.*\\)", "\tCALL\truntime\\.writebarrierptr\\(SB\\)"},
+		pos: []string{"\tXORPS\tX., X", "\tMOVUPS\tX., \\(.*\\)", "\tMOVQ\t\\$0, 16\\(.*\\)", "\tCALL\truntime\\.(writebarrierptr|gcWriteBarrier)\\(SB\\)"},
 	},
 	// Rotate tests
 	{
@@ -1020,12 +1020,11 @@ var linuxAMD64Tests = []*asmTest{
 		// make sure assembly output has matching offset and base register.
 		fn: `
 		func f72(a, b int) int {
-			//go:noinline
-			func() {_, _ = a, b} () // use some frame
+			runtime.GC() // use some frame
 			return b
 		}
 		`,
-		pos: []string{"b\\+40\\(SP\\)"},
+		pos: []string{"b\\+24\\(SP\\)"},
 	},
 	{
 		// check load combining
@@ -1192,6 +1191,36 @@ var linuxAMD64Tests = []*asmTest{
 		`,
 		pos: []string{"\tANDQ\t\\$4095,"},
 	},
+	{
+		// Test that small memmove was replaced with direct movs
+		fn: `
+                func $() {
+                       x := [...]byte{1, 2, 3, 4, 5, 6, 7}
+                       copy(x[1:], x[:])
+                }
+		`,
+		neg: []string{"memmove"},
+	},
+	{
+		// Same as above but with different size
+		fn: `
+                func $() {
+                       x := [...]byte{1, 2, 3, 4}
+                       copy(x[1:], x[:])
+                }
+		`,
+		neg: []string{"memmove"},
+	},
+	{
+		// Same as above but with different size
+		fn: `
+                func $() {
+                       x := [...]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+                       copy(x[1:], x[:])
+                }
+		`,
+		neg: []string{"memmove"},
+	},
 }
 
 var linux386Tests = []*asmTest{
@@ -1322,6 +1351,26 @@ var linux386Tests = []*asmTest{
 		}
 		`,
 		pos: []string{"\tANDL\t\\$4095,"},
+	},
+	{
+		// Test that small memmove was replaced with direct movs
+		fn: `
+                func $() {
+                       x := [...]byte{1, 2, 3, 4, 5, 6, 7}
+                       copy(x[1:], x[:])
+                }
+		`,
+		neg: []string{"memmove"},
+	},
+	{
+		// Same as above but with different size
+		fn: `
+                func $() {
+                       x := [...]byte{1, 2, 3, 4}
+                       copy(x[1:], x[:])
+                }
+		`,
+		neg: []string{"memmove"},
 	},
 }
 
@@ -1635,6 +1684,14 @@ var linuxS390XTests = []*asmTest{
 		pos: []string{"\tFIDBR\t[$]5"},
 	},
 	{
+		fn: `
+		func roundToEven(x float64) float64 {
+			return math.RoundToEven(x)
+		}
+		`,
+		pos: []string{"\tFIDBR\t[$]4"},
+	},
+	{
 		// check that stack store is optimized away
 		fn: `
 		func $() int {
@@ -1691,6 +1748,70 @@ var linuxS390XTests = []*asmTest{
 		`,
 		pos: []string{"\tMOV(B|BZ|D)\t[$]1,"},
 		neg: []string{"\tCEBR\t", "\tMOV(B|BZ|D)\t[$]0,"},
+	},
+	// math tests
+	{
+		fn: `
+		func $(x float64) float64 {
+			return math.Abs(x)
+		}
+		`,
+		pos: []string{"\tLPDFR\t"},
+		neg: []string{"\tMOVD\t"}, // no integer loads/stores
+	},
+	{
+		fn: `
+		func $(x float32) float32 {
+			return float32(math.Abs(float64(x)))
+		}
+		`,
+		pos: []string{"\tLPDFR\t"},
+		neg: []string{"\tLDEBR\t", "\tLEDBR\t"}, // no float64 conversion
+	},
+	{
+		fn: `
+		func $(x float64) float64 {
+			return math.Float64frombits(math.Float64bits(x)|1<<63)
+		}
+		`,
+		pos: []string{"\tLNDFR\t"},
+		neg: []string{"\tMOVD\t"}, // no integer loads/stores
+	},
+	{
+		fn: `
+		func $(x float64) float64 {
+			return -math.Abs(x)
+		}
+		`,
+		pos: []string{"\tLNDFR\t"},
+		neg: []string{"\tMOVD\t"}, // no integer loads/stores
+	},
+	{
+		fn: `
+		func $(x, y float64) float64 {
+			return math.Copysign(x, y)
+		}
+		`,
+		pos: []string{"\tCPSDR\t"},
+		neg: []string{"\tMOVD\t"}, // no integer loads/stores
+	},
+	{
+		fn: `
+		func $(x float64) float64 {
+			return math.Copysign(x, -1)
+		}
+		`,
+		pos: []string{"\tLNDFR\t"},
+		neg: []string{"\tMOVD\t"}, // no integer loads/stores
+	},
+	{
+		fn: `
+		func $(x float64) float64 {
+			return math.Copysign(-1, x)
+		}
+		`,
+		pos: []string{"\tCPSDR\t"},
+		neg: []string{"\tMOVD\t"}, // no integer loads/stores
 	},
 }
 
@@ -1803,8 +1924,7 @@ var linuxARMTests = []*asmTest{
 		// make sure assembly output has matching offset and base register.
 		fn: `
 		func f13(a, b int) int {
-			//go:noinline
-			func() {_, _ = a, b} () // use some frame
+			runtime.GC() // use some frame
 			return b
 		}
 		`,
@@ -2219,6 +2339,24 @@ var linuxPPC64LETests = []*asmTest{
 		}
 		`,
 		pos: []string{"\tROTL\t"},
+	},
+
+	{
+		fn: `
+                func f12(a, b float64) float64 {
+                        return math.Copysign(a, b)
+                }
+                `,
+		pos: []string{"\tFCPSGN\t"},
+	},
+
+	{
+		fn: `
+                func f13(a float64) float64 {
+                        return math.Abs(a)
+                }
+                `,
+		pos: []string{"\tFABS\t"},
 	},
 
 	{

@@ -5,7 +5,7 @@
 package sym
 
 // Attribute is a set of common symbol attributes.
-type Attribute int16
+type Attribute int32
 
 const (
 	// AttrDuplicateOK marks a symbol that can be present in multiple object
@@ -52,7 +52,30 @@ const (
 	AttrMakeTypelink
 	// AttrShared marks symbols compiled with the -shared option.
 	AttrShared
-	// 14 attributes defined so far.
+	// AttrVisibilityHidden symbols are ELF symbols with
+	// visibility set to STV_HIDDEN. They become local symbols in
+	// the final executable. Only relevant when internally linking
+	// on an ELF platform.
+	AttrVisibilityHidden
+	// AttrSubSymbol mostly means that the symbol appears on the Sub list of some
+	// other symbol.  Unfortunately, it's not 100% reliable; at least, it's not set
+	// correctly for the .TOC. symbol in Link.dodata.  Usually the Outer field of the
+	// symbol points to the symbol whose list it is on, but that it is not set for the
+	// symbols added to .windynamic in initdynimport in pe.go.
+	//
+	// TODO(mwhudson): fix the inconsistencies noticed above.
+	//
+	// Sub lists are used when loading host objects (sections from the host object
+	// become regular linker symbols and symbols go on the Sub list of their section)
+	// and for constructing the global offset table when internally linking a dynamic
+	// executable.
+	//
+	// TOOD(mwhudson): perhaps a better name for this is AttrNonGoSymbol.
+	AttrSubSymbol
+	// AttrContainer is set on text symbols that are present as the .Outer for some
+	// other symbol.
+	AttrContainer
+	// 17 attributes defined so far.
 )
 
 func (a Attribute) DuplicateOK() bool      { return a&AttrDuplicateOK != 0 }
@@ -69,6 +92,9 @@ func (a Attribute) Local() bool            { return a&AttrLocal != 0 }
 func (a Attribute) ReflectMethod() bool    { return a&AttrReflectMethod != 0 }
 func (a Attribute) MakeTypelink() bool     { return a&AttrMakeTypelink != 0 }
 func (a Attribute) Shared() bool           { return a&AttrShared != 0 }
+func (a Attribute) VisibilityHidden() bool { return a&AttrVisibilityHidden != 0 }
+func (a Attribute) SubSymbol() bool        { return a&AttrSubSymbol != 0 }
+func (a Attribute) Container() bool        { return a&AttrContainer != 0 }
 
 func (a Attribute) CgoExport() bool {
 	return a.CgoExportDynamic() || a.CgoExportStatic()

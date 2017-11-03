@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/types"
+	"cmd/internal/dwarf"
 	"cmd/internal/obj"
 	"cmd/internal/objabi"
 	"cmd/internal/src"
@@ -43,8 +44,10 @@ var (
 	Debug_slice        int
 	Debug_vlog         bool
 	Debug_wb           int
+	Debug_eagerwb      int
 	Debug_pctab        string
 	Debug_locationlist int
+	Debug_typecheckinl int
 )
 
 // Debug arguments.
@@ -68,9 +71,11 @@ var debugtab = []struct {
 	{"slice", "print information about slice compilation", &Debug_slice},
 	{"typeassert", "print information about type assertion inlining", &Debug_typeassert},
 	{"wb", "print information about write barriers", &Debug_wb},
+	{"eagerwb", "use unbuffered write barrier", &Debug_eagerwb},
 	{"export", "print export data", &Debug_export},
 	{"pctab", "print named pc-value table", &Debug_pctab},
 	{"locationlists", "print information about DWARF location list creation", &Debug_locationlist},
+	{"typecheckinl", "eager typechecking of inline function bodies", &Debug_typecheckinl},
 }
 
 const debugHelpHeader = `usage: -d arg[,arg]* and arg is <key>[=<value>]
@@ -127,6 +132,8 @@ func supportsDynlink(arch *sys.Arch) bool {
 var timings Timings
 var benchfile string
 
+var nowritebarrierrecCheck *nowritebarrierrecChecker
+
 // Main parses flags and Go source files specified in the command-line
 // arguments, type-checks the parsed Go package, compiles functions to machine
 // code, and finally writes the compiled package definition to disk.
@@ -139,6 +146,7 @@ func Main(archInit func(*Arch)) {
 
 	Ctxt = obj.Linknew(thearch.LinkArch)
 	Ctxt.DiagFunc = yyerror
+	Ctxt.DiagFlush = flusherrors
 	Ctxt.Bso = bufio.NewWriter(os.Stdout)
 
 	localpkg = types.NewPkg("", "")
@@ -237,6 +245,11 @@ func Main(archInit func(*Arch)) {
 	flag.StringVar(&mutexprofile, "mutexprofile", "", "write mutex profile to `file`")
 	flag.StringVar(&benchfile, "bench", "", "append benchmark times to `file`")
 	objabi.Flagparse(usage)
+
+	// Record flags that affect the build result. (And don't
+	// record flags that don't, since that would cause spurious
+	// changes in the binary.)
+	recordFlags("B", "N", "l", "msan", "race", "shared", "dynlink", "dwarflocationlists")
 
 	Ctxt.Flag_shared = flag_dynlink || flag_shared
 	Ctxt.Flag_dynlink = flag_dynlink
@@ -389,6 +402,12 @@ func Main(archInit func(*Arch)) {
 		Debug['l'] = 1 - Debug['l']
 	}
 
+	// The buffered write barrier is only implemented on amd64
+	// right now.
+	if objabi.GOARCH != "amd64" {
+		Debug_eagerwb = 1
+	}
+
 	trackScopes = flagDWARF && ((Debug['l'] == 0 && Debug['N'] != 0) || Ctxt.Flag_locationlists)
 
 	Widthptr = thearch.LinkArch.PtrSize
@@ -494,6 +513,8 @@ func Main(archInit func(*Arch)) {
 			fcount++
 		}
 	}
+	// With all types ckecked, it's now safe to verify map keys.
+	checkMapKeys()
 	timings.AddEvent(fcount, "funcs")
 
 	// Phase 4: Decide how to capture closed variables.
@@ -516,7 +537,7 @@ func Main(archInit func(*Arch)) {
 
 	// Phase 5: Inlining
 	timings.Start("fe", "inlining")
-	if Debug['l'] > 1 {
+	if Debug_typecheckinl != 0 {
 		// Typecheck imported function bodies if debug['l'] > 1,
 		// otherwise lazily when used or re-exported.
 		for _, n := range importlist {
@@ -559,6 +580,14 @@ func Main(archInit func(*Arch)) {
 	escapes(xtop)
 
 	if dolinkobj {
+		// Collect information for go:nowritebarrierrec
+		// checking. This must happen before transformclosure.
+		// We'll do the final check after write barriers are
+		// inserted.
+		if compiling_runtime {
+			nowritebarrierrecCheck = newNowritebarrierrecChecker()
+		}
+
 		// Phase 7: Transform closure bodies to properly reference captured variables.
 		// This needs to happen before walk, because closures must be transformed
 		// before walk reaches a call of a closure.
@@ -607,8 +636,11 @@ func Main(archInit func(*Arch)) {
 		// at least until this convoluted structure has been unwound.
 		nBackendWorkers = 1
 
-		if compiling_runtime {
-			checknowritebarrierrec()
+		if nowritebarrierrecCheck != nil {
+			// Write barriers are now known. Check the
+			// call graph.
+			nowritebarrierrecCheck.check()
+			nowritebarrierrecCheck = nil
 		}
 
 		// Check whether any of the functions we have compiled have gigantic stack frames.
@@ -616,7 +648,7 @@ func Main(archInit func(*Arch)) {
 			return largeStackFrames[i].Before(largeStackFrames[j])
 		})
 		for _, largePos := range largeStackFrames {
-			yyerrorl(largePos, "stack frame too large (>2GB)")
+			yyerrorl(largePos, "stack frame too large (>1GB)")
 		}
 	}
 
@@ -1193,4 +1225,59 @@ func concurrentBackendAllowed() bool {
 		return false
 	}
 	return true
+}
+
+// recordFlags records the specified command-line flags to be placed
+// in the DWARF info.
+func recordFlags(flags ...string) {
+	if myimportpath == "" {
+		// We can't record the flags if we don't know what the
+		// package name is.
+		return
+	}
+
+	type BoolFlag interface {
+		IsBoolFlag() bool
+	}
+	type CountFlag interface {
+		IsCountFlag() bool
+	}
+	var cmd bytes.Buffer
+	for _, name := range flags {
+		f := flag.Lookup(name)
+		if f == nil {
+			continue
+		}
+		getter := f.Value.(flag.Getter)
+		if getter.String() == f.DefValue {
+			// Flag has default value, so omit it.
+			continue
+		}
+		if bf, ok := f.Value.(BoolFlag); ok && bf.IsBoolFlag() {
+			val, ok := getter.Get().(bool)
+			if ok && val {
+				fmt.Fprintf(&cmd, " -%s", f.Name)
+				continue
+			}
+		}
+		if cf, ok := f.Value.(CountFlag); ok && cf.IsCountFlag() {
+			val, ok := getter.Get().(int)
+			if ok && val == 1 {
+				fmt.Fprintf(&cmd, " -%s", f.Name)
+				continue
+			}
+		}
+		fmt.Fprintf(&cmd, " -%s=%v", f.Name, getter.Get())
+	}
+
+	if cmd.Len() == 0 {
+		return
+	}
+	s := Ctxt.Lookup(dwarf.CUInfoPrefix + "producer." + myimportpath)
+	s.Type = objabi.SDWARFINFO
+	// Sometimes (for example when building tests) we can link
+	// together two package main archives. So allow dups.
+	s.Set(obj.AttrDuplicateOK, true)
+	Ctxt.Data = append(Ctxt.Data, s)
+	s.P = cmd.Bytes()[1:]
 }

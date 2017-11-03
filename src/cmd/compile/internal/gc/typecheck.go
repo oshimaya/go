@@ -7,7 +7,6 @@ package gc
 import (
 	"cmd/compile/internal/types"
 	"cmd/internal/objabi"
-	"cmd/internal/src"
 	"fmt"
 	"math"
 	"strings"
@@ -420,18 +419,7 @@ func typecheck1(n *Node, top int) *Node {
 		}
 		n.Op = OTYPE
 		n.Type = types.NewMap(l.Type, r.Type)
-
-		// map key validation
-		alg, bad := algtype1(l.Type)
-		if alg == ANOEQ {
-			if bad.Etype == TFORW {
-				// queue check for map until all the types are done settling.
-				mapqueue = append(mapqueue, mapqueueval{l, n.Pos})
-			} else if bad.Etype != TANY {
-				// no need to queue, key is already bad
-				yyerror("invalid map key type %v", l.Type)
-			}
-		}
+		mapqueue = append(mapqueue, n) // check map keys when all types are settled
 		n.Left = nil
 		n.Right = nil
 
@@ -2709,7 +2697,7 @@ notenough:
 			// call is the expression being called, not the overall call.
 			// Method expressions have the form T.M, and the compiler has
 			// rewritten those to ONAME nodes but left T in Left.
-			if call.Op == ONAME && call.Left != nil && call.Left.Op == OTYPE {
+			if call.isMethodExpression() {
 				yyerror("not enough arguments in call to method expression %v%s", call, details)
 			} else {
 				yyerror("not enough arguments in call to %v%s", call, details)
@@ -3017,7 +3005,7 @@ func typecheckcomplit(n *Node) *Node {
 		for i3, l := range n.List.Slice() {
 			setlineno(l)
 			if l.Op != OKEY {
-				n.List.SetIndex(i3, typecheck(n.List.Index(i3), Erv))
+				n.List.SetIndex(i3, typecheck(l, Erv))
 				yyerror("missing key in map literal")
 				continue
 			}
@@ -3044,7 +3032,7 @@ func typecheckcomplit(n *Node) *Node {
 		// Need valid field offsets for Xoffset below.
 		dowidth(t)
 
-		bad := 0
+		errored := false
 		if n.List.Len() != 0 && nokeys(n.List) {
 			// simple list of variables
 			ls := n.List.Slice()
@@ -3053,10 +3041,10 @@ func typecheckcomplit(n *Node) *Node {
 				n1 = typecheck(n1, Erv)
 				ls[i] = n1
 				if i >= t.NumFields() {
-					if bad == 0 {
+					if !errored {
 						yyerror("too many values in struct initializer")
+						errored = true
 					}
-					bad++
 					continue
 				}
 
@@ -3113,10 +3101,10 @@ func typecheckcomplit(n *Node) *Node {
 				}
 
 				if l.Op != OSTRUCTKEY {
-					if bad == 0 {
+					if !errored {
 						yyerror("mixture of field:value and value initializers")
+						errored = true
 					}
-					bad++
 					ls[i] = typecheck(ls[i], Erv)
 					continue
 				}
@@ -3496,15 +3484,17 @@ func stringtoarraylit(n *Node) *Node {
 	return nn
 }
 
-var ntypecheckdeftype int
+var mapqueue []*Node
 
-type mapqueueval struct {
-	n   *Node
-	lno src.XPos
+func checkMapKeys() {
+	for _, n := range mapqueue {
+		k := n.Type.MapType().Key
+		if !k.Broke() && !IsComparable(k) {
+			yyerrorl(n.Pos, "invalid map key type %v", k)
+		}
+	}
+	mapqueue = nil
 }
-
-// tracks the line numbers at which forward types are first used as map keys
-var mapqueue []mapqueueval
 
 func copytype(n *Node, t *types.Type) {
 	if t.Etype == TFORW {
@@ -3565,7 +3555,6 @@ func copytype(n *Node, t *types.Type) {
 }
 
 func typecheckdeftype(n *Node) {
-	ntypecheckdeftype++
 	lno := lineno
 	setlineno(n)
 	n.Type.Sym = n.Sym
@@ -3584,22 +3573,6 @@ func typecheckdeftype(n *Node) {
 	}
 
 	lineno = lno
-
-	// if there are no type definitions going on, it's safe to
-	// try to validate the map key types for the interfaces
-	// we just read.
-	if ntypecheckdeftype == 1 {
-		for _, e := range mapqueue {
-			lineno = e.lno
-			if !IsComparable(e.n.Type) {
-				yyerror("invalid map key type %v", e.n.Type)
-			}
-		}
-		mapqueue = nil
-		lineno = lno
-	}
-
-	ntypecheckdeftype--
 }
 
 func typecheckdef(n *Node) {
@@ -3910,17 +3883,17 @@ func (n *Node) isterminating() bool {
 		if n.HasBreak() {
 			return false
 		}
-		def := 0
+		def := false
 		for _, n1 := range n.List.Slice() {
 			if !n1.Nbody.isterminating() {
 				return false
 			}
 			if n1.List.Len() == 0 { // default
-				def = 1
+				def = true
 			}
 		}
 
-		if n.Op != OSELECT && def == 0 {
+		if n.Op != OSELECT && !def {
 			return false
 		}
 		return true

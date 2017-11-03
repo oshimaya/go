@@ -52,11 +52,17 @@ TEXT runtime·exit(SB),NOSPLIT,$0-4
 	SYSCALL
 	RET
 
-TEXT runtime·exit1(SB),NOSPLIT,$0-4
-	MOVL	code+0(FP), DI
+// func exitThread(wait *uint32)
+TEXT runtime·exitThread(SB),NOSPLIT,$0-8
+	MOVQ	wait+0(FP), AX
+	// We're done using the stack.
+	MOVL	$0, (AX)
+	MOVL	$0, DI	// exit code
 	MOVL	$SYS_exit, AX
 	SYSCALL
-	RET
+	// We may not even have a stack any more.
+	INT	$3
+	JMP	0(PC)
 
 TEXT runtime·open(SB),NOSPLIT,$0-20
 	MOVQ	name+0(FP), DI
@@ -405,10 +411,15 @@ TEXT runtime·sysMmap(SB),NOSPLIT,$0
 	MOVL	$SYS_mmap, AX
 	SYSCALL
 	CMPQ	AX, $0xfffffffffffff001
-	JLS	3(PC)
+	JLS	ok
 	NOTQ	AX
 	INCQ	AX
-	MOVQ	AX, ret+32(FP)
+	MOVQ	$0, p+32(FP)
+	MOVQ	AX, err+40(FP)
+	RET
+ok:
+	MOVQ	AX, p+32(FP)
+	MOVQ	$0, err+40(FP)
 	RET
 
 // Call the function stored in _cgo_mmap using the GCC calling convention.

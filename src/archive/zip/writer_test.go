@@ -58,8 +58,8 @@ var writeTests = []WriteTest{
 
 func TestWriter(t *testing.T) {
 	largeData := make([]byte, 1<<17)
-	for i := range largeData {
-		largeData[i] = byte(rand.Int())
+	if _, err := rand.Read(largeData); err != nil {
+		t.Fatal("rand.Read failed:", err)
 	}
 	writeTests[1].Data = largeData
 	defer func() {
@@ -156,6 +156,12 @@ func TestWriterUTF8(t *testing.T) {
 			comment: "in the 世界",
 			expect:  0x808,
 		},
+		{
+			// Name is Japanese encoded in Shift JIS.
+			name:    "\x93\xfa\x96{\x8c\xea.txt",
+			comment: "in the 世界",
+			expect:  0x008, // UTF-8 must not be set
+		},
 	}
 
 	// write a zip file
@@ -195,8 +201,8 @@ func TestWriterUTF8(t *testing.T) {
 
 func TestWriterOffset(t *testing.T) {
 	largeData := make([]byte, 1<<17)
-	for i := range largeData {
-		largeData[i] = byte(rand.Int())
+	if _, err := rand.Read(largeData); err != nil {
+		t.Fatal("rand.Read failed:", err)
 	}
 	writeTests[1].Data = largeData
 	defer func() {

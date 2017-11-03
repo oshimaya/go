@@ -2016,17 +2016,16 @@ func Redirect(w ResponseWriter, r *Request, url string, code int) {
 		}
 	}
 
-	// RFC 2616 recommends that a short note "SHOULD" be included in the
-	// response because older user agents may not understand 301/307.
-	// Shouldn't send the response for POST or HEAD; that leaves GET.
-	writeNote := r.Method == "GET"
-
 	w.Header().Set("Location", hexEscapeNonASCII(url))
-	if writeNote {
+	if r.Method == "GET" || r.Method == "HEAD" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	}
 	w.WriteHeader(code)
-	if writeNote {
+
+	// RFC 2616 recommends that a short note "SHOULD" be included in the
+	// response because older user agents may not understand 301/307.
+	// Shouldn't send the response for POST or HEAD; that leaves GET.
+	if r.Method == "GET" {
 		note := "<a href=\"" + htmlEscape(url) + "\">" + statusText[code] + "</a>.\n"
 		fmt.Fprintln(w, note)
 	}
@@ -2232,7 +2231,6 @@ func (mux *ServeMux) shouldRedirect(path string) bool {
 // If there is no registered handler that applies to the request,
 // Handler returns a ``page not found'' handler and an empty pattern.
 func (mux *ServeMux) Handler(r *Request) (h Handler, pattern string) {
-
 	// CONNECT requests are not canonicalized.
 	if r.Method == "CONNECT" {
 		// If r.URL.Path is /tree and its handler is not registered,
@@ -3163,10 +3161,10 @@ type tcpKeepAliveListener struct {
 	*net.TCPListener
 }
 
-func (ln tcpKeepAliveListener) Accept() (c net.Conn, err error) {
+func (ln tcpKeepAliveListener) Accept() (net.Conn, error) {
 	tc, err := ln.AcceptTCP()
 	if err != nil {
-		return
+		return nil, err
 	}
 	tc.SetKeepAlive(true)
 	tc.SetKeepAlivePeriod(3 * time.Minute)

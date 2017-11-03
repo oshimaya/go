@@ -29,7 +29,6 @@ type SockaddrDatalink struct {
 func Syscall9(num, a1, a2, a3, a4, a5, a6, a7, a8, a9 uintptr) (r1, r2 uintptr, err Errno)
 
 func nametomib(name string) (mib []_C_int, err error) {
-
 	// Perform lookup via a binary search
 	left := 0
 	right := len(sysctlMib) - 1
@@ -97,6 +96,11 @@ func Getfsstat(buf []Statfs_t, flags int) (n int, err error) {
 		err = e1
 	}
 	return
+}
+
+func setattrlistTimes(path string, times []Timespec) error {
+	// used on Darwin for UtimesNano
+	return ENOSYS
 }
 
 /*

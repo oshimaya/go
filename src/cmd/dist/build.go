@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Initialization for any invocation.
@@ -32,6 +34,7 @@ var (
 	goroot_final           string
 	goextlinkenabled       string
 	gogcflags              string // For running built compiler
+	goldflags              string
 	workdir                string
 	tooldir                string
 	oldgoos                string
@@ -223,6 +226,11 @@ func xinit() {
 	os.Setenv("GOROOT", goroot)
 	os.Setenv("GOROOT_FINAL", goroot_final)
 
+	// Use a build cache separate from the default user one.
+	// Also one that will be wiped out during startup, so that
+	// make.bash really does start from a clean slate.
+	os.Setenv("GOCACHE", pathf("%s/pkg/obj/go-build", goroot))
+
 	// Make the environment more predictable.
 	os.Setenv("LANG", "C")
 	os.Setenv("LANGUAGE", "en_US.UTF8")
@@ -287,6 +295,26 @@ func findgoversion() string {
 		// its content if available, which is empty at this point.
 		// Only use the VERSION file if it is non-empty.
 		if b != "" {
+			// Some builders cross-compile the toolchain on linux-amd64
+			// and then copy the toolchain to the target builder (say, linux-arm)
+			// for use there. But on non-release (devel) branches, the compiler
+			// used on linux-amd64 will be an amd64 binary, and the compiler
+			// shipped to linux-arm will be an arm binary, so they will have different
+			// content IDs (they are binaries for different architectures) and so the
+			// packages compiled by the running-on-amd64 compiler will appear
+			// stale relative to the running-on-arm compiler. Avoid this by setting
+			// the version string to something that doesn't begin with devel.
+			// Then the version string will be used in place of the content ID,
+			// and the packages will look up-to-date.
+			// TODO(rsc): Really the builders could be writing out a better VERSION file instead,
+			// but it is easier to change cmd/dist than to try to make changes to
+			// the builder while Brad is away.
+			if strings.HasPrefix(b, "devel") {
+				if hostType := os.Getenv("META_BUILDLET_HOST_TYPE"); strings.Contains(hostType, "-cross") {
+					fmt.Fprintf(os.Stderr, "warning: changing VERSION from %q to %q\n", b, "builder "+hostType)
+					b = "builder " + hostType
+				}
+			}
 			return b
 		}
 	}
@@ -405,14 +433,10 @@ func setup() {
 	}
 
 	// Create object directory.
-	// We keep it in pkg/ so that all the generated binaries
-	// are in one tree. If pkg/obj/libgc.a exists, it is a dreg from
-	// before we used subdirectories of obj. Delete all of obj
-	// to clean up.
-	if p := pathf("%s/pkg/obj/libgc.a", goroot); isfile(p) {
-		xremoveall(pathf("%s/pkg/obj", goroot))
-	}
-	p = pathf("%s/pkg/obj/%s_%s", goroot, gohostos, gohostarch)
+	// We used to use it for C objects.
+	// Now we use it for the build cache, to separate dist's cache
+	// from any other cache the user might have.
+	p = pathf("%s/pkg/obj/go-build", goroot)
 	if rebuildall {
 		xremoveall(p)
 	}
@@ -982,10 +1006,70 @@ func cmdenv() {
 	}
 }
 
+var (
+	timeLogEnabled = os.Getenv("GOBUILDTIMELOGFILE") != ""
+	timeLogMu      sync.Mutex
+	timeLogFile    *os.File
+	timeLogStart   time.Time
+)
+
+func timelog(op, name string) {
+	if !timeLogEnabled {
+		return
+	}
+	timeLogMu.Lock()
+	defer timeLogMu.Unlock()
+	if timeLogFile == nil {
+		f, err := os.OpenFile(os.Getenv("GOBUILDTIMELOGFILE"), os.O_RDWR|os.O_APPEND, 0666)
+		if err != nil {
+			log.Fatal(err)
+		}
+		buf := make([]byte, 100)
+		n, _ := f.Read(buf)
+		s := string(buf[:n])
+		if i := strings.Index(s, "\n"); i >= 0 {
+			s = s[:i]
+		}
+		i := strings.Index(s, " start")
+		if i < 0 {
+			log.Fatalf("time log %s does not begin with start line", os.Getenv("GOBULDTIMELOGFILE"))
+		}
+		t, err := time.Parse(time.UnixDate, s[:i])
+		if err != nil {
+			log.Fatalf("cannot parse time log line %q: %v", s, err)
+		}
+		timeLogStart = t
+		timeLogFile = f
+	}
+	t := time.Now()
+	fmt.Fprintf(timeLogFile, "%s %+.1fs %s %s\n", t.Format(time.UnixDate), t.Sub(timeLogStart).Seconds(), op, name)
+}
+
+var toolchain = []string{"cmd/asm", "cmd/cgo", "cmd/compile", "cmd/link"}
+
 // The bootstrap command runs a build from scratch,
 // stopping at having installed the go_bootstrap command.
+//
+// WARNING: This command runs after cmd/dist is built with Go 1.4.
+// It rebuilds and installs cmd/dist with the new toolchain, so other
+// commands (like "go tool dist test" in run.bash) can rely on bug fixes
+// made since Go 1.4, but this function cannot. In particular, the uses
+// of os/exec in this function cannot assume that
+//	cmd.Env = append(os.Environ(), "X=Y")
+// sets $X to Y in the command's environment. That guarantee was
+// added after Go 1.4, and in fact in Go 1.4 it was typically the opposite:
+// if $X was already present in os.Environ(), most systems preferred
+// that setting, not the new one.
 func cmdbootstrap() {
+	timelog("start", "dist bootstrap")
+	defer timelog("end", "dist bootstrap")
+
+	var noBanner bool
+	var debug bool
 	flag.BoolVar(&rebuildall, "a", rebuildall, "rebuild all")
+	flag.BoolVar(&debug, "d", debug, "enable debugging of bootstrap process")
+	flag.BoolVar(&noBanner, "no-banner", noBanner, "do not print banner")
+
 	xflagparse(0)
 
 	if isdir(pathf("%s/src/pkg", goroot)) {
@@ -1004,8 +1088,12 @@ func cmdbootstrap() {
 
 	setup()
 
+	timelog("build", "toolchain1")
 	checkCC()
 	bootstrapBuildTools()
+
+	// Remember old content of $GOROOT/bin for comparison below.
+	oldBinFiles, _ := filepath.Glob(pathf("%s/bin/*", goroot))
 
 	// For the main bootstrap, building for host os/arch.
 	oldgoos = goos
@@ -1017,31 +1105,8 @@ func cmdbootstrap() {
 	os.Setenv("GOARCH", goarch)
 	os.Setenv("GOOS", goos)
 
-	// TODO(rsc): Enable when appropriate.
-	// This step is only needed if we believe that the Go compiler built from Go 1.4
-	// will produce different object files than the Go compiler built from itself.
-	// In the absence of bugs, that should not happen.
-	// And if there are bugs, they're more likely in the current development tree
-	// than in a standard release like Go 1.4, so don't do this rebuild by default.
-	if false {
-		xprintf("##### Building Go toolchain using itself.\n")
-		for _, dir := range buildlist {
-			installed[dir] = make(chan struct{})
-		}
-		var wg sync.WaitGroup
-		for _, dir := range builddeps["cmd/go"] {
-			wg.Add(1)
-			dir := dir
-			go func() {
-				defer wg.Done()
-				install(dir)
-			}()
-		}
-		wg.Wait()
-		xprintf("\n")
-	}
-
-	xprintf("##### Building go_bootstrap for host, %s/%s.\n", gohostos, gohostarch)
+	timelog("build", "go_bootstrap")
+	xprintf("Building Go bootstrap cmd/go (go_bootstrap) using Go toolchain1.\n")
 	for _, dir := range buildlist {
 		installed[dir] = make(chan struct{})
 	}
@@ -1049,16 +1114,176 @@ func cmdbootstrap() {
 		go install(dir)
 	}
 	<-installed["cmd/go"]
+	if vflag > 0 {
+		xprintf("\n")
+	}
 
-	goos = oldgoos
-	goarch = oldgoarch
-	os.Setenv("GOARCH", goarch)
-	os.Setenv("GOOS", goos)
+	gogcflags = os.Getenv("GO_GCFLAGS") // we were using $BOOT_GO_GCFLAGS until now
+	goldflags = os.Getenv("GO_LDFLAGS")
+	goBootstrap := pathf("%s/go_bootstrap", tooldir)
+	cmdGo := pathf("%s/go", gobin)
+	if debug {
+		run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
+		copyfile(pathf("%s/compile1", tooldir), pathf("%s/compile", tooldir), writeExec)
+	}
 
-	// Build runtime for actual goos/goarch too.
-	if goos != gohostos || goarch != gohostarch {
-		installed["runtime"] = make(chan struct{})
-		install("runtime")
+	// To recap, so far we have built the new toolchain
+	// (cmd/asm, cmd/cgo, cmd/compile, cmd/link)
+	// using Go 1.4's toolchain and go command.
+	// Then we built the new go command (as go_bootstrap)
+	// using the new toolchain and our own build logic (above).
+	//
+	//	toolchain1 = mk(new toolchain, go1.4 toolchain, go1.4 cmd/go)
+	//	go_bootstrap = mk(new cmd/go, toolchain1, cmd/dist)
+	//
+	// The toolchain1 we built earlier is built from the new sources,
+	// but because it was built using cmd/go it has no build IDs.
+	// The eventually installed toolchain needs build IDs, so we need
+	// to do another round:
+	//
+	//	toolchain2 = mk(new toolchain, toolchain1, go_bootstrap)
+	//
+	timelog("build", "toolchain2")
+	if vflag > 0 {
+		xprintf("\n")
+	}
+	xprintf("Building Go toolchain2 using go_bootstrap and Go toolchain1.\n")
+	os.Setenv("CC", defaultcc)
+	if goos == oldgoos && goarch == oldgoarch {
+		// Host and target are same, and we have historically
+		// chosen $CC_FOR_TARGET in this case.
+		os.Setenv("CC", defaultcctarget)
+	}
+	goInstall(goBootstrap, toolchain...)
+	if debug {
+		run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
+		run("", ShowOutput|CheckExit, pathf("%s/buildid", tooldir), pathf("%s/pkg/%s_%s/runtime/internal/sys.a", goroot, goos, goarch))
+		copyfile(pathf("%s/compile2", tooldir), pathf("%s/compile", tooldir), writeExec)
+	}
+
+	// Toolchain2 should be semantically equivalent to toolchain1,
+	// but it was built using the new compilers instead of the Go 1.4 compilers,
+	// so it should at the least run faster. Also, toolchain1 had no build IDs
+	// in the binaries, while toolchain2 does. In non-release builds, the
+	// toolchain's build IDs feed into constructing the build IDs of built targets,
+	// so in non-release builds, everything now looks out-of-date due to
+	// toolchain2 having build IDs - that is, due to the go command seeing
+	// that there are new compilers. In release builds, the toolchain's reported
+	// version is used in place of the build ID, and the go command does not
+	// see that change from toolchain1 to toolchain2, so in release builds,
+	// nothing looks out of date.
+	// To keep the behavior the same in both non-release and release builds,
+	// we force-install everything here.
+	//
+	//	toolchain3 = mk(new toolchain, toolchain2, go_bootstrap)
+	//
+	timelog("build", "toolchain3")
+	if vflag > 0 {
+		xprintf("\n")
+	}
+	xprintf("Building Go toolchain3 using go_bootstrap and Go toolchain2.\n")
+	goInstall(goBootstrap, append([]string{"-a"}, toolchain...)...)
+	if debug {
+		run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
+		run("", ShowOutput|CheckExit, pathf("%s/buildid", tooldir), pathf("%s/pkg/%s_%s/runtime/internal/sys.a", goroot, goos, goarch))
+		copyfile(pathf("%s/compile3", tooldir), pathf("%s/compile", tooldir), writeExec)
+	}
+	checkNotStale(goBootstrap, append(toolchain, "runtime/internal/sys")...)
+
+	if goos == oldgoos && goarch == oldgoarch {
+		// Common case - not setting up for cross-compilation.
+		timelog("build", "toolchain")
+		if vflag > 0 {
+			xprintf("\n")
+		}
+		xprintf("Building packages and commands for %s/%s.\n", goos, goarch)
+	} else {
+		// GOOS/GOARCH does not match GOHOSTOS/GOHOSTARCH.
+		// Finish GOHOSTOS/GOHOSTARCH installation and then
+		// run GOOS/GOARCH installation.
+		timelog("build", "host toolchain")
+		if vflag > 0 {
+			xprintf("\n")
+		}
+		xprintf("Building packages and commands for host, %s/%s.\n", goos, goarch)
+		goInstall(goBootstrap, "std", "cmd")
+		checkNotStale(goBootstrap, "std", "cmd")
+		checkNotStale(cmdGo, "std", "cmd")
+
+		timelog("build", "target toolchain")
+		if vflag > 0 {
+			xprintf("\n")
+		}
+		goos = oldgoos
+		goarch = oldgoarch
+		os.Setenv("GOOS", goos)
+		os.Setenv("GOARCH", goarch)
+		os.Setenv("CC", defaultcctarget)
+		xprintf("Building packages and commands for target, %s/%s.\n", goos, goarch)
+	}
+	goInstall(goBootstrap, "std", "cmd")
+	checkNotStale(goBootstrap, "std", "cmd")
+	checkNotStale(cmdGo, "std", "cmd")
+	if debug {
+		run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
+		run("", ShowOutput|CheckExit, pathf("%s/buildid", tooldir), pathf("%s/pkg/%s_%s/runtime/internal/sys.a", goroot, goos, goarch))
+		checkNotStale(goBootstrap, append(toolchain, "runtime/internal/sys")...)
+		copyfile(pathf("%s/compile4", tooldir), pathf("%s/compile", tooldir), writeExec)
+	}
+
+	// Check that there are no new files in $GOROOT/bin other than
+	// go and gofmt and $GOOS_$GOARCH (target bin when cross-compiling).
+	binFiles, _ := filepath.Glob(pathf("%s/bin/*", goroot))
+	ok := map[string]bool{}
+	for _, f := range oldBinFiles {
+		ok[f] = true
+	}
+	for _, f := range binFiles {
+		elem := strings.TrimSuffix(filepath.Base(f), ".exe")
+		if !ok[f] && elem != "go" && elem != "gofmt" && elem != goos+"_"+goarch {
+			fatalf("unexpected new file in $GOROOT/bin: %s", elem)
+		}
+	}
+
+	// Remove go_bootstrap now that we're done.
+	xremove(pathf("%s/go_bootstrap", tooldir))
+
+	// Print trailing banner unless instructed otherwise.
+	if !noBanner {
+		banner()
+	}
+}
+
+func goInstall(goBinary string, args ...string) {
+	installCmd := []string{goBinary, "install", "-gcflags=" + gogcflags, "-ldflags=" + goldflags}
+	if vflag > 0 {
+		installCmd = append(installCmd, "-v")
+	}
+
+	// Force only one process at a time on vx32 emulation.
+	if gohostos == "plan9" && os.Getenv("sysname") == "vx32" {
+		installCmd = append(installCmd, "-p=1")
+	}
+
+	run(goroot, ShowOutput|CheckExit, append(installCmd, args...)...)
+}
+
+func checkNotStale(goBinary string, targets ...string) {
+	out := run(goroot, CheckExit,
+		append([]string{
+			goBinary,
+			"list", "-gcflags=" + gogcflags, "-ldflags=" + goldflags,
+			"-f={{if .Stale}}\t{{.ImportPath}}: {{.StaleReason}}{{end}}",
+		}, targets...)...)
+	if out != "" {
+		os.Setenv("GODEBUG", "gocachehash=1")
+		for _, target := range []string{"runtime/internal/sys", "cmd/dist", "cmd/link"} {
+			if strings.Contains(out, target) {
+				run(goroot, ShowOutput|CheckExit, goBinary, "list", "-f={{.ImportPath}} {{.Stale}}", target)
+				break
+			}
+		}
+		fatalf("unexpected stale targets reported by %s list -gcflags=\"%s\" -ldflags=\"%s\" for %v:\n%s", goBinary, gogcflags, goldflags, targets, out)
 	}
 }
 
@@ -1176,8 +1401,13 @@ func cmdclean() {
 // Banner prints the 'now you've installed Go' banner.
 func cmdbanner() {
 	xflagparse(0)
+	banner()
+}
 
-	xprintf("\n")
+func banner() {
+	if vflag > 0 {
+		xprintf("\n")
+	}
 	xprintf("---\n")
 	xprintf("Installed Go for %s/%s in %s\n", goos, goarch, goroot)
 	xprintf("Installed commands in %s\n", gobin)

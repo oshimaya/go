@@ -52,7 +52,6 @@ func sysctlNodes(mib []_C_int) (nodes []Sysctlnode, err error) {
 }
 
 func nametomib(name string) (mib []_C_int, err error) {
-
 	// Split name into components.
 	var parts []string
 	last := 0
@@ -119,6 +118,11 @@ func Getdirentries(fd int, buf []byte, basep *uintptr) (n int, err error) {
 // TODO
 func sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) {
 	return -1, ENOSYS
+}
+
+func setattrlistTimes(path string, times []Timespec) error {
+	// used on Darwin for UtimesNano
+	return ENOSYS
 }
 
 /*

@@ -44,7 +44,7 @@ func init1(n *Node, out *[]*Node) {
 		init1(n1, out)
 	}
 
-	if n.Left != nil && n.Type != nil && n.Left.Op == OTYPE && n.Class() == PFUNC {
+	if n.isMethodExpression() {
 		// Methods called as Type.Method(receiver, ...).
 		// Definitions for method expressions are stored in type->nname.
 		init1(asNode(n.Type.FuncType().Nname), out)
@@ -213,10 +213,10 @@ func init2(n *Node, out *[]*Node) {
 	init2list(n.Rlist, out)
 	init2list(n.Nbody, out)
 
-	if n.Op == OCLOSURE {
+	switch n.Op {
+	case OCLOSURE:
 		init2list(n.Func.Closure.Nbody, out)
-	}
-	if n.Op == ODOTMETH || n.Op == OCALLPART {
+	case ODOTMETH, OCALLPART:
 		init2(asNode(n.Type.FuncType().Nname), out)
 	}
 }
@@ -228,8 +228,7 @@ func init2list(l Nodes, out *[]*Node) {
 }
 
 func initreorder(l []*Node, out *[]*Node) {
-	var n *Node
-	for _, n = range l {
+	for _, n := range l {
 		switch n.Op {
 		case ODCLFUNC, ODCLCONST, ODCLTYPE:
 			continue
@@ -883,11 +882,10 @@ func slicelit(ctxt initContext, n *Node, var_ *Node, init *Nodes) {
 
 	// put dynamics into array (5)
 	var index int64
-	for _, r := range n.List.Slice() {
-		value := r
-		if r.Op == OKEY {
-			index = nonnegintconst(r.Left)
-			value = r.Right
+	for _, value := range n.List.Slice() {
+		if value.Op == OKEY {
+			index = nonnegintconst(value.Left)
+			value = value.Right
 		}
 		a := nod(OINDEX, vauto, nodintconst(index))
 		a.SetBounded(true)

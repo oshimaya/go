@@ -718,6 +718,10 @@ label1:
 //	}
 	DCBF	(R1)
 	DCBF	(R1+R2) // DCBF	(R1)(R2*1)
+	DCBF	(R1), $1
+	DCBF	(R1)(R2*1), $1
+	DCBT	(R1), $1
+	DCBT	(R1)(R2*1), $1
 
 //	LDMX  (RB)(RA*1),RT produces
 //	ldmx  RT,RA,RB
@@ -729,6 +733,9 @@ label1:
 	POPCNTD	R1,R2
 	POPCNTW	R1,R2
 	POPCNTB R1,R2
+
+//	Copysign
+	FCPSGN F1,F2,F3
 
 //	Random number generator, X-form
 //	DARN  L,RT produces

@@ -257,7 +257,7 @@ func (s *exprSwitch) walk(sw *Node) {
 	var cas []*Node
 	if s.kind == switchKindTrue || s.kind == switchKindFalse {
 		s.exprname = nodbool(s.kind == switchKindTrue)
-	} else if consttype(cond) >= 0 {
+	} else if consttype(cond) > 0 {
 		// leave constants to enable dead code elimination (issue 9608)
 		s.exprname = cond
 	} else {
@@ -273,21 +273,15 @@ func (s *exprSwitch) walk(sw *Node) {
 
 	// handle the cases in order
 	for len(cc) > 0 {
-		// deal with expressions one at a time
-		if !okforcmp[t.Etype] || !cc[0].isconst {
-			a := s.walkCases(cc[:1])
-			cas = append(cas, a)
-			cc = cc[1:]
-			continue
+		run := 1
+		if okforcmp[t.Etype] && cc[0].isconst {
+			// do binary search on runs of constants
+			for ; run < len(cc) && cc[run].isconst; run++ {
+			}
+			// sort and compile constants
+			sort.Sort(caseClauseByConstVal(cc[:run]))
 		}
 
-		// do binary search on runs of constants
-		var run int
-		for run = 1; run < len(cc) && cc[run].isconst; run++ {
-		}
-
-		// sort and compile constants
-		sort.Sort(caseClauseByConstVal(cc[:run]))
 		a := s.walkCases(cc[:run])
 		cas = append(cas, a)
 		cc = cc[run:]
@@ -393,7 +387,7 @@ func casebody(sw *Node, typeswvar *Node) {
 		case 0:
 			// default
 			if def != nil {
-				yyerror("more than one default case")
+				yyerrorl(n.Pos, "more than one default case")
 			}
 			// reuse original default case
 			n.Right = jmp
@@ -607,12 +601,7 @@ func checkDupExprCases(exprname *Node, clauses []*Node) {
 				//       case GOARCH == "arm" && GOARM == "5":
 				//       case GOARCH == "arm":
 				//     which would both evaluate to false for non-ARM compiles.
-				if ct := consttype(n); ct < 0 || ct == CTBOOL {
-					continue
-				}
-				// If the value has no type, we have
-				// already printed an error about it.
-				if n.Type == nil {
+				if ct := consttype(n); ct == 0 || ct == CTBOOL {
 					continue
 				}
 
@@ -637,12 +626,7 @@ func checkDupExprCases(exprname *Node, clauses []*Node) {
 	seen := make(map[typeVal]*Node)
 	for _, ncase := range clauses {
 		for _, n := range ncase.List.Slice() {
-			if ct := consttype(n); ct < 0 || ct == CTBOOL {
-				continue
-			}
-			// If the value has no type, we have
-			// already printed an error about it.
-			if n.Type == nil {
+			if ct := consttype(n); ct == 0 || ct == CTBOOL {
 				continue
 			}
 			tv := typeVal{
@@ -683,14 +667,13 @@ func (s *typeSwitch) walk(sw *Node) {
 		return
 	}
 	if cond.Right == nil {
-		setlineno(sw)
-		yyerror("type switch must have an assignment")
+		yyerrorl(sw.Pos, "type switch must have an assignment")
 		return
 	}
 
 	cond.Right = walkexpr(cond.Right, &sw.Ninit)
 	if !cond.Right.Type.IsInterface() {
-		yyerror("type switch must be on an interface")
+		yyerrorl(sw.Pos, "type switch must be on an interface")
 		return
 	}
 

@@ -21,9 +21,13 @@ const LocPrefix = "go.loc."
 // RangePrefix is the prefix for all the symbols containing DWARF range lists.
 const RangePrefix = "go.range."
 
-// InfoConstPrefix is the prefix for all symbols containing DWARF info
+// ConstInfoPrefix is the prefix for all symbols containing DWARF info
 // entries that contain constants.
 const ConstInfoPrefix = "go.constinfo."
+
+// CUInfoPrefix is the prefix for symbols containing information to
+// populate the DWARF compilation unit info entries.
+const CUInfoPrefix = "go.cuinfo."
 
 // Sym represents a symbol.
 type Sym interface {
@@ -49,13 +53,14 @@ type Piece struct {
 
 // A Var represents a local variable or a function parameter.
 type Var struct {
-	Name         string
-	Abbrev       int // Either DW_ABRV_AUTO or DW_ABRV_PARAM
-	StackOffset  int32
-	LocationList []Location
-	Scope        int32
-	Type         Sym
-	DeclLine     uint
+	Name          string
+	Abbrev        int // Either DW_ABRV_AUTO[_LOCLIST] or DW_ABRV_PARAM[_LOCLIST]
+	IsReturnValue bool
+	StackOffset   int32
+	LocationList  []Location
+	Scope         int32
+	Type          Sym
+	DeclLine      uint
 }
 
 // A Scope represents a lexical scope. All variables declared within a
@@ -116,8 +121,10 @@ type Context interface {
 	AddInt(s Sym, size int, i int64)
 	AddBytes(s Sym, b []byte)
 	AddAddress(s Sym, t interface{}, ofs int64)
+	AddCURelativeAddress(s Sym, t interface{}, ofs int64)
 	AddSectionOffset(s Sym, size int, t interface{}, ofs int64)
 	AddString(s Sym, v string)
+	AddFileRef(s Sym, f interface{})
 }
 
 // AppendUleb128 appends v to b using DWARF's unsigned LEB128 encoding.
@@ -281,9 +288,9 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 		[]dwAttrForm{
 			{DW_AT_name, DW_FORM_string},
 			{DW_AT_language, DW_FORM_data1},
-			{DW_AT_low_pc, DW_FORM_addr},
-			{DW_AT_high_pc, DW_FORM_addr},
 			{DW_AT_stmt_list, DW_FORM_sec_offset},
+			{DW_AT_low_pc, DW_FORM_addr},
+			{DW_AT_ranges, DW_FORM_sec_offset},
 			{DW_AT_comp_dir, DW_FORM_string},
 			{DW_AT_producer, DW_FORM_string},
 		},
@@ -298,6 +305,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_low_pc, DW_FORM_addr},
 			{DW_AT_high_pc, DW_FORM_addr},
 			{DW_AT_frame_base, DW_FORM_block1},
+			{DW_AT_decl_file, DW_FORM_data4},
 			{DW_AT_external, DW_FORM_flag},
 		},
 	},
@@ -355,6 +363,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 		DW_CHILDREN_no,
 		[]dwAttrForm{
 			{DW_AT_name, DW_FORM_string},
+			{DW_AT_variable_parameter, DW_FORM_flag},
 			{DW_AT_decl_line, DW_FORM_udata},
 			{DW_AT_location, DW_FORM_block1},
 			{DW_AT_type, DW_FORM_ref_addr},
@@ -367,6 +376,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 		DW_CHILDREN_no,
 		[]dwAttrForm{
 			{DW_AT_name, DW_FORM_string},
+			{DW_AT_variable_parameter, DW_FORM_flag},
 			{DW_AT_decl_line, DW_FORM_udata},
 			{DW_AT_location, DW_FORM_sec_offset},
 			{DW_AT_type, DW_FORM_ref_addr},
@@ -757,14 +767,41 @@ func PutIntConst(ctxt Context, info, typ Sym, name string, val int64) {
 	putattr(ctxt, info, DW_ABRV_INT_CONSTANT, DW_FORM_sdata, DW_CLS_CONSTANT, val, nil)
 }
 
+// PutRanges writes a range table to sym. All addresses in ranges are
+// relative to some base address. If base is not nil, then they're
+// relative to the start of base. If base is nil, then the caller must
+// arrange a base address some other way (such as a DW_AT_low_pc
+// attribute).
+func PutRanges(ctxt Context, sym Sym, base Sym, ranges []Range) {
+	ps := ctxt.PtrSize()
+	// Write ranges.
+	// We do not emit base address entries here, even though they would reduce
+	// the number of relocations, because dsymutil (which is used on macOS when
+	// linking externally) does not support them.
+	for _, r := range ranges {
+		if base == nil {
+			ctxt.AddInt(sym, ps, r.Start)
+			ctxt.AddInt(sym, ps, r.End)
+		} else {
+			ctxt.AddCURelativeAddress(sym, base, r.Start)
+			ctxt.AddCURelativeAddress(sym, base, r.End)
+		}
+	}
+	// Write trailer.
+	ctxt.AddInt(sym, ps, 0)
+	ctxt.AddInt(sym, ps, 0)
+}
+
 // PutFunc writes a DIE for a function to s.
 // It also writes child DIEs for each variable in vars.
-func PutFunc(ctxt Context, info, loc, ranges Sym, name string, external bool, startPC Sym, size int64, scopes []Scope) error {
+func PutFunc(ctxt Context, info, loc, ranges, filesym Sym, name string, external bool, startPC Sym, size int64, scopes []Scope) error {
 	Uleb128put(ctxt, info, DW_ABRV_FUNCTION)
 	putattr(ctxt, info, DW_ABRV_FUNCTION, DW_FORM_string, DW_CLS_STRING, int64(len(name)), name)
 	putattr(ctxt, info, DW_ABRV_FUNCTION, DW_FORM_addr, DW_CLS_ADDRESS, 0, startPC)
 	putattr(ctxt, info, DW_ABRV_FUNCTION, DW_FORM_addr, DW_CLS_ADDRESS, size, startPC)
 	putattr(ctxt, info, DW_ABRV_FUNCTION, DW_FORM_block1, DW_CLS_BLOCK, 1, []byte{DW_OP_call_frame_cfa})
+	// DW_AT_decl_file attribute
+	ctxt.AddFileRef(info, filesym)
 	var ev int64
 	if external {
 		ev = 1
@@ -800,14 +837,7 @@ func putscope(ctxt Context, info, loc, ranges, startPC Sym, curscope int32, scop
 			Uleb128put(ctxt, info, DW_ABRV_LEXICAL_BLOCK_RANGES)
 			putattr(ctxt, info, DW_ABRV_LEXICAL_BLOCK_RANGES, DW_FORM_sec_offset, DW_CLS_PTR, ranges.Len(), ranges)
 
-			ctxt.AddAddress(ranges, nil, -1)
-			ctxt.AddAddress(ranges, startPC, 0)
-			for _, r := range scope.Ranges {
-				ctxt.AddAddress(ranges, nil, r.Start)
-				ctxt.AddAddress(ranges, nil, r.End)
-			}
-			ctxt.AddAddress(ranges, nil, 0)
-			ctxt.AddAddress(ranges, nil, 0)
+			PutRanges(ctxt, ranges, startPC, scope.Ranges)
 		}
 
 		curscope = putscope(ctxt, info, loc, ranges, startPC, curscope, scopes, encbuf)
@@ -818,8 +848,6 @@ func putscope(ctxt Context, info, loc, ranges, startPC Sym, curscope int32, scop
 }
 
 func putvar(ctxt Context, info, loc Sym, v *Var, startPC Sym, encbuf []byte) {
-	n := v.Name
-
 	// If the variable was entirely optimized out, don't emit a location list;
 	// convert to an inline abbreviation and emit an empty location.
 	missing := false
@@ -833,7 +861,14 @@ func putvar(ctxt Context, info, loc Sym, v *Var, startPC Sym, encbuf []byte) {
 	}
 
 	Uleb128put(ctxt, info, int64(v.Abbrev))
-	putattr(ctxt, info, v.Abbrev, DW_FORM_string, DW_CLS_STRING, int64(len(n)), n)
+	putattr(ctxt, info, v.Abbrev, DW_FORM_string, DW_CLS_STRING, int64(len(v.Name)), v.Name)
+	if v.Abbrev == DW_ABRV_PARAM || v.Abbrev == DW_ABRV_PARAM_LOCLIST {
+		var isReturn int64
+		if v.IsReturnValue {
+			isReturn = 1
+		}
+		putattr(ctxt, info, v.Abbrev, DW_FORM_flag, DW_CLS_FLAG, isReturn, nil)
+	}
 	putattr(ctxt, info, v.Abbrev, DW_FORM_udata, DW_CLS_CONSTANT, int64(v.DeclLine), nil)
 	if v.Abbrev == DW_ABRV_AUTO_LOCLIST || v.Abbrev == DW_ABRV_PARAM_LOCLIST {
 		putattr(ctxt, info, v.Abbrev, DW_FORM_sec_offset, DW_CLS_PTR, int64(loc.Len()), loc)

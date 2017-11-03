@@ -16,9 +16,7 @@ import (
 )
 
 // architecture-independent object file output
-const (
-	ArhdrSize = 60
-)
+const ArhdrSize = 60
 
 func formathdr(arhdr []byte, name string, size int64) {
 	copy(arhdr[:], fmt.Sprintf("%-16s%-12d%-6d%-6d%-8o%-10d`\n", name, 0, 0, 0, 0644, size))
@@ -62,6 +60,7 @@ func dumpobj1(outfile string, mode int) {
 		fmt.Printf("can't create %s: %v\n", outfile, err)
 		errorexit()
 	}
+	defer bout.Close()
 
 	startobj := int64(0)
 	var arhdr [ArhdrSize]byte
@@ -108,7 +107,6 @@ func dumpobj1(outfile string, mode int) {
 	}
 
 	if mode&modeLinkerObj == 0 {
-		bout.Close()
 		return
 	}
 
@@ -170,8 +168,6 @@ func dumpobj1(outfile string, mode int) {
 		formathdr(arhdr[:], "_go_.o", size)
 		bout.Write(arhdr[:])
 	}
-
-	bout.Close()
 }
 
 func addptabs() {
@@ -219,14 +215,15 @@ func dumpGlobal(n *Node) {
 
 func dumpGlobalConst(n *Node) {
 	// only export typed constants
-	if n.Type == nil {
+	t := n.Type
+	if t == nil {
 		return
 	}
 	if n.Sym.Pkg != localpkg {
 		return
 	}
 	// only export integer constants for now
-	switch n.Type.Etype {
+	switch t.Etype {
 	case TINT8:
 	case TINT16:
 	case TINT32:
@@ -239,10 +236,20 @@ func dumpGlobalConst(n *Node) {
 	case TUINT:
 	case TUINTPTR:
 		// ok
+	case TIDEAL:
+		if !Isconst(n, CTINT) {
+			return
+		}
+		x := n.Val().U.(*Mpint)
+		if x.Cmp(minintval[TINT]) < 0 || x.Cmp(maxintval[TINT]) > 0 {
+			return
+		}
+		// Ideal integers we export as int (if they fit).
+		t = types.Types[TINT]
 	default:
 		return
 	}
-	Ctxt.DwarfIntConst(myimportpath, n.Sym.Name, typesymname(n.Type), n.Int64())
+	Ctxt.DwarfIntConst(myimportpath, n.Sym.Name, typesymname(t), n.Int64())
 }
 
 func dumpglobls() {

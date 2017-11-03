@@ -23,6 +23,8 @@ import (
 )
 
 func cmdtest() {
+	gogcflags = os.Getenv("GO_GCFLAGS")
+
 	var t tester
 	var noRebuild bool
 	flag.BoolVar(&t.listMode, "list", false, "list available tests")
@@ -85,6 +87,8 @@ type distTest struct {
 }
 
 func (t *tester) run() {
+	timelog("start", "dist test")
+
 	var exeSuffix string
 	if goos == "windows" {
 		exeSuffix = ".exe"
@@ -112,12 +116,12 @@ func (t *tester) run() {
 
 	if t.rebuild {
 		t.out("Building packages and commands.")
-		cmd := exec.Command("go", "install", "-a", "-v", "std", "cmd")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			log.Fatalf("building packages and commands: %v", err)
-		}
+		// Rebuilding is a shortened bootstrap.
+		// See cmdbootstrap for a description of the overall process.
+		goInstall("go", toolchain...)
+		goInstall("go", toolchain...)
+		goInstall("go", "std", "cmd")
+		checkNotStale("go", "std", "cmd")
 	}
 
 	if t.iOS() {
@@ -203,6 +207,7 @@ func (t *tester) run() {
 		}
 	}
 	t.runPending(nil)
+	timelog("end", "dist test")
 	if t.failed {
 		fmt.Println("\nFAILED")
 		os.Exit(1)
@@ -266,13 +271,15 @@ func (t *tester) registerStdTest(pkg string) {
 				return nil
 			}
 			t.runPending(dt)
+			timelog("start", dt.name)
+			defer timelog("end", dt.name)
 			ranGoTest = true
 			args := []string{
 				"test",
 				"-short",
 				t.tags(),
 				t.timeout(180),
-				"-gcflags=" + os.Getenv("GO_GCFLAGS"),
+				"-gcflags=" + gogcflags,
 			}
 			if t.race {
 				args = append(args, "-race")
@@ -302,6 +309,8 @@ func (t *tester) registerRaceBenchTest(pkg string) {
 				return nil
 			}
 			t.runPending(dt)
+			timelog("start", dt.name)
+			defer timelog("end", dt.name)
 			ranGoBench = true
 			args := []string{
 				"test",
@@ -334,7 +343,7 @@ func (t *tester) registerTests() {
 			osarch := k
 			t.tests = append(t.tests, distTest{
 				name:    "vet/" + osarch,
-				heading: "go vet std cmd",
+				heading: "cmd/vet/all",
 				fn: func(dt *distTest) error {
 					t.addCmd(dt, "src/cmd/vet/all", "go", "run", "main.go", "-p="+osarch)
 					return nil
@@ -393,9 +402,9 @@ func (t *tester) registerTests() {
 		testName := "runtime:cpu124"
 		t.tests = append(t.tests, distTest{
 			name:    testName,
-			heading: "GOMAXPROCS=2 runtime -cpu=1,2,4",
+			heading: "GOMAXPROCS=2 runtime -cpu=1,2,4 -quick",
 			fn: func(dt *distTest) error {
-				cmd := t.addCmd(dt, "src", "go", "test", "-short", t.timeout(300), t.tags(), "runtime", "-cpu=1,2,4")
+				cmd := t.addCmd(dt, "src", "go", "test", "-short", t.timeout(300), t.tags(), "runtime", "-cpu=1,2,4", "-quick")
 				// We set GOMAXPROCS=2 in addition to -cpu=1,2,4 in order to test runtime bootstrap code,
 				// creation of first goroutines and first garbage collections in the parallel setting.
 				cmd.Env = append(os.Environ(), "GOMAXPROCS=2")
@@ -412,6 +421,8 @@ func (t *tester) registerTests() {
 			heading: "cmd/go terminal test",
 			fn: func(dt *distTest) error {
 				t.runPending(dt)
+				timelog("start", dt.name)
+				defer timelog("end", dt.name)
 				if !stdOutErrAreTerminals() {
 					fmt.Println("skipping terminal test; stdout/stderr not terminals")
 					return nil
@@ -436,6 +447,8 @@ func (t *tester) registerTests() {
 			heading: "moved GOROOT",
 			fn: func(dt *distTest) error {
 				t.runPending(dt)
+				timelog("start", dt.name)
+				defer timelog("end", dt.name)
 				moved := goroot + "-moved"
 				if err := os.Rename(goroot, moved); err != nil {
 					if goos == "windows" {
@@ -578,7 +591,12 @@ func (t *tester) registerTests() {
 	if t.hasBash() && t.cgoEnabled && goos != "android" && goos != "darwin" {
 		t.registerTest("testgodefs", "../misc/cgo/testgodefs", "./test.bash")
 	}
-	if t.cgoEnabled {
+
+	// Don't run these tests with $GO_GCFLAGS because most of them
+	// assume that they can run "go install" with no -gcflags and not
+	// recompile the entire standard library. If make.bash ran with
+	// special -gcflags, that's not true.
+	if t.cgoEnabled && gogcflags == "" {
 		if t.cgoTestSOSupported() {
 			t.tests = append(t.tests, distTest{
 				name:    "testso",
@@ -689,6 +707,8 @@ func (t *tester) registerTest1(seq bool, name, dirBanner, bin string, args ...st
 		fn: func(dt *distTest) error {
 			if seq {
 				t.runPending(dt)
+				timelog("start", name)
+				defer timelog("end", name)
 				return t.dirCmd(filepath.Join(goroot, "src", dirBanner), bin, args...).Run()
 			}
 			t.addCmd(dt, filepath.Join(goroot, "src", dirBanner), bin, args...)
@@ -817,7 +837,8 @@ func (t *tester) supportedBuildmode(mode string) bool {
 		switch pair {
 		case "linux-386", "linux-amd64", "linux-arm", "linux-arm64", "linux-ppc64le",
 			"darwin-amd64", "darwin-386",
-			"android-arm", "android-arm64", "android-386":
+			"android-arm", "android-arm64", "android-386",
+			"windows-amd64", "windows-386":
 			return true
 		}
 		return false
@@ -859,6 +880,8 @@ func (t *tester) registerHostTest(name, heading, dir, pkg string) {
 		heading: heading,
 		fn: func(dt *distTest) error {
 			t.runPending(dt)
+			timelog("start", name)
+			defer timelog("end", name)
 			return t.runHostTest(dir, pkg)
 		},
 	})
@@ -930,6 +953,7 @@ func (t *tester) cgoTest(dt *distTest) error {
 // running in parallel with earlier tests, or if it has some other reason
 // for needing the earlier tests to be done.
 func (t *tester) runPending(nextTest *distTest) {
+	checkNotStale("go", "std", "cmd")
 	worklist := t.worklist
 	t.worklist = nil
 	for _, w := range worklist {
@@ -937,10 +961,13 @@ func (t *tester) runPending(nextTest *distTest) {
 		w.end = make(chan bool)
 		go func(w *work) {
 			if !<-w.start {
+				timelog("skip", w.dt.name)
 				w.out = []byte(fmt.Sprintf("skipped due to earlier error\n"))
 			} else {
+				timelog("start", w.dt.name)
 				w.out, w.err = w.cmd.CombinedOutput()
 			}
+			timelog("end", w.dt.name)
 			w.end <- true
 		}(w)
 	}
@@ -979,6 +1006,7 @@ func (t *tester) runPending(nextTest *distTest) {
 			log.Printf("Failed: %v", w.err)
 			t.failed = true
 		}
+		checkNotStale("go", "std", "cmd")
 	}
 	if t.failed && !t.keepGoing {
 		log.Fatal("FAILED")
@@ -1013,6 +1041,9 @@ func (t *tester) cgoTestSOSupported() bool {
 
 func (t *tester) cgoTestSO(dt *distTest, testpath string) error {
 	t.runPending(dt)
+
+	timelog("start", dt.name)
+	defer timelog("end", dt.name)
 
 	dir := filepath.Join(goroot, testpath)
 

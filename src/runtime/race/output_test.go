@@ -19,6 +19,16 @@ import (
 )
 
 func TestOutput(t *testing.T) {
+	pkgdir, err := ioutil.TempDir("", "go-build-race-output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(pkgdir)
+	out, err := exec.Command(testenv.GoToolPath(t), "install", "-race", "-pkgdir="+pkgdir, "-gcflags=-l", "testing").CombinedOutput()
+	if err != nil {
+		t.Fatalf("go install -race: %v\n%s", err, out)
+	}
+
 	for _, test := range tests {
 		if test.goos != "" && test.goos != runtime.GOOS {
 			t.Logf("test %v runs only on %v, skipping: ", test.name, test.goos)
@@ -47,7 +57,7 @@ func TestOutput(t *testing.T) {
 			t.Fatalf("failed to close file: %v", err)
 		}
 		// Pass -l to the compiler to test stack traces.
-		cmd := exec.Command(testenv.GoToolPath(t), test.run, "-race", "-gcflags=-l", src)
+		cmd := exec.Command(testenv.GoToolPath(t), test.run, "-race", "-pkgdir="+pkgdir, "-gcflags=-l", src)
 		// GODEBUG spoils program output, GOMAXPROCS makes it flaky.
 		for _, env := range os.Environ() {
 			if strings.HasPrefix(env, "GODEBUG=") ||
@@ -253,7 +263,7 @@ Previous write at 0x[0-9,a-f]+ by goroutine [0-9]:
   main\.goCallback\(\)
       .*/main\.go:27 \+0x[0-9,a-f]+
   main._cgoexpwrap_[0-9a-z]+_goCallback\(\)
-      .*/_cgo_gotypes\.go:[0-9]+ \+0x[0-9,a-f]+
+      .*_cgo_gotypes\.go:[0-9]+ \+0x[0-9,a-f]+
 
 Goroutine [0-9] \(running\) created at:
   runtime\.newextram\(\)

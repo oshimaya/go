@@ -116,17 +116,6 @@ TEXT runtime·gosave(SB), NOSPLIT, $-8-8
 // restore state from Gobuf; longjmp
 TEXT runtime·gogo(SB), NOSPLIT, $16-8
 	MOVD	buf+0(FP), R5
-
-	// If ctxt is not nil, invoke deletion barrier before overwriting.
-	MOVD	gobuf_ctxt(R5), R1
-	CMPBEQ	R1, $0, nilctxt
-	MOVD	$gobuf_ctxt(R5), R1
-	MOVD	R1, 8(R15)
-	MOVD	R0, 16(R15)
-	BL	runtime·writebarrierptr_prewrite(SB)
-	MOVD	buf+0(FP), R5
-
-nilctxt:
 	MOVD	gobuf_g(R5), g	// make sure g is not nil
 	BL	runtime·save_g(SB)
 
@@ -235,9 +224,12 @@ switch:
 
 noswitch:
 	// already on m stack, just call directly
+	// Using a tail call here cleans up tracebacks since we won't stop
+	// at an intermediate systemstack.
 	MOVD	0(R12), R3	// code pointer
-	BL	(R3)
-	RET
+	MOVD	0(R15), LR	// restore LR
+	ADD	$8, R15
+	BR	(R3)
 
 /*
  * support for morestack
@@ -272,7 +264,7 @@ TEXT runtime·morestack(SB),NOSPLIT|NOFRAME,$0-0
 	MOVD	LR, R8
 	MOVD	R8, (g_sched+gobuf_pc)(g)
 	MOVD	R5, (g_sched+gobuf_lr)(g)
-	// newstack will fill gobuf.ctxt.
+	MOVD	R12, (g_sched+gobuf_ctxt)(g)
 
 	// Called from f.
 	// Set m->morebuf to f's caller.
@@ -285,9 +277,8 @@ TEXT runtime·morestack(SB),NOSPLIT|NOFRAME,$0-0
 	BL	runtime·save_g(SB)
 	MOVD	(g_sched+gobuf_sp)(g), R15
 	// Create a stack frame on g0 to call newstack.
-	MOVD	$0, -16(R15)	// Zero saved LR in frame
-	SUB	$16, R15
-	MOVD	R12, 8(R15)	// ctxt argument
+	MOVD	$0, -8(R15)	// Zero saved LR in frame
+	SUB	$8, R15
 	BL	runtime·newstack(SB)
 
 	// Not reached, but make sure the return PC from the call to newstack
@@ -924,7 +915,8 @@ TEXT runtime·sigreturn(SB),NOSPLIT,$0-0
 	RET
 
 TEXT ·publicationBarrier(SB),NOSPLIT|NOFRAME,$0-0
-	SYNC
+        // Stores are already ordered on s390x, so this is just a
+        // compile barrier.
 	RET
 
 TEXT runtime·cmpstring(SB),NOSPLIT|NOFRAME,$0-40
