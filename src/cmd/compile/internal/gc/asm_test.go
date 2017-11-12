@@ -265,7 +265,7 @@ var allAsmTests = []*asmTests{
 	{
 		arch:    "ppc64le",
 		os:      "linux",
-		imports: []string{"math", "math/bits"},
+		imports: []string{"encoding/binary", "math", "math/bits"},
 		tests:   linuxPPC64LETests,
 	},
 	{
@@ -1816,6 +1816,26 @@ var linuxS390XTests = []*asmTest{
 }
 
 var linuxARMTests = []*asmTest{
+	// multiplication by powers of two
+	{
+		fn: `
+		func $(n int) int {
+			return 16*n
+		}
+		`,
+		pos: []string{"\tSLL\t[$]4"},
+		neg: []string{"\tMUL\t"},
+	},
+	{
+		fn: `
+		func $(n int) int {
+			return -32*n
+		}
+		`,
+		pos: []string{"\tSLL\t[$]5"},
+		neg: []string{"\tMUL\t"},
+	},
+
 	{
 		fn: `
 		func f0(x uint32) uint32 {
@@ -1943,6 +1963,26 @@ var linuxARMTests = []*asmTest{
 }
 
 var linuxARM64Tests = []*asmTest{
+	// multiplication by powers of two
+	{
+		fn: `
+		func $(n int) int {
+			return 64*n
+		}
+		`,
+		pos: []string{"\tLSL\t[$]6"},
+		neg: []string{"\tMUL\t"},
+	},
+	{
+		fn: `
+		func $(n int) int {
+			return -128*n
+		}
+		`,
+		pos: []string{"\tLSL\t[$]7"},
+		neg: []string{"\tMUL\t"},
+	},
+
 	{
 		fn: `
 		func f0(x uint64) uint64 {
@@ -2357,6 +2397,61 @@ var linuxPPC64LETests = []*asmTest{
                 }
                 `,
 		pos: []string{"\tFABS\t"},
+	},
+
+	{
+		fn: `
+		func f14(b []byte) uint16 {
+			return binary.LittleEndian.Uint16(b)
+	}
+		`,
+		pos: []string{"\tMOVHZ\t"},
+	},
+	{
+		fn: `
+		func f15(b []byte) uint32 {
+			return binary.LittleEndian.Uint32(b)
+		}
+		`,
+		pos: []string{"\tMOVWZ\t"},
+	},
+
+	{
+		fn: `
+		func f16(b []byte) uint64 {
+			return binary.LittleEndian.Uint64(b)
+		}
+		`,
+		pos: []string{"\tMOVD\t"},
+		neg: []string{"MOVBZ", "MOVHZ", "MOVWZ"},
+	},
+
+	{
+		fn: `
+		func f17(b []byte, v uint16) {
+			binary.LittleEndian.PutUint16(b, v)
+		}
+		`,
+		pos: []string{"\tMOVH\t"},
+	},
+
+	{
+		fn: `
+		func f18(b []byte, v uint32) {
+			binary.LittleEndian.PutUint32(b, v)
+		}
+		`,
+		pos: []string{"\tMOVW\t"},
+	},
+
+	{
+		fn: `
+		func f19(b []byte, v uint64) {
+			binary.LittleEndian.PutUint64(b, v)
+		}
+		`,
+		pos: []string{"\tMOVD\t"},
+		neg: []string{"MOVB", "MOVH", "MOVW"},
 	},
 
 	{

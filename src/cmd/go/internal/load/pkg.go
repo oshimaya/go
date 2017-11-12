@@ -97,7 +97,8 @@ type PackageInternal struct {
 	Imports      []*Package           // this package's direct imports
 	RawImports   []string             // this package's original imports as they appear in the text of the program
 	ForceLibrary bool                 // this package is a library (even if named "main")
-	Cmdline      bool                 // defined by files listed on command line
+	CmdlineFiles bool                 // package built from files listed on command line
+	CmdlinePkg   bool                 // package listed on command line
 	Local        bool                 // imported via local path (./ or ../)
 	LocalPrefix  string               // interpret ./ and ../ imports relative to this prefix
 	ExeName      string               // desired name for temporary executable
@@ -105,6 +106,11 @@ type PackageInternal struct {
 	CoverVars    map[string]*CoverVar // variables created by coverage analysis
 	OmitDebug    bool                 // tell linker not to write debug information
 	GobinSubdir  bool                 // install target would be subdir of GOBIN
+
+	Asmflags   []string // -asmflags for this package
+	Gcflags    []string // -gcflags for this package
+	Ldflags    []string // -ldflags for this package
+	Gccgoflags []string // -gccgoflags for this package
 }
 
 type NoGoError struct {
@@ -345,7 +351,7 @@ func makeImportValid(r rune) rune {
 
 // Mode flags for loadImport and download (in get.go).
 const (
-	// useVendor means that loadImport should do vendor expansion
+	// UseVendor means that loadImport should do vendor expansion
 	// (provided the vendoring experiment is enabled).
 	// That is, useVendor means that the import path came from
 	// a source file and has not been vendor-expanded yet.
@@ -356,12 +362,12 @@ const (
 	// disallowVendor will reject direct use of paths containing /vendor/.
 	UseVendor = 1 << iota
 
-	// getTestDeps is for download (part of "go get") and indicates
+	// GetTestDeps is for download (part of "go get") and indicates
 	// that test dependencies should be fetched too.
 	GetTestDeps
 )
 
-// loadImport scans the directory named by path, which must be an import path,
+// LoadImport scans the directory named by path, which must be an import path,
 // but possibly a local import path (an absolute file system path or one beginning
 // with ./ or ../). A local relative path is interpreted relative to srcDir.
 // It returns a *Package describing the package found in that directory.
@@ -837,6 +843,26 @@ var foldPath = make(map[string]string)
 func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 	p.copyBuild(bp)
 
+	// Decide whether p was listed on the command line.
+	// Given that load is called while processing the command line,
+	// you might think we could simply pass a flag down into load
+	// saying whether we are loading something named on the command
+	// line or something to satisfy an import. But the first load of a
+	// package named on the command line may be as a dependency
+	// of an earlier package named on the command line, not when we
+	// get to that package during command line processing.
+	// For example "go test fmt reflect" will load reflect as a dependency
+	// of fmt before it attempts to load as a command-line argument.
+	// Because loads are cached, the later load will be a no-op,
+	// so it is important that the first load can fill in CmdlinePkg correctly.
+	// Hence the call to an explicit matching check here.
+	p.Internal.CmdlinePkg = isCmdlinePkg(p)
+
+	p.Internal.Asmflags = BuildAsmflags.For(p)
+	p.Internal.Gcflags = BuildGcflags.For(p)
+	p.Internal.Ldflags = BuildLdflags.For(p)
+	p.Internal.Gccgoflags = BuildGccgoflags.For(p)
+
 	// The localPrefix is the path we interpret ./ imports relative to.
 	// Synthesized main packages sometimes override this.
 	if p.Internal.Local {
@@ -944,26 +970,6 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 		for _, dep := range LinkerDeps(p) {
 			addImport(dep)
 		}
-	}
-
-	// If runtime/internal/sys/zversion.go changes, it very likely means the
-	// compiler has been recompiled with that new version, so all existing
-	// archives are now stale. Make everything appear to import runtime/internal/sys,
-	// so that in this situation everything will appear stale and get recompiled.
-	// Due to the rules for visibility of internal packages, things outside runtime
-	// must import runtime, and runtime imports runtime/internal/sys.
-	// Content-based staleness that includes a check of the compiler version
-	// will make this hack unnecessary; once that lands, this whole comment
-	// and switch statement should be removed.
-	switch {
-	case p.Standard && p.ImportPath == "runtime/internal/sys":
-		// nothing
-	case p.Standard && p.ImportPath == "unsafe":
-		// nothing - not a real package, and used by runtime
-	case p.Standard && strings.HasPrefix(p.ImportPath, "runtime"):
-		addImport("runtime/internal/sys")
-	default:
-		addImport("runtime")
 	}
 
 	// Check for case-insensitive collision of input files.
@@ -1117,12 +1123,13 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 	}
 }
 
-// LinkerDeps returns the list of linker-induced dependencies for p.
+// LinkerDeps returns the list of linker-induced dependencies for main package p.
 func LinkerDeps(p *Package) []string {
-	var deps []string
+	// Everything links runtime.
+	deps := []string{"runtime"}
 
 	// External linking mode forces an import of runtime/cgo.
-	if cfg.ExternalLinkingForced() {
+	if externalLinkingForced(p) {
 		deps = append(deps, "runtime/cgo")
 	}
 	// On ARM with GOARM=5, it forces an import of math, for soft floating point.
@@ -1139,6 +1146,46 @@ func LinkerDeps(p *Package) []string {
 	}
 
 	return deps
+}
+
+// externalLinkingForced reports whether external linking is being
+// forced even for programs that do not use cgo.
+func externalLinkingForced(p *Package) bool {
+	// Some targets must use external linking even inside GOROOT.
+	switch cfg.BuildContext.GOOS {
+	case "android":
+		return true
+	case "darwin":
+		switch cfg.BuildContext.GOARCH {
+		case "arm", "arm64":
+			return true
+		}
+	}
+
+	if !cfg.BuildContext.CgoEnabled {
+		return false
+	}
+	// Currently build modes c-shared, pie (on systems that do not
+	// support PIE with internal linking mode (currently all
+	// systems: issue #18968)), plugin, and -linkshared force
+	// external linking mode, as of course does
+	// -ldflags=-linkmode=external. External linking mode forces
+	// an import of runtime/cgo.
+	pieCgo := cfg.BuildBuildmode == "pie"
+	linkmodeExternal := false
+	if p != nil {
+		ldflags := BuildLdflags.For(p)
+		for i, a := range ldflags {
+			if a == "-linkmode=external" {
+				linkmodeExternal = true
+			}
+			if a == "-linkmode" && i+1 < len(ldflags) && ldflags[i+1] == "external" {
+				linkmodeExternal = true
+			}
+		}
+	}
+
+	return cfg.BuildBuildmode == "c-shared" || cfg.BuildBuildmode == "plugin" || pieCgo || cfg.BuildLinkshared || linkmodeExternal
 }
 
 // mkAbs rewrites list, which must be paths relative to p.Dir,
@@ -1421,7 +1468,7 @@ func GoFilesPackage(gofiles []string) *Package {
 	bp, err := ctxt.ImportDir(dir, 0)
 	pkg := new(Package)
 	pkg.Internal.Local = true
-	pkg.Internal.Cmdline = true
+	pkg.Internal.CmdlineFiles = true
 	stk.Push("main")
 	pkg.load(&stk, bp, err)
 	stk.Pop()

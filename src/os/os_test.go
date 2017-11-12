@@ -721,6 +721,27 @@ func TestHardLink(t *testing.T) {
 	if !SameFile(tostat, fromstat) {
 		t.Errorf("link %q, %q did not create hard link", to, from)
 	}
+	// We should not be able to perform the same Link() a second time
+	err = Link(to, from)
+	switch err := err.(type) {
+	case *LinkError:
+		if err.Op != "link" {
+			t.Errorf("Link(%q, %q) err.Op = %q; want %q", to, from, err.Op, "link")
+		}
+		if err.Old != to {
+			t.Errorf("Link(%q, %q) err.Old = %q; want %q", to, from, err.Old, to)
+		}
+		if err.New != from {
+			t.Errorf("Link(%q, %q) err.New = %q; want %q", to, from, err.New, from)
+		}
+		if !IsExist(err.Err) {
+			t.Errorf("Link(%q, %q) err.Err = %q; want %q", to, from, err.Err, "file exists error")
+		}
+	case nil:
+		t.Errorf("link %q, %q: expected error, got nil", from, to)
+	default:
+		t.Errorf("link %q, %q: expected %T, got %T %v", from, to, new(LinkError), err, err)
+	}
 }
 
 // chtmpdir changes the working directory to a new temporary directory and
@@ -1169,9 +1190,9 @@ func testChtimes(t *testing.T, name string) {
 			// the contents are accessed; also, it is set
 			// whenever mtime is set.
 		case "netbsd":
-			t.Logf("AccessTime didn't go backwards; was=%d, after=%d (Ignoring. See NetBSD issue golang.org/issue/19293)", at, pat)
+			t.Logf("AccessTime didn't go backwards; was=%v, after=%v (Ignoring. See NetBSD issue golang.org/issue/19293)", at, pat)
 		default:
-			t.Errorf("AccessTime didn't go backwards; was=%d, after=%d", at, pat)
+			t.Errorf("AccessTime didn't go backwards; was=%v, after=%v", at, pat)
 		}
 	}
 

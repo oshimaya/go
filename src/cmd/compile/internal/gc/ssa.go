@@ -203,7 +203,7 @@ func buildssa(fn *Node, worker int) *ssa.Func {
 
 	for _, b := range s.f.Blocks {
 		if b.Pos != src.NoXPos {
-			updateUnsetPredPos(b)
+			s.updateUnsetPredPos(b)
 		}
 	}
 
@@ -217,26 +217,35 @@ func buildssa(fn *Node, worker int) *ssa.Func {
 	return s.f
 }
 
-func updateUnsetPredPos(b *ssa.Block) {
+// updateUnsetPredPos propagates the earliest-value position information for b
+// towards all of b's predecessors that need a position, and recurs on that
+// predecessor if its position is updated. B should have a non-empty position.
+func (s *state) updateUnsetPredPos(b *ssa.Block) {
+	if b.Pos == src.NoXPos {
+		s.Fatalf("Block %s should have a position", b)
+	}
+	bestPos := src.NoXPos
 	for _, e := range b.Preds {
 		p := e.Block()
-		if p.Pos == src.NoXPos && p.Kind == ssa.BlockPlain {
-			pos := b.Pos
-			// TODO: This ought to be produce a better result, but it causes
-			// line 46 ("scanner := bufio.NewScanner(reader)")
-			// to drop out of gdb-dbg and dlv-dbg debug-next traces for hist.go.
+		if !p.LackingPos() {
+			continue
+		}
+		if bestPos == src.NoXPos {
+			bestPos = b.Pos
 			for _, v := range b.Values {
-				if v.Op == ssa.OpVarDef || v.Op == ssa.OpVarKill || v.Op == ssa.OpVarLive || v.Op == ssa.OpCopy && v.Type == types.TypeMem {
+				if v.LackingPos() {
 					continue
 				}
 				if v.Pos != src.NoXPos {
-					pos = v.Pos
+					// Assume values are still in roughly textual order;
+					// TODO: could also seek minimum position?
+					bestPos = v.Pos
 					break
 				}
 			}
-			p.Pos = pos
-			updateUnsetPredPos(p) // We do not expect long chains of these, thus recursion is okay.
 		}
+		p.Pos = bestPos
+		s.updateUnsetPredPos(p) // We do not expect long chains of these, thus recursion is okay.
 	}
 	return
 }
@@ -372,7 +381,7 @@ func (s *state) endBlock() *ssa.Block {
 	s.defvars[b.ID] = s.vars
 	s.curBlock = nil
 	s.vars = nil
-	if len(b.Values) == 0 && b.Kind == ssa.BlockPlain {
+	if b.LackingPos() {
 		// Empty plain blocks get the line of their successor (handled after all blocks created),
 		// except for increment blocks in For statements (handled in ssa conversion of OFOR),
 		// and for blocks ending in GOTO/BREAK/CONTINUE.
@@ -817,7 +826,9 @@ func (s *state) stmt(n *Node) {
 
 	case ORETURN:
 		s.stmtList(n.List)
-		s.exit()
+		b := s.exit()
+		b.Pos = s.lastPos
+
 	case ORETJMP:
 		s.stmtList(n.List)
 		b := s.exit()
@@ -3174,7 +3185,7 @@ func (s *state) intrinsicArgs(n *Node) []*ssa.Value {
 	temps := map[*Node]*ssa.Value{}
 	for _, a := range n.List.Slice() {
 		if a.Op != OAS {
-			s.Fatalf("non-assignment as a function argument %s", opnames[a.Op])
+			s.Fatalf("non-assignment as a function argument %v", a.Op)
 		}
 		l, r := a.Left, a.Right
 		switch l.Op {
@@ -3194,7 +3205,7 @@ func (s *state) intrinsicArgs(n *Node) []*ssa.Value {
 			}
 			args = append(args, callArg{l.Xoffset, v})
 		default:
-			s.Fatalf("function argument assignment target not allowed: %s", opnames[l.Op])
+			s.Fatalf("function argument assignment target not allowed: %v", l.Op)
 		}
 	}
 	sort.Sort(byOffset(args))
@@ -3736,8 +3747,9 @@ func (s *state) storeTypePtrs(t *types.Type, left, right *ssa.Value) {
 		ptr := s.newValue1(ssa.OpStringPtr, s.f.Config.Types.BytePtr, right)
 		s.vars[&memVar] = s.newValue3A(ssa.OpStore, types.TypeMem, s.f.Config.Types.BytePtr, left, ptr, s.mem())
 	case t.IsSlice():
-		ptr := s.newValue1(ssa.OpSlicePtr, s.f.Config.Types.BytePtr, right)
-		s.vars[&memVar] = s.newValue3A(ssa.OpStore, types.TypeMem, s.f.Config.Types.BytePtr, left, ptr, s.mem())
+		elType := types.NewPtr(t.Elem())
+		ptr := s.newValue1(ssa.OpSlicePtr, elType, right)
+		s.vars[&memVar] = s.newValue3A(ssa.OpStore, types.TypeMem, elType, left, ptr, s.mem())
 	case t.IsInterface():
 		// itab field is treated as a scalar.
 		idata := s.newValue1(ssa.OpIData, s.f.Config.Types.BytePtr, right)
@@ -4511,7 +4523,7 @@ func genssa(f *ssa.Func, pp *Progs) {
 	s.pp = pp
 	var progToValue map[*obj.Prog]*ssa.Value
 	var progToBlock map[*obj.Prog]*ssa.Block
-	var valueToProg []*obj.Prog
+	var valueToProgAfter []*obj.Prog // The first Prog following computation of a value v; v is visible at this point.
 	var logProgs = e.log
 	if logProgs {
 		progToValue = make(map[*obj.Prog]*ssa.Value, f.NumValues())
@@ -4529,8 +4541,9 @@ func genssa(f *ssa.Func, pp *Progs) {
 	logLocationLists := Debug_locationlist != 0
 	if Ctxt.Flag_locationlists {
 		e.curfn.Func.DebugInfo = ssa.BuildFuncDebug(f, logLocationLists)
-		valueToProg = make([]*obj.Prog, f.NumValues())
+		valueToProgAfter = make([]*obj.Prog, f.NumValues())
 	}
+
 	// Emit basic blocks
 	for i, b := range f.Blocks {
 		s.bstart[b.ID] = s.pp.next
@@ -4579,7 +4592,7 @@ func genssa(f *ssa.Func, pp *Progs) {
 			}
 
 			if Ctxt.Flag_locationlists {
-				valueToProg[v.ID] = x
+				valueToProgAfter[v.ID] = s.pp.next
 			}
 			if logProgs {
 				for ; x != s.pp.next; x = x.Link {
@@ -4614,7 +4627,7 @@ func genssa(f *ssa.Func, pp *Progs) {
 					if loc.Start == ssa.BlockStart {
 						loc.StartProg = s.bstart[f.Blocks[i].ID]
 					} else {
-						loc.StartProg = valueToProg[loc.Start.ID]
+						loc.StartProg = valueToProgAfter[loc.Start.ID]
 					}
 					if loc.End == nil {
 						Fatalf("empty loc %v compiling %v", loc, f.Name)
@@ -4630,7 +4643,12 @@ func genssa(f *ssa.Func, pp *Progs) {
 							loc.EndProg = s.bstart[f.Blocks[i+1].ID]
 						}
 					} else {
-						loc.EndProg = valueToProg[loc.End.ID]
+						// Advance the "end" forward by one; the end-of-range doesn't take effect
+						// until the instruction actually executes.
+						loc.EndProg = valueToProgAfter[loc.End.ID].Link
+						if loc.EndProg == nil {
+							Fatalf("nil loc.EndProg compiling %v, loc=%v", f.Name, loc)
+						}
 					}
 					if !logLocationLists {
 						loc.Start = nil
@@ -5049,7 +5067,7 @@ func (e *ssafn) StringData(s string) interface{} {
 	if e.strings == nil {
 		e.strings = make(map[string]interface{})
 	}
-	data := stringsym(s)
+	data := stringsym(e.curfn.Pos, s)
 	e.strings[s] = data
 	return data
 }

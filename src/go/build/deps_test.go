@@ -154,7 +154,7 @@ var pkgDeps = map[string][]string{
 		"syscall",
 	},
 
-	"internal/poll": {"L0", "internal/race", "syscall", "time", "unicode/utf16", "unicode/utf8"},
+	"internal/poll": {"L0", "internal/race", "syscall", "time", "unicode/utf16", "unicode/utf8", "internal/syscall/windows"},
 	"os":            {"L1", "os", "syscall", "time", "internal/poll", "internal/syscall/windows"},
 	"path/filepath": {"L2", "os", "syscall", "internal/syscall/windows"},
 	"io/ioutil":     {"L2", "os", "path/filepath", "time"},
@@ -266,7 +266,7 @@ var pkgDeps = map[string][]string{
 	"math/big":                 {"L4"},
 	"mime":                     {"L4", "OS", "syscall", "internal/syscall/windows/registry"},
 	"mime/quotedprintable":     {"L4"},
-	"net/internal/socktest":    {"L4", "OS", "syscall"},
+	"net/internal/socktest":    {"L4", "OS", "syscall", "internal/syscall/windows"},
 	"net/url":                  {"L4"},
 	"plugin":                   {"L0", "OS", "CGO"},
 	"runtime/pprof/internal/profile": {"L4", "OS", "compress/gzip", "regexp"},
@@ -377,7 +377,8 @@ var pkgDeps = map[string][]string{
 	},
 	"crypto/x509": {
 		"L4", "CRYPTO-MATH", "OS", "CGO",
-		"crypto/x509/pkix", "encoding/pem", "encoding/hex", "net", "os/user", "syscall",
+		"crypto/x509/pkix", "encoding/pem", "encoding/hex", "net", "os/user", "syscall", "net/url",
+		"golang_org/x/crypto/cryptobyte", "golang_org/x/crypto/cryptobyte/asn1",
 	},
 	"crypto/x509/pkix": {"L4", "CRYPTO-MATH", "encoding/hex"},
 

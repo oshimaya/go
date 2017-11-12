@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func init() {
@@ -36,10 +37,10 @@ func TestBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open(c1) (create): %v", err)
 	}
-	if err := c1.putIndexEntry(dummyID(1), dummyID(12), 13); err != nil {
+	if err := c1.putIndexEntry(dummyID(1), dummyID(12), 13, true); err != nil {
 		t.Fatalf("addIndexEntry: %v", err)
 	}
-	if err := c1.putIndexEntry(dummyID(1), dummyID(2), 3); err != nil { // overwrite entry
+	if err := c1.putIndexEntry(dummyID(1), dummyID(2), 3, true); err != nil { // overwrite entry
 		t.Fatalf("addIndexEntry: %v", err)
 	}
 	if out, size, err := c1.Get(dummyID(1)); err != nil || out != dummyID(2) || size != 3 {
@@ -53,7 +54,7 @@ func TestBasic(t *testing.T) {
 	if out, size, err := c2.Get(dummyID(1)); err != nil || out != dummyID(2) || size != 3 {
 		t.Fatalf("c2.Get(1) = %x, %v, %v, want %x, %v, nil", out[:], size, err, dummyID(2), 3)
 	}
-	if err := c2.putIndexEntry(dummyID(2), dummyID(3), 4); err != nil {
+	if err := c2.putIndexEntry(dummyID(2), dummyID(3), 4, true); err != nil {
 		t.Fatalf("addIndexEntry: %v", err)
 	}
 	if out, size, err := c1.Get(dummyID(2)); err != nil || out != dummyID(3) || size != 4 {
@@ -79,7 +80,7 @@ func TestGrowth(t *testing.T) {
 	}
 
 	for i := 0; i < n; i++ {
-		if err := c.putIndexEntry(dummyID(i), dummyID(i*99), int64(i)*101); err != nil {
+		if err := c.putIndexEntry(dummyID(i), dummyID(i*99), int64(i)*101, true); err != nil {
 			t.Fatalf("addIndexEntry: %v", err)
 		}
 		id := ActionID(dummyID(i))
@@ -139,6 +140,55 @@ func TestVerifyPanic(t *testing.T) {
 	}()
 	c.PutBytes(id, []byte("def"))
 	t.Fatal("mismatched Put did not panic in verify mode")
+}
+
+func TestCacheLog(t *testing.T) {
+	dir, err := ioutil.TempDir("", "cachetest-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	c, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	c.now = func() time.Time { return time.Unix(1e9, 0) }
+
+	id := ActionID(dummyID(1))
+	c.Get(id)
+	c.PutBytes(id, []byte("abc"))
+	c.Get(id)
+
+	c, err = Open(dir)
+	if err != nil {
+		t.Fatalf("Open #2: %v", err)
+	}
+	c.now = func() time.Time { return time.Unix(1e9+1, 0) }
+	c.Get(id)
+
+	id2 := ActionID(dummyID(2))
+	c.Get(id2)
+	c.PutBytes(id2, []byte("abc"))
+	c.Get(id2)
+	c.Get(id)
+
+	data, err := ioutil.ReadFile(filepath.Join(dir, "log.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `1000000000 miss 0100000000000000000000000000000000000000000000000000000000000000
+1000000000 put 0100000000000000000000000000000000000000000000000000000000000000 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad 3
+1000000000 get 0100000000000000000000000000000000000000000000000000000000000000
+1000000001 get 0100000000000000000000000000000000000000000000000000000000000000
+1000000001 miss 0200000000000000000000000000000000000000000000000000000000000000
+1000000001 put 0200000000000000000000000000000000000000000000000000000000000000 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad 3
+1000000001 get 0200000000000000000000000000000000000000000000000000000000000000
+1000000001 get 0100000000000000000000000000000000000000000000000000000000000000
+`
+	if string(data) != want {
+		t.Fatalf("log:\n%s\nwant:\n%s", string(data), want)
+	}
 }
 
 func dummyID(x int) [HashSize]byte {

@@ -116,35 +116,27 @@ func (t *tester) run() {
 
 	if t.rebuild {
 		t.out("Building packages and commands.")
-		// Rebuilding is a shortened bootstrap.
-		// See cmdbootstrap for a description of the overall process.
-		goInstall("go", toolchain...)
-		goInstall("go", toolchain...)
-		goInstall("go", "std", "cmd")
-		checkNotStale("go", "std", "cmd")
+		// Force rebuild the whole toolchain.
+		goInstall("go", append([]string{"-a", "-i"}, toolchain...)...)
 	}
 
-	if t.iOS() {
-		// Install the Mach exception handler used to intercept
-		// EXC_BAD_ACCESS and convert it into a Go panic. This is
-		// necessary for a Go program running under lldb (the way
-		// we run tests). It is disabled by default because iOS
-		// apps are not allowed to access the exc_server symbol.
-		cmd := exec.Command("go", "install", "-a", "-tags", "lldb", "runtime/cgo")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			log.Fatalf("building mach exception handler: %v", err)
-		}
-
-		defer func() {
-			cmd := exec.Command("go", "install", "-a", "runtime/cgo")
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				log.Fatalf("reverting mach exception handler: %v", err)
-			}
-		}()
+	// Complete rebuild bootstrap, even with -no-rebuild.
+	// If everything is up-to-date, this is a no-op.
+	// If everything is not up-to-date, the first checkNotStale
+	// during the test process will kill the tests, so we might
+	// as well install the world.
+	// Now that for example "go install cmd/compile" does not
+	// also install runtime (you need "go install -i cmd/compile"
+	// for that), it's easy for previous workflows like
+	// "rebuild the compiler and then run run.bash"
+	// to break if we don't automatically refresh things here.
+	// Rebuilding is a shortened bootstrap.
+	// See cmdbootstrap for a description of the overall process.
+	if !t.listMode {
+		goInstall("go", append([]string{"-i"}, toolchain...)...)
+		goInstall("go", append([]string{"-i"}, toolchain...)...)
+		goInstall("go", "std", "cmd")
+		checkNotStale("go", "std", "cmd")
 	}
 
 	t.timeoutScale = 1
@@ -279,7 +271,7 @@ func (t *tester) registerStdTest(pkg string) {
 				"-short",
 				t.tags(),
 				t.timeout(180),
-				"-gcflags=" + gogcflags,
+				"-gcflags=all=" + gogcflags,
 			}
 			if t.race {
 				args = append(args, "-race")
@@ -466,15 +458,17 @@ func (t *tester) registerTests() {
 				}
 
 				// Run `go test fmt` in the moved GOROOT.
+				// Disable GOCACHE because it points back at the old GOROOT.
 				cmd := exec.Command(filepath.Join(moved, "bin", "go"), "test", "fmt")
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr
 				// Don't set GOROOT in the environment.
 				for _, e := range os.Environ() {
-					if !strings.HasPrefix(e, "GOROOT=") {
+					if !strings.HasPrefix(e, "GOROOT=") && !strings.HasPrefix(e, "GOCACHE=") {
 						cmd.Env = append(cmd.Env, e)
 					}
 				}
+				cmd.Env = append(cmd.Env, "GOCACHE=off")
 				err := cmd.Run()
 
 				if rerr := os.Rename(moved, goroot); rerr != nil {

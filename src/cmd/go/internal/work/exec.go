@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"cmd/go/internal/base"
 	"cmd/go/internal/cache"
@@ -168,8 +169,8 @@ func (b *Builder) Do(root *Action) {
 
 // buildActionID computes the action ID for a build action.
 func (b *Builder) buildActionID(a *Action) cache.ActionID {
-	h := cache.NewHash("actionID")
 	p := a.Package
+	h := cache.NewHash("build " + p.ImportPath)
 
 	// Configuration independent of compiler toolchain.
 	// Note: buildmode has already been accounted for in buildGcflags
@@ -177,6 +178,14 @@ func (b *Builder) buildActionID(a *Action) cache.ActionID {
 	// same compiler settings and can reuse each other's results.
 	// If not, the reason is already recorded in buildGcflags.
 	fmt.Fprintf(h, "compile\n")
+	// The compiler hides the exact value of $GOROOT
+	// when building things in GOROOT,
+	// but it does not hide the exact value of $GOPATH.
+	// Include the full dir in that case.
+	// Assume b.WorkDir is being trimmed properly.
+	if !p.Goroot && !strings.HasPrefix(p.Dir, b.WorkDir) {
+		fmt.Fprintf(h, "dir %s\n", p.Dir)
+	}
 	fmt.Fprintf(h, "goos %s goarch %s\n", cfg.Goos, cfg.Goarch)
 	fmt.Fprintf(h, "import %q\n", p.ImportPath)
 	fmt.Fprintf(h, "omitdebug %v standard %v local %v prefix %q\n", p.Internal.OmitDebug, p.Standard, p.Internal.Local, p.Internal.LocalPrefix)
@@ -201,9 +210,9 @@ func (b *Builder) buildActionID(a *Action) cache.ActionID {
 	default:
 		base.Fatalf("buildActionID: unknown build toolchain %q", cfg.BuildToolchainName)
 	case "gc":
-		fmt.Fprintf(h, "compile %s %q\n", b.toolID("compile"), buildGcflags)
+		fmt.Fprintf(h, "compile %s %q %q\n", b.toolID("compile"), forcedGcflags, p.Internal.Gcflags)
 		if len(p.SFiles) > 0 {
-			fmt.Fprintf(h, "asm %q %q\n", b.toolID("asm"), buildAsmflags)
+			fmt.Fprintf(h, "asm %q %q %q\n", b.toolID("asm"), forcedAsmflags, p.Internal.Asmflags)
 		}
 		fmt.Fprintf(h, "GO$GOARCH=%s\n", os.Getenv("GO"+strings.ToUpper(cfg.BuildContext.GOARCH))) // GO386, GOARM, etc
 
@@ -244,7 +253,7 @@ func (b *Builder) buildActionID(a *Action) cache.ActionID {
 	for _, a1 := range a.Deps {
 		p1 := a1.Package
 		if p1 != nil {
-			fmt.Fprintf(h, "import %s %s\n", p1.ImportPath, a1.buildID)
+			fmt.Fprintf(h, "import %s %s\n", p1.ImportPath, contentID(a1.buildID))
 		}
 	}
 
@@ -258,7 +267,30 @@ func (b *Builder) build(a *Action) (err error) {
 	cached := false
 	if !p.BinaryOnly {
 		if b.useCache(a, p, b.buildActionID(a), p.Target) {
-			if !a.needVet {
+			// If this build triggers a header install, run cgo to get the header.
+			// TODO(rsc): Once we can cache multiple file outputs from an action,
+			// the header should be cached, and then this awful test can be deleted.
+			// Need to look for install header actions depending on this action,
+			// or depending on a link that depends on this action.
+			needHeader := false
+			if (a.Package.UsesCgo() || a.Package.UsesSwig()) && (cfg.BuildBuildmode == "c-archive" || cfg.BuildBuildmode == "c-header") {
+				for _, t1 := range a.triggers {
+					if t1.Mode == "install header" {
+						needHeader = true
+						goto CheckedHeader
+					}
+				}
+				for _, t1 := range a.triggers {
+					for _, t2 := range t1.triggers {
+						if t2.Mode == "install header" {
+							needHeader = true
+							goto CheckedHeader
+						}
+					}
+				}
+			}
+		CheckedHeader:
+			if b.ComputeStaleOnly || !a.needVet && !needHeader {
 				return nil
 			}
 			cached = true
@@ -386,6 +418,9 @@ func (b *Builder) build(a *Action) (err error) {
 		}
 		cgoObjects = append(cgoObjects, outObj...)
 		gofiles = append(gofiles, outGo...)
+	}
+	if cached && !a.needVet {
+		return nil
 	}
 
 	// Sanity check only, since Package.load already checked as well.
@@ -587,10 +622,11 @@ func (b *Builder) build(a *Action) (err error) {
 		}
 	}
 
-	if err := b.updateBuildID(a, objpkg); err != nil {
+	if err := b.updateBuildID(a, objpkg, true); err != nil {
 		return err
 	}
 
+	a.built = objpkg
 	return nil
 }
 
@@ -640,8 +676,8 @@ func (b *Builder) vet(a *Action) error {
 
 // linkActionID computes the action ID for a link action.
 func (b *Builder) linkActionID(a *Action) cache.ActionID {
-	h := cache.NewHash("link")
 	p := a.Package
+	h := cache.NewHash("link " + p.ImportPath)
 
 	// Toolchain-independent configuration.
 	fmt.Fprintf(h, "link\n")
@@ -650,7 +686,7 @@ func (b *Builder) linkActionID(a *Action) cache.ActionID {
 	fmt.Fprintf(h, "omitdebug %v standard %v local %v prefix %q\n", p.Internal.OmitDebug, p.Standard, p.Internal.Local, p.Internal.LocalPrefix)
 
 	// Toolchain-dependent configuration, shared with b.linkSharedActionID.
-	b.printLinkerConfig(h)
+	b.printLinkerConfig(h, p)
 
 	// Input files.
 	for _, a1 := range a.Deps {
@@ -663,6 +699,11 @@ func (b *Builder) linkActionID(a *Action) cache.ActionID {
 				}
 				fmt.Fprintf(h, "packagefile %s=%s\n", p1.ImportPath, contentID(buildID))
 			}
+			// Because we put package main's full action ID into the binary's build ID,
+			// we must also put the full action ID into the binary's action ID hash.
+			if p1.Name == "main" {
+				fmt.Fprintf(h, "packagemain %s\n", a1.buildID)
+			}
 			if p1.Shlib != "" {
 				fmt.Fprintf(h, "pakageshlib %s=%s\n", p1.ImportPath, contentID(b.buildID(p1.Shlib)))
 			}
@@ -674,13 +715,16 @@ func (b *Builder) linkActionID(a *Action) cache.ActionID {
 
 // printLinkerConfig prints the linker config into the hash h,
 // as part of the computation of a linker-related action ID.
-func (b *Builder) printLinkerConfig(h io.Writer) {
+func (b *Builder) printLinkerConfig(h io.Writer, p *load.Package) {
 	switch cfg.BuildToolchainName {
 	default:
 		base.Fatalf("linkActionID: unknown toolchain %q", cfg.BuildToolchainName)
 
 	case "gc":
-		fmt.Fprintf(h, "link %s %q %s\n", b.toolID("link"), cfg.BuildLdflags, ldBuildmode)
+		fmt.Fprintf(h, "link %s %q %s\n", b.toolID("link"), forcedLdflags, ldBuildmode)
+		if p != nil {
+			fmt.Fprintf(h, "linkflags %q\n", p.Internal.Ldflags)
+		}
 		fmt.Fprintf(h, "GO$GOARCH=%s\n", os.Getenv("GO"+strings.ToUpper(cfg.BuildContext.GOARCH))) // GO386, GOARM, etc
 
 		/*
@@ -733,25 +777,31 @@ func (b *Builder) link(a *Action) (err error) {
 		}
 	}
 
-	objpkg := a.Objdir + "_pkg_.a"
-	if err := BuildToolchain.ld(b, a, a.Target, importcfg, objpkg); err != nil {
+	if err := BuildToolchain.ld(b, a, a.Target, importcfg, a.Deps[0].built); err != nil {
 		return err
 	}
 
 	// Update the binary with the final build ID.
-	// But if OmitDebug is set, don't, because we set OmitDebug
+	// But if OmitDebug is set, don't rewrite the binary, because we set OmitDebug
 	// on binaries that we are going to run and then delete.
 	// There's no point in doing work on such a binary.
 	// Worse, opening the binary for write here makes it
 	// essentially impossible to safely fork+exec due to a fundamental
 	// incompatibility between ETXTBSY and threads on modern Unix systems.
 	// See golang.org/issue/22220.
-	if !a.Package.Internal.OmitDebug {
-		if err := b.updateBuildID(a, a.Target); err != nil {
-			return err
-		}
+	// We still call updateBuildID to update a.buildID, which is important
+	// for test result caching, but passing rewrite=false (final arg)
+	// means we don't actually rewrite the binary, nor store the
+	// result into the cache.
+	// Not calling updateBuildID means we also don't insert these
+	// binaries into the build object cache. That's probably a net win:
+	// less cache space wasted on large binaries we are not likely to
+	// need again. (On the other hand it does make repeated go test slower.)
+	if err := b.updateBuildID(a, a.Target, !a.Package.Internal.OmitDebug); err != nil {
+		return err
 	}
 
+	a.built = a.Target
 	return nil
 }
 
@@ -859,7 +909,7 @@ func (b *Builder) linkSharedActionID(a *Action) cache.ActionID {
 	fmt.Fprintf(h, "goos %s goarch %s\n", cfg.Goos, cfg.Goarch)
 
 	// Toolchain-dependent configuration, shared with b.linkActionID.
-	b.printLinkerConfig(h)
+	b.printLinkerConfig(h, nil)
 
 	// Input files.
 	for _, a1 := range a.Deps {
@@ -899,7 +949,8 @@ func (b *Builder) linkShared(a *Action) (err error) {
 
 	// TODO(rsc): There is a missing updateBuildID here,
 	// but we have to decide where to store the build ID in these files.
-	return BuildToolchain.ldShared(b, a.Deps[0].Deps, a.Target, importcfg, a.Deps)
+	a.built = a.Target
+	return BuildToolchain.ldShared(b, a, a.Deps[0].Deps, a.Target, importcfg, a.Deps)
 }
 
 // BuildInstallFunc is the action for installing a single package or executable.
@@ -913,7 +964,7 @@ func BuildInstallFunc(b *Builder, a *Action) (err error) {
 			if a.Package != nil {
 				sep, path = " ", a.Package.ImportPath
 			}
-			err = fmt.Errorf("go install%s%s: %v", sep, path, err)
+			err = fmt.Errorf("go %s%s%s: %v", cfg.CmdName, sep, path, err)
 		}
 	}()
 
@@ -928,6 +979,28 @@ func BuildInstallFunc(b *Builder, a *Action) (err error) {
 	if a1.built == a.Target {
 		a.built = a.Target
 		b.cleanup(a1)
+		// Whether we're smart enough to avoid a complete rebuild
+		// depends on exactly what the staleness and rebuild algorithms
+		// are, as well as potentially the state of the Go build cache.
+		// We don't really want users to be able to infer (or worse start depending on)
+		// those details from whether the modification time changes during
+		// "go install", so do a best-effort update of the file times to make it
+		// look like we rewrote a.Target even if we did not. Updating the mtime
+		// may also help other mtime-based systems that depend on our
+		// previous mtime updates that happened more often.
+		// This is still not perfect - we ignore the error result, and if the file was
+		// unwritable for some reason then pretending to have written it is also
+		// confusing - but it's probably better than not doing the mtime update.
+		//
+		// But don't do that for the special case where building an executable
+		// with -linkshared implicitly installs all its dependent libraries.
+		// We want to hide that awful detail as much as possible, so don't
+		// advertise it by touching the mtimes (usually the libraries are up
+		// to date).
+		if !a.buggyInstall {
+			now := time.Now()
+			os.Chtimes(a.Target, now, now)
+		}
 		return nil
 	}
 	if b.ComputeStaleOnly {
@@ -957,7 +1030,7 @@ func BuildInstallFunc(b *Builder, a *Action) (err error) {
 
 	defer b.cleanup(a1)
 
-	return b.moveOrCopyFile(a, a.Target, a1.Target, perm, false)
+	return b.moveOrCopyFile(a, a.Target, a1.built, perm, false)
 }
 
 // cleanup removes a's object dir to keep the amount of
@@ -982,6 +1055,11 @@ func (b *Builder) moveOrCopyFile(a *Action, dst, src string, perm os.FileMode, f
 
 	// If we can update the mode and rename to the dst, do it.
 	// Otherwise fall back to standard copy.
+
+	// If the source is in the build cache, we need to copy it.
+	if strings.HasPrefix(src, cache.DefaultDir()) {
+		return b.copyFile(a, dst, src, perm, force)
+	}
 
 	// If the destination directory has the group sticky bit set,
 	// we have to copy the file to retain the correct permissions.
@@ -1097,6 +1175,9 @@ func (b *Builder) installHeader(a *Action) error {
 	if _, err := os.Stat(src); os.IsNotExist(err) {
 		// If the file does not exist, there are no exported
 		// functions, and we do not install anything.
+		// TODO(rsc): Once we know that caching is rebuilding
+		// at the right times (not missing rebuilds), here we should
+		// probably delete the installed header, if any.
 		if cfg.BuildX {
 			b.Showcmd("", "# %s not created", src)
 		}
@@ -1413,7 +1494,7 @@ type toolchain interface {
 	// ld runs the linker to create an executable starting at mainpkg.
 	ld(b *Builder, root *Action, out, importcfg, mainpkg string) error
 	// ldShared runs the linker to create a shared library containing the pkgs built by toplevelactions
-	ldShared(b *Builder, toplevelactions []*Action, out, importcfg string, allactions []*Action) error
+	ldShared(b *Builder, root *Action, toplevelactions []*Action, out, importcfg string, allactions []*Action) error
 
 	compiler() string
 	linker() string
@@ -1452,7 +1533,7 @@ func (noToolchain) ld(b *Builder, root *Action, out, importcfg, mainpkg string) 
 	return noCompiler()
 }
 
-func (noToolchain) ldShared(b *Builder, toplevelactions []*Action, out, importcfg string, allactions []*Action) error {
+func (noToolchain) ldShared(b *Builder, root *Action, toplevelactions []*Action, out, importcfg string, allactions []*Action) error {
 	return noCompiler()
 }
 
@@ -1550,12 +1631,12 @@ func (b *Builder) gfortranCmd(incdir, workdir string) []string {
 
 // ccExe returns the CC compiler setting without all the extra flags we add implicitly.
 func (b *Builder) ccExe() []string {
-	return b.compilerExe(origCC, cfg.DefaultCC)
+	return b.compilerExe(origCC, cfg.DefaultCC(cfg.Goos, cfg.Goarch))
 }
 
 // cxxExe returns the CXX compiler setting without all the extra flags we add implicitly.
 func (b *Builder) cxxExe() []string {
-	return b.compilerExe(origCXX, cfg.DefaultCXX)
+	return b.compilerExe(origCXX, cfg.DefaultCXX(cfg.Goos, cfg.Goarch))
 }
 
 // fcExe returns the FC compiler setting without all the extra flags we add implicitly.

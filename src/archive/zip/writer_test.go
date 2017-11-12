@@ -6,12 +6,14 @@ package zip
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"math/rand"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TODO(adg): a more sophisticated test suite
@@ -135,6 +137,7 @@ func TestWriterUTF8(t *testing.T) {
 		name    string
 		comment string
 		expect  uint16
+		nonUTF8 bool
 	}{
 		{
 			name:    "hi, hello",
@@ -145,6 +148,12 @@ func TestWriterUTF8(t *testing.T) {
 			name:    "hi, こんにちわ",
 			comment: "in the world",
 			expect:  0x808,
+		},
+		{
+			name:    "hi, こんにちわ",
+			comment: "in the world",
+			nonUTF8: true,
+			expect:  0x8,
 		},
 		{
 			name:    "hi, hello",
@@ -172,6 +181,7 @@ func TestWriterUTF8(t *testing.T) {
 		h := &FileHeader{
 			Name:    test.name,
 			Comment: test.comment,
+			NonUTF8: test.nonUTF8,
 			Method:  Deflate,
 		}
 		w, err := w.CreateHeader(h)
@@ -196,6 +206,30 @@ func TestWriterUTF8(t *testing.T) {
 		if got != test.expect {
 			t.Fatalf("Flags: got %v, want %v", got, test.expect)
 		}
+	}
+}
+
+func TestWriterTime(t *testing.T) {
+	var buf bytes.Buffer
+	h := &FileHeader{
+		Name:     "test.txt",
+		Modified: time.Date(2017, 10, 31, 21, 11, 57, 0, timeZone(-7*time.Hour)),
+	}
+	w := NewWriter(&buf)
+	if _, err := w.CreateHeader(h); err != nil {
+		t.Fatalf("unexpected CreateHeader error: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("unexpected Close error: %v", err)
+	}
+
+	want, err := ioutil.ReadFile("testdata/time-go.zip")
+	if err != nil {
+		t.Fatalf("unexpected ReadFile error: %v", err)
+	}
+	if got := buf.Bytes(); !bytes.Equal(got, want) {
+		fmt.Printf("%x\n%x\n", got, want)
+		t.Error("contents of time-go.zip differ")
 	}
 }
 
