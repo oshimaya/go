@@ -76,7 +76,8 @@ func (d *digest) MarshalBinary() ([]byte, error) {
 	b = appendUint32(b, d.h[5])
 	b = appendUint32(b, d.h[6])
 	b = appendUint32(b, d.h[7])
-	b = append(b, d.x[:]...)
+	b = append(b, d.x[:d.nx]...)
+	b = b[:len(b)+len(d.x)-int(d.nx)] // already zero
 	b = appendUint64(b, d.len)
 	return b, nil
 }
@@ -164,7 +165,10 @@ func (d *digest) Reset() {
 	d.len = 0
 }
 
-// New returns a new hash.Hash computing the SHA256 checksum.
+// New returns a new hash.Hash computing the SHA256 checksum. The Hash
+// also implements encoding.BinaryMarshaler and
+// encoding.BinaryUnmarshaler to marshal and unmarshal the internal
+// state of the hash.
 func New() hash.Hash {
 	d := new(digest)
 	d.Reset()

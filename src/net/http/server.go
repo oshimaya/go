@@ -132,12 +132,20 @@ type ResponseWriter interface {
 	// possible to maximize compatibility.
 	Write([]byte) (int, error)
 
-	// WriteHeader sends an HTTP response header with status code.
+	// WriteHeader sends an HTTP response header with the provided
+	// status code.
+	//
 	// If WriteHeader is not called explicitly, the first call to Write
 	// will trigger an implicit WriteHeader(http.StatusOK).
 	// Thus explicit calls to WriteHeader are mainly used to
 	// send error codes.
-	WriteHeader(int)
+	//
+	// The provided code must be a valid HTTP 1xx-5xx status code.
+	// Only one header may be written. Go does not currently
+	// support sending user-defined 1xx informational headers,
+	// with the exception of 100-continue response header that the
+	// Server sends automatically when the Request.Body is read.
+	WriteHeader(statusCode int)
 }
 
 // The Flusher interface is implemented by ResponseWriters that allow
@@ -1046,7 +1054,25 @@ func (w *response) Header() Header {
 // well read them)
 const maxPostHandlerReadBytes = 256 << 10
 
+func checkWriteHeaderCode(code int) {
+	// Issue 22880: require valid WriteHeader status codes.
+	// For now we only enforce that it's three digits.
+	// In the future we might block things over 599 (600 and above aren't defined
+	// at http://httpwg.org/specs/rfc7231.html#status.codes)
+	// and we might block under 200 (once we have more mature 1xx support).
+	// But for now any three digits.
+	//
+	// We used to send "HTTP/1.1 000 0" on the wire in responses but there's
+	// no equivalent bogus thing we can realistically send in HTTP/2,
+	// so we'll consistently panic instead and help people find their bugs
+	// early. (We can't return an error from WriteHeader even if we wanted to.)
+	if code < 100 || code > 999 {
+		panic(fmt.Sprintf("invalid WriteHeader code %v", code))
+	}
+}
+
 func (w *response) WriteHeader(code int) {
+	checkWriteHeaderCode(code)
 	if w.conn.hijacked() {
 		w.conn.server.logf("http: response.WriteHeader on hijacked connection")
 		return
@@ -1311,7 +1337,7 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	if bodyAllowedForStatus(code) {
 		// If no content type, apply sniffing algorithm to body.
 		_, haveType := header["Content-Type"]
-		if !haveType && !hasTE {
+		if !haveType && !hasTE && len(p) > 0 {
 			setHeader.contentType = DetectContentType(p)
 		}
 	} else {
@@ -2231,6 +2257,7 @@ func (mux *ServeMux) shouldRedirect(path string) bool {
 // If there is no registered handler that applies to the request,
 // Handler returns a ``page not found'' handler and an empty pattern.
 func (mux *ServeMux) Handler(r *Request) (h Handler, pattern string) {
+
 	// CONNECT requests are not canonicalized.
 	if r.Method == "CONNECT" {
 		// If r.URL.Path is /tree and its handler is not registered,
@@ -2349,7 +2376,7 @@ func Serve(l net.Listener, handler Handler) error {
 	return srv.Serve(l)
 }
 
-// Serve accepts incoming HTTPS connections on the listener l,
+// ServeTLS accepts incoming HTTPS connections on the listener l,
 // creating a new service goroutine for each. The service goroutines
 // read requests and then call handler to reply to them.
 //
@@ -2759,7 +2786,7 @@ func (srv *Server) Serve(l net.Listener) error {
 // server's certificate, any intermediates, and the CA's certificate.
 //
 // For HTTP/2 support, srv.TLSConfig should be initialized to the
-// provided listener's TLS Config before calling Serve. If
+// provided listener's TLS Config before calling ServeTLS. If
 // srv.TLSConfig is non-nil and doesn't include the string "h2" in
 // Config.NextProtos, HTTP/2 support is not enabled.
 //
@@ -2979,6 +3006,8 @@ func (srv *Server) ListenAndServeTLS(certFile, keyFile string) error {
 		return err
 	}
 
+	defer ln.Close()
+
 	return srv.ServeTLS(tcpKeepAliveListener{ln.(*net.TCPListener)}, certFile, keyFile)
 }
 
@@ -3140,6 +3169,7 @@ func (tw *timeoutWriter) Write(p []byte) (int, error) {
 }
 
 func (tw *timeoutWriter) WriteHeader(code int) {
+	checkWriteHeaderCode(code)
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
 	if tw.timedOut || tw.wroteHeader {

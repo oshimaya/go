@@ -454,7 +454,12 @@ func TestCgoLockOSThreadExit(t *testing.T) {
 	testLockOSThreadExit(t, "testprogcgo")
 }
 
-func testWindowsStackMemory(t *testing.T, o string) {
+func TestWindowsStackMemoryCgo(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("skipping windows specific test")
+	}
+	testenv.SkipFlaky(t, 22575)
+	o := runTestProg(t, "testprogcgo", "StackMemory")
 	stackUsage, err := strconv.Atoi(o)
 	if err != nil {
 		t.Fatalf("Failed to read stack usage: %v", err)
@@ -464,9 +469,15 @@ func testWindowsStackMemory(t *testing.T, o string) {
 	}
 }
 
-func TestWindowsStackMemoryCgo(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("skipping windows specific test")
+func TestSigStackSwapping(t *testing.T) {
+	switch runtime.GOOS {
+	case "plan9", "windows":
+		t.Skipf("no sigaltstack on %s", runtime.GOOS)
 	}
-	testWindowsStackMemory(t, runTestProg(t, "testprogcgo", "StackMemory"))
+	t.Parallel()
+	got := runTestProg(t, "testprogcgo", "SigStack")
+	want := "OK\n"
+	if got != want {
+		t.Errorf("expected %q got %v", want, got)
+	}
 }

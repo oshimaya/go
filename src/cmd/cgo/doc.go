@@ -102,11 +102,13 @@ the use of cgo, and to 0 to disable it. The go tool will set the
 build constraint "cgo" if cgo is enabled.
 
 When cross-compiling, you must specify a C cross-compiler for cgo to
-use. You can do this by setting the CC_FOR_TARGET environment
-variable when building the toolchain using make.bash, or by setting
-the CC environment variable any time you run the go tool. The
-CXX_FOR_TARGET and CXX environment variables work in a similar way for
-C++ code.
+use. You can do this by setting the generic CC_FOR_TARGET or the
+more specific CC_FOR_${GOOS}_${GOARCH} (for example, CC_FOR_linux_arm)
+environment variable when building the toolchain using make.bash,
+or you can set the CC environment variable any time you run the go tool.
+
+The CXX_FOR_TARGET, CXX_FOR_${GOOS}_${GOARCH}, and CXX
+environment variables work in a similar way for C++ code.
 
 Go references to C
 
@@ -126,11 +128,28 @@ C.complexfloat (complex float), and C.complexdouble (complex double).
 The C type void* is represented by Go's unsafe.Pointer.
 The C types __int128_t and __uint128_t are represented by [16]byte.
 
+A few special C types which would normally be represented by a pointer
+type in Go are instead represented by a uintptr.  See the Special
+cases section below.
+
 To access a struct, union, or enum type directly, prefix it with
 struct_, union_, or enum_, as in C.struct_stat.
 
 The size of any C type T is available as C.sizeof_T, as in
 C.sizeof_struct_stat.
+
+A C function may be declared in the Go file with a parameter type of
+the special name _GoString_. This function may be called with an
+ordinary Go string value. The string length, and a pointer to the
+string contents, may be accessed by calling the C functions
+
+	size_t _GoStringLen(_GoString_ s);
+	const char *_GoStringPtr(_GoString_ s);
+
+These functions are only available in the preamble, not in other C
+files. The C code must not modify the contents of the pointer returned
+by _GoStringPtr. Note that the string contents may not have a trailing
+NUL byte.
 
 As Go doesn't have support for C's union type in the general case,
 C's union types are represented as a Go byte array with the same length.
@@ -246,6 +265,12 @@ Not all Go types can be mapped to C types in a useful way.
 Go struct types are not supported; use a C struct type.
 Go array types are not supported; use a C pointer.
 
+Go functions that take arguments of type string may be called with the
+C type _GoString_, described above. The _GoString_ type will be
+automatically defined in the preamble. Note that there is no way for C
+code to create a value of this type; this is only useful for passing
+string values from Go to C and back to Go.
+
 Using //export in a file places a restriction on the preamble:
 since it is copied into two different C output files, it must not
 contain any definitions, only declarations. If a file contains both
@@ -267,6 +292,14 @@ pointer is a Go pointer or a C pointer is a dynamic property
 determined by how the memory was allocated; it has nothing to do with
 the type of the pointer.
 
+Note that values of some Go types, other than the type's zero value,
+always include Go pointers. This is true of string, slice, interface,
+channel, map, and function types. A pointer type may hold a Go pointer
+or a C pointer. Array and struct types may or may not include Go
+pointers, depending on the element types. All the discussion below
+about Go pointers applies not just to pointer types, but also to other
+types that include Go pointers.
+
 Go code may pass a Go pointer to C provided the Go memory to which it
 points does not contain any Go pointers. The C code must preserve
 this property: it must not store any Go pointers in Go memory, even
@@ -277,14 +310,17 @@ the Go memory in question is the entire array or the entire backing
 array of the slice.
 
 C code may not keep a copy of a Go pointer after the call returns.
+This includes the _GoString_ type, which, as noted above, includes a
+Go pointer; _GoString_ values may not be retained by C code.
 
-A Go function called by C code may not return a Go pointer. A Go
-function called by C code may take C pointers as arguments, and it may
-store non-pointer or C pointer data through those pointers, but it may
-not store a Go pointer in memory pointed to by a C pointer. A Go
-function called by C code may take a Go pointer as an argument, but it
-must preserve the property that the Go memory to which it points does
-not contain any Go pointers.
+A Go function called by C code may not return a Go pointer (which
+implies that it may not return a string, slice, channel, and so
+forth). A Go function called by C code may take C pointers as
+arguments, and it may store non-pointer or C pointer data through
+those pointers, but it may not store a Go pointer in memory pointed to
+by a C pointer. A Go function called by C code may take a Go pointer
+as an argument, but it must preserve the property that the Go memory
+to which it points does not contain any Go pointers.
 
 Go code may not store a Go pointer in C memory. C code may store Go
 pointers in C memory, subject to the rule above: it must stop storing
@@ -301,6 +337,103 @@ It is possible to defeat this enforcement by using the unsafe package,
 and of course there is nothing stopping the C code from doing anything
 it likes. However, programs that break these rules are likely to fail
 in unexpected and unpredictable ways.
+
+Special cases
+
+A few special C types which would normally be represented by a pointer
+type in Go are instead represented by a uintptr. Those types are
+the CF*Ref types from the CoreFoundation library on Darwin, including:
+
+	CFAllocatorRef
+	CFArrayRef
+	CFAttributedStringRef
+	CFBagRef
+	CFBinaryHeapRef
+	CFBitVectorRef
+	CFBooleanRef
+	CFBundleRef
+	CFCalendarRef
+	CFCharacterSetRef
+	CFDataRef
+	CFDateFormatterRef
+	CFDateRef
+	CFDictionaryRef
+	CFErrorRef
+	CFFileDescriptorRef
+	CFFileSecurityRef
+	CFLocaleRef
+	CFMachPortRef
+	CFMessagePortRef
+	CFMutableArrayRef
+	CFMutableAttributedStringRef
+	CFMutableBagRef
+	CFMutableBitVectorRef
+	CFMutableCharacterSetRef
+	CFMutableDataRef
+	CFMutableDictionaryRef
+	CFMutableSetRef
+	CFMutableStringRef
+	CFNotificationCenterRef
+	CFNullRef
+	CFNumberFormatterRef
+	CFNumberRef
+	CFPlugInInstanceRef
+	CFPlugInRef
+	CFPropertyListRef
+	CFReadStreamRef
+	CFRunLoopObserverRef
+	CFRunLoopRef
+	CFRunLoopSourceRef
+	CFRunLoopTimerRef
+	CFSetRef
+	CFSocketRef
+	CFStringRef
+	CFStringTokenizerRef
+	CFTimeZoneRef
+	CFTreeRef
+	CFTypeRef
+	CFURLCreateFromFSRef
+	CFURLEnumeratorRef
+	CFURLGetFSRef
+	CFURLRef
+	CFUUIDRef
+	CFUserNotificationRef
+	CFWriteStreamRef
+	CFXMLNodeRef
+	CFXMLParserRef
+	CFXMLTreeRef
+
+Also the object types from Java's JNI interface:
+
+	jobject
+	jclass
+	jthrowable
+	jstring
+	jarray
+	jbooleanArray
+	jbyteArray
+	jcharArray
+	jshortArray
+	jintArray
+	jlongArray
+	jfloatArray
+	jdoubleArray
+	jobjectArray
+	jweak
+
+These types are uintptr on the Go side because they would otherwise
+confuse the Go garbage collector; they are sometimes not really
+pointers but data structures encoded in a pointer type. All operations
+on these types must happen in C. The proper constant to initialize an
+empty such reference is 0, not nil.
+
+These special cases were introduced in Go 1.10. For auto-updating code
+from Go 1.9 and earlier, use the cftype or jni rewrites in the Go fix tool:
+
+	go tool fix -r cftype <pkg>
+	go tool fix -r jni <pkg>
+
+It will replace nil with 0 in the appropriate places.
 
 Using cgo directly
 

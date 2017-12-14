@@ -39,6 +39,7 @@ package os
 import (
 	"errors"
 	"internal/poll"
+	"internal/testlog"
 	"io"
 	"syscall"
 	"time"
@@ -228,7 +229,14 @@ func Mkdir(name string, perm FileMode) error {
 // If there is an error, it will be of type *PathError.
 func Chdir(dir string) error {
 	if e := syscall.Chdir(dir); e != nil {
+		testlog.Open(dir) // observe likely non-existent directory
 		return &PathError{"chdir", dir, e}
+	}
+	if log := testlog.Logger(); log != nil {
+		wd, err := Getwd()
+		if err == nil {
+			log.Chdir(wd)
+		}
 	}
 	return nil
 }
@@ -248,6 +256,16 @@ func Open(name string) (*File, error) {
 // If there is an error, it will be of type *PathError.
 func Create(name string) (*File, error) {
 	return OpenFile(name, O_RDWR|O_CREATE|O_TRUNC, 0666)
+}
+
+// OpenFile is the generalized open call; most users will use Open
+// or Create instead. It opens the named file with specified flag
+// (O_RDONLY etc.) and perm, (0666 etc.) if applicable. If successful,
+// methods on the returned File can be used for I/O.
+// If there is an error, it will be of type *PathError.
+func OpenFile(name string, flag int, perm FileMode) (*File, error) {
+	testlog.Open(name)
+	return openFileNolog(name, flag, perm)
 }
 
 // lstat is overridden in tests.

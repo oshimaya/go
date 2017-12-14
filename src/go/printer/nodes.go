@@ -479,7 +479,6 @@ func (p *printer) fieldList(fields *ast.FieldList, isStruct, isIncomplete bool) 
 		if isIncomplete {
 			if len(list) > 0 {
 				p.print(formfeed)
-				p.print(newline)
 			}
 			p.flush(p.posFor(rbrace), token.RBRACE) // make sure we don't lose the last line comment
 			p.setLineComment("// contains filtered or unexported fields")
@@ -507,7 +506,6 @@ func (p *printer) fieldList(fields *ast.FieldList, isStruct, isIncomplete bool) 
 		if isIncomplete {
 			if len(list) > 0 {
 				p.print(formfeed)
-				p.print(newline)
 			}
 			p.flush(p.posFor(rbrace), token.RBRACE) // make sure we don't lose the last line comment
 			p.setLineComment("// contains filtered or unexported methods")
@@ -865,7 +863,9 @@ func (p *printer) expr1(expr ast.Expr, prec1, depth int) {
 		if len(x.Elts) > 0 {
 			mode |= noExtraBlank
 		}
-		p.print(mode, x.Rbrace, token.RBRACE, mode)
+		// need the initial indent to print lone comments with
+		// the proper level of indentation
+		p.print(indent, unindent, mode, x.Rbrace, token.RBRACE, mode)
 		p.level--
 
 	case *ast.Ellipsis:

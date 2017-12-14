@@ -63,7 +63,8 @@ func (d *digest) MarshalBinary() ([]byte, error) {
 	b = appendUint32(b, d.s[1])
 	b = appendUint32(b, d.s[2])
 	b = appendUint32(b, d.s[3])
-	b = append(b, d.x[:]...)
+	b = append(b, d.x[:d.nx]...)
+	b = b[:len(b)+len(d.x)-int(d.nx)] // already zero
 	b = appendUint64(b, d.len)
 	return b, nil
 }
@@ -123,7 +124,9 @@ func consumeUint32(b []byte) ([]byte, uint32) {
 	return b[4:], x
 }
 
-// New returns a new hash.Hash computing the MD5 checksum.
+// New returns a new hash.Hash computing the MD5 checksum. The Hash also
+// implements encoding.BinaryMarshaler and encoding.BinaryUnmarshaler to
+// marshal and unmarshal the internal state of the hash.
 func New() hash.Hash {
 	d := new(digest)
 	d.Reset()

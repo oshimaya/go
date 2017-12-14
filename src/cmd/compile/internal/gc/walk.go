@@ -988,6 +988,10 @@ opswitch:
 		n = walkexpr(n, init)
 
 	case OCONV, OCONVNOP:
+		if thearch.SoftFloat {
+			// For the soft-float case, ssa.go handles these conversions.
+			goto oconv_walkexpr
+		}
 		switch thearch.LinkArch.Family {
 		case sys.ARM, sys.MIPS:
 			if n.Left.Type.IsFloat() {
@@ -1041,6 +1045,7 @@ opswitch:
 			}
 		}
 
+	oconv_walkexpr:
 		n.Left = walkexpr(n.Left, init)
 
 	case OANDNOT:
@@ -1744,7 +1749,7 @@ opswitch:
 		// Emit string symbol now to avoid emitting
 		// any concurrently during the backend.
 		if s, ok := n.Val().U.(string); ok {
-			_ = stringsym(s)
+			_ = stringsym(n.Pos, s)
 		}
 	}
 
@@ -2225,32 +2230,6 @@ func iscallret(n *Node) bool {
 	}
 	n = outervalue(n)
 	return n.Op == OINDREGSP
-}
-
-func isstack(n *Node) bool {
-	n = outervalue(n)
-
-	// If n is *autotmp and autotmp = &foo, replace n with foo.
-	// We introduce such temps when initializing struct literals.
-	if n.Op == OIND && n.Left.Op == ONAME && n.Left.IsAutoTmp() {
-		defn := n.Left.Name.Defn
-		if defn != nil && defn.Op == OAS && defn.Right.Op == OADDR {
-			n = defn.Right.Left
-		}
-	}
-
-	switch n.Op {
-	case OINDREGSP:
-		return true
-
-	case ONAME:
-		switch n.Class() {
-		case PAUTO, PPARAM, PPARAMOUT:
-			return true
-		}
-	}
-
-	return false
 }
 
 // isReflectHeaderDataField reports whether l is an expression p.Data
@@ -2826,21 +2805,23 @@ func mapfndel(name string, t *types.Type) *Node {
 const (
 	mapslow = iota
 	mapfast32
+	mapfast32ptr
 	mapfast64
+	mapfast64ptr
 	mapfaststr
 	nmapfast
 )
 
 type mapnames [nmapfast]string
 
-func mkmapnames(base string) mapnames {
-	return mapnames{base, base + "_fast32", base + "_fast64", base + "_faststr"}
+func mkmapnames(base string, ptr string) mapnames {
+	return mapnames{base, base + "_fast32", base + "_fast32" + ptr, base + "_fast64", base + "_fast64" + ptr, base + "_faststr"}
 }
 
-var mapaccess1 = mkmapnames("mapaccess1")
-var mapaccess2 = mkmapnames("mapaccess2")
-var mapassign = mkmapnames("mapassign")
-var mapdelete = mkmapnames("mapdelete")
+var mapaccess1 = mkmapnames("mapaccess1", "")
+var mapaccess2 = mkmapnames("mapaccess2", "")
+var mapassign = mkmapnames("mapassign", "ptr")
+var mapdelete = mkmapnames("mapdelete", "")
 
 func mapfast(t *types.Type) int {
 	// Check ../../runtime/hashmap.go:maxValueSize before changing.
@@ -2849,9 +2830,22 @@ func mapfast(t *types.Type) int {
 	}
 	switch algtype(t.Key()) {
 	case AMEM32:
-		return mapfast32
+		if !t.Key().HasHeapPointer() {
+			return mapfast32
+		}
+		if Widthptr == 4 {
+			return mapfast32ptr
+		}
+		Fatalf("small pointer %v", t.Key())
 	case AMEM64:
-		return mapfast64
+		if !t.Key().HasHeapPointer() {
+			return mapfast64
+		}
+		if Widthptr == 8 {
+			return mapfast64ptr
+		}
+		// Two-word object, at least one of which is a pointer.
+		// Use the slow path.
 	case ASTRING:
 		return mapfaststr
 	}

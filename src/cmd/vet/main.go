@@ -35,6 +35,8 @@ var (
 	tagList = []string{} // exploded version of tags flag; set in main
 
 	mustTypecheck bool
+
+	succeedOnTypecheckFailure bool // during go test, we ignore potential bugs in go/types
 )
 
 var exitCode = 0
@@ -291,6 +293,8 @@ type vetConfig struct {
 	ImportMap   map[string]string
 	PackageFile map[string]string
 
+	SucceedOnTypecheckFailure bool
+
 	imp types.Importer
 }
 
@@ -336,6 +340,7 @@ func doPackageCfg(cfgFile string) {
 	if err := json.Unmarshal(js, &vcfg); err != nil {
 		errorf("parsing vet config %s: %v", cfgFile, err)
 	}
+	succeedOnTypecheckFailure = vcfg.SucceedOnTypecheckFailure
 	stdImporter = &vcfg
 	inittypes()
 	mustTypecheck = true
@@ -425,12 +430,22 @@ func doPackage(names []string, basePkg *Package) *Package {
 	pkg.path = astFiles[0].Name.Name
 	pkg.files = files
 	// Type check the package.
-	err := pkg.check(fs, astFiles)
-	if err != nil {
-		// Note that we only report this error when *verbose.
-		Println(err)
-		if mustTypecheck {
-			errorf("%v", err)
+	errs := pkg.check(fs, astFiles)
+	if errs != nil {
+		if succeedOnTypecheckFailure {
+			os.Exit(0)
+		}
+		if *verbose || mustTypecheck {
+			for _, err := range errs {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+			}
+			if mustTypecheck {
+				// This message could be silenced, and we could just exit,
+				// but it might be helpful at least at first to make clear that the
+				// above errors are coming from vet and not the compiler
+				// (they often look like compiler errors, such as "declared but not used").
+				errorf("typecheck failures")
+			}
 		}
 	}
 

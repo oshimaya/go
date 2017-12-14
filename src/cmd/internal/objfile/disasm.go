@@ -292,7 +292,7 @@ func (d *Disasm) Decode(start, end uint64, relocs []Reloc, f func(pc, size uint6
 	}
 }
 
-type lookupFunc func(addr uint64) (sym string, base uint64)
+type lookupFunc = func(addr uint64) (sym string, base uint64)
 type disasmFunc func(code []byte, pc uint64, lookup lookupFunc, ord binary.ByteOrder) (text string, size int)
 
 func disasm_386(code []byte, pc uint64, lookup lookupFunc, _ binary.ByteOrder) (string, int) {
@@ -304,7 +304,7 @@ func disasm_amd64(code []byte, pc uint64, lookup lookupFunc, _ binary.ByteOrder)
 }
 
 func disasm_x86(code []byte, pc uint64, lookup lookupFunc, arch int) (string, int) {
-	inst, err := x86asm.Decode(code, 64)
+	inst, err := x86asm.Decode(code, arch)
 	var text string
 	size := inst.Len
 	if err != nil || size == 0 || inst.Op == 0 {

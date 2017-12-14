@@ -483,14 +483,16 @@ func (f *File) okPrintfArg(call *ast.CallExpr, state *formatState) (ok bool) {
 		}
 	}
 
-	if !found && !formatter {
-		f.Badf(call.Pos(), "%s format %s has unknown verb %c", state.name, state.format, state.verb)
-		return false
-	}
-	for _, flag := range state.flags {
-		if !strings.ContainsRune(v.flags, rune(flag)) {
-			f.Badf(call.Pos(), "%s format %s has unrecognized flag %c", state.name, state.format, flag)
+	if !formatter {
+		if !found {
+			f.Badf(call.Pos(), "%s format %s has unknown verb %c", state.name, state.format, state.verb)
 			return false
+		}
+		for _, flag := range state.flags {
+			if !strings.ContainsRune(v.flags, rune(flag)) {
+				f.Badf(call.Pos(), "%s format %s has unrecognized flag %c", state.name, state.format, flag)
+				return false
+			}
 		}
 	}
 	// Verb is good. If len(state.argNums)>trueArgs, we have something like %.*s and all
@@ -612,7 +614,7 @@ const (
 	flagsRE    = `[+\-#]*`
 	indexOptRE = `(\[[0-9]+\])?`
 	numOptRE   = `([0-9]+|` + indexOptRE + `\*)?`
-	verbRE     = `[bcdefgopqstxEFGUX]`
+	verbRE     = `[bcdefgopqstvxEFGUX]`
 )
 
 // checkPrint checks a call to an unformatted print routine such as Println.
@@ -672,8 +674,9 @@ func (f *File) checkPrint(call *ast.CallExpr, name string) {
 		// The last item, if a string, should not have a newline.
 		arg = args[len(args)-1]
 		if lit, ok := arg.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-			if strings.HasSuffix(lit.Value, `\n"`) {
-				f.Badf(call.Pos(), "%s args end with redundant newline", name)
+			str, _ := strconv.Unquote(lit.Value)
+			if strings.HasSuffix(str, "\n") {
+				f.Badf(call.Pos(), "%s arg list ends with redundant newline", name)
 			}
 		}
 	}

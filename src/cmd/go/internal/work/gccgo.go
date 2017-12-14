@@ -65,7 +65,7 @@ func (tools gccgoToolchain) gc(b *Builder, a *Action, archive string, importcfg 
 		gcargs = append(gcargs, "-fgo-relative-import-path="+p.Internal.LocalPrefix)
 	}
 
-	args := str.StringList(tools.compiler(), "-c", gcargs, "-o", ofile)
+	args := str.StringList(tools.compiler(), "-c", gcargs, "-o", ofile, forcedGccgoflags)
 	if importcfg != nil {
 		if b.gccSupportsFlag(args[:1], "-fgo-importcfg=/dev/null") {
 			if err := b.writeFile(objdir+"importcfg", importcfg); err != nil {
@@ -80,7 +80,7 @@ func (tools gccgoToolchain) gc(b *Builder, a *Action, archive string, importcfg 
 			args = append(args, "-I", root)
 		}
 	}
-	args = append(args, buildGccgoflags...)
+	args = append(args, a.Package.Internal.Gccgoflags...)
 	for _, f := range gofiles {
 		args = append(args, mkAbs(p.Dir, f))
 	}
@@ -163,7 +163,7 @@ func (tools gccgoToolchain) asm(b *Builder, a *Action, sfiles []string) ([]strin
 		}
 		defs = tools.maybePIC(defs)
 		defs = append(defs, b.gccArchArgs()...)
-		err := b.run(p.Dir, p.ImportPath, nil, tools.compiler(), "-xassembler-with-cpp", "-I", a.Objdir, "-c", "-o", ofile, defs, sfile)
+		err := b.run(a, p.Dir, p.ImportPath, nil, tools.compiler(), "-xassembler-with-cpp", "-I", a.Objdir, "-c", "-o", ofile, defs, sfile)
 		if err != nil {
 			return nil, err
 		}
@@ -185,7 +185,7 @@ func (gccgoToolchain) pack(b *Builder, a *Action, afile string, ofiles []string)
 	for _, f := range ofiles {
 		absOfiles = append(absOfiles, mkAbs(objdir, f))
 	}
-	return b.run(p.Dir, p.ImportPath, nil, "ar", "rc", mkAbs(objdir, afile), absOfiles)
+	return b.run(a, p.Dir, p.ImportPath, nil, "ar", "rc", mkAbs(objdir, afile), absOfiles)
 }
 
 func (tools gccgoToolchain) link(b *Builder, root *Action, out, importcfg string, allactions []*Action, buildmode, desc string) error {
@@ -245,11 +245,11 @@ func (tools gccgoToolchain) link(b *Builder, root *Action, out, importcfg string
 				return "", nil
 			}
 		}
-		err := b.run(root.Objdir, desc, nil, "ar", "x", newArchive, "_cgo_flags")
+		err := b.run(root, root.Objdir, desc, nil, "ar", "x", newArchive, "_cgo_flags")
 		if err != nil {
 			return "", err
 		}
-		err = b.run(".", desc, nil, "ar", "d", newArchive, "_cgo_flags")
+		err = b.run(root, ".", desc, nil, "ar", "d", newArchive, "_cgo_flags")
 		if err != nil {
 			return "", err
 		}
@@ -427,13 +427,13 @@ func (tools gccgoToolchain) link(b *Builder, root *Action, out, importcfg string
 		}
 	}
 
-	if err := b.run(".", desc, nil, tools.linker(), "-o", out, ldflags, buildGccgoflags); err != nil {
+	if err := b.run(root, ".", desc, nil, tools.linker(), "-o", out, ldflags, forcedGccgoflags, root.Package.Internal.Gccgoflags); err != nil {
 		return err
 	}
 
 	switch buildmode {
 	case "c-archive":
-		if err := b.run(".", desc, nil, "ar", "rc", realOut, out); err != nil {
+		if err := b.run(root, ".", desc, nil, "ar", "rc", realOut, out); err != nil {
 			return err
 		}
 	}
@@ -444,10 +444,10 @@ func (tools gccgoToolchain) ld(b *Builder, root *Action, out, importcfg, mainpkg
 	return tools.link(b, root, out, importcfg, root.Deps, ldBuildmode, root.Package.ImportPath)
 }
 
-func (tools gccgoToolchain) ldShared(b *Builder, toplevelactions []*Action, out, importcfg string, allactions []*Action) error {
-	fakeRoot := &Action{Mode: "gccgo ldshared"}
+func (tools gccgoToolchain) ldShared(b *Builder, root *Action, toplevelactions []*Action, out, importcfg string, allactions []*Action) error {
+	fakeRoot := *root
 	fakeRoot.Deps = toplevelactions
-	return tools.link(b, fakeRoot, out, importcfg, allactions, "shared", out)
+	return tools.link(b, &fakeRoot, out, importcfg, allactions, "shared", out)
 }
 
 func (tools gccgoToolchain) cc(b *Builder, a *Action, ofile, cfile string) error {
@@ -464,7 +464,7 @@ func (tools gccgoToolchain) cc(b *Builder, a *Action, ofile, cfile string) error
 		defs = append(defs, "-fsplit-stack")
 	}
 	defs = tools.maybePIC(defs)
-	return b.run(p.Dir, p.ImportPath, nil, envList("CC", cfg.DefaultCC), "-Wall", "-g",
+	return b.run(a, p.Dir, p.ImportPath, nil, envList("CC", cfg.DefaultCC(cfg.Goos, cfg.Goarch)), "-Wall", "-g",
 		"-I", a.Objdir, "-I", inc, "-o", ofile, defs, "-c", cfile)
 }
 

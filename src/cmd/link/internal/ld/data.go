@@ -1008,11 +1008,13 @@ func (d bySizeAndName) Less(i, j int) bool {
 	return s1.name < s2.name
 }
 
-const cutoff int64 = 2e9 // 2 GB (or so; looks better in errors than 2^31)
+// cutoff is the maximum data section size permitted by the linker
+// (see issue #9862).
+const cutoff = 2e9 // 2 GB (or so; looks better in errors than 2^31)
 
 func checkdatsize(ctxt *Link, datsize int64, symn sym.SymKind) {
 	if datsize > cutoff {
-		Errorf(nil, "too much data in section %v (over %d bytes)", symn, cutoff)
+		Errorf(nil, "too much data in section %v (over %v bytes)", symn, cutoff)
 	}
 }
 
@@ -1857,6 +1859,7 @@ func assignAddress(ctxt *Link, sect *sym.Section, n int, s *sym.Symbol, va uint6
 	// Only break at outermost syms.
 
 	if ctxt.Arch.InFamily(sys.PPC64) && s.Outer == nil && ctxt.IsELF && ctxt.LinkMode == LinkExternal && va-sect.Vaddr+funcsize+maxSizeTrampolinesPPC64(s, isTramp) > 0x1c00000 {
+
 		// Set the length for the previous text section
 		sect.Length = va - sect.Vaddr
 

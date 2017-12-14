@@ -141,6 +141,7 @@ func PrintfTests() {
 	fmt.Printf("%.*s %d %6g", 3, "hi", 23, 'x') // ERROR "Printf format %6g has arg 'x' of wrong type rune"
 	fmt.Println()                               // not an error
 	fmt.Println("%s", "hi")                     // ERROR "Println call has possible formatting directive %s"
+	fmt.Println("%v", "hi")                     // ERROR "Println call has possible formatting directive %v"
 	fmt.Println("0.0%")                         // correct (trailing % couldn't be a formatting directive)
 	fmt.Printf("%s", "hi", 3)                   // ERROR "Printf call needs 1 arg but has 2 args"
 	_ = fmt.Sprintf("%"+("s"), "hi", 3)         // ERROR "Sprintf call needs 1 arg but has 2 args"
@@ -163,11 +164,12 @@ func PrintfTests() {
 	Printf(format, "hi")              // ERROR "Printf format %s reads arg #2, but call has only 1 arg$"
 	Printf("%s %d %.3v %q", "str", 4) // ERROR "Printf format %.3v reads arg #3, but call has only 2 args"
 	f := new(stringer)
-	f.Warn(0, "%s", "hello", 3)  // ERROR "Warn call has possible formatting directive %s"
-	f.Warnf(0, "%s", "hello", 3) // ERROR "Warnf call needs 1 arg but has 2 args"
-	f.Warnf(0, "%r", "hello")    // ERROR "Warnf format %r has unknown verb r"
-	f.Warnf(0, "%#s", "hello")   // ERROR "Warnf format %#s has unrecognized flag #"
-	Printf("d%", 2)              // ERROR "Printf format % is missing verb at end of string"
+	f.Warn(0, "%s", "hello", 3)           // ERROR "Warn call has possible formatting directive %s"
+	f.Warnf(0, "%s", "hello", 3)          // ERROR "Warnf call needs 1 arg but has 2 args"
+	f.Warnf(0, "%r", "hello")             // ERROR "Warnf format %r has unknown verb r"
+	f.Warnf(0, "%#s", "hello")            // ERROR "Warnf format %#s has unrecognized flag #"
+	fmt.Printf("%#s", FormatterVal(true)) // correct (the type is responsible for formatting)
+	Printf("d%", 2)                       // ERROR "Printf format % is missing verb at end of string"
 	Printf("%d", percentDV)
 	Printf("%d", &percentDV)
 	Printf("%d", notPercentDV)  // ERROR "Printf format %d has arg notPercentDV of wrong type testdata.notPercentDStruct"
@@ -532,4 +534,9 @@ func UnexportedStringerOrError() {
 	}
 	fmt.Printf("%s", uef)  // ERROR "Printf format %s has arg uef of wrong type testdata.unexportedErrorOtherFields"
 	fmt.Printf("%s", &uef) // ERROR "Printf format %s has arg &uef of wrong type [*]testdata.unexportedErrorOtherFields"
+
+	fmt.Println("foo\n", "bar") // not an error
+	fmt.Println("foo\n")        // ERROR "Println arg list ends with redundant newline"
+	fmt.Println("foo\\n")       // not an error
+	fmt.Println(`foo\n`)        // not an error
 }

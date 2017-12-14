@@ -355,6 +355,24 @@ func ExampleParseInLocation() {
 	// 2012-07-09 00:00:00 +0200 CEST
 }
 
+func ExampleTime_Unix() {
+	// 1 billion seconds of Unix, three ways.
+	fmt.Println(time.Unix(1e9, 0).UTC())     // 1e9 seconds
+	fmt.Println(time.Unix(0, 1e18).UTC())    // 1e18 nanoseconds
+	fmt.Println(time.Unix(2e9, -1e18).UTC()) // 2e9 seconds - 1e18 nanoseconds
+
+	t := time.Date(2001, time.September, 9, 1, 46, 40, 0, time.UTC)
+	fmt.Println(t.Unix())     // seconds since 1970
+	fmt.Println(t.UnixNano()) // nanoseconds since 1970
+
+	// Output:
+	// 2001-09-09 01:46:40 +0000 UTC
+	// 2001-09-09 01:46:40 +0000 UTC
+	// 2001-09-09 01:46:40 +0000 UTC
+	// 1000000000
+	// 1000000000000000000
+}
+
 func ExampleTime_Round() {
 	t := time.Date(0, 0, 0, 12, 15, 30, 918273645, time.UTC)
 	round := []time.Duration{
@@ -568,4 +586,15 @@ func ExampleTime_Sub() {
 
 	// Output:
 	// difference = 12h0m0s
+}
+
+func ExampleTime_AppendFormat() {
+	t := time.Date(2017, time.November, 4, 11, 0, 0, 0, time.UTC)
+	text := []byte("Time: ")
+
+	text = t.AppendFormat(text, time.Kitchen)
+	fmt.Println(string(text))
+
+	// Output:
+	// Time: 11:00AM
 }

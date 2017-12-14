@@ -97,109 +97,6 @@ type S3 struct {
 	f3	int	// f3 is not exported
 }
 
-type T struct {	// foo
-
-	// bar
-	x	int
-	X	int
-}
-
-type T struct {	/* foo */
-
-	// bar
-	x int
-}
-
-type T struct {	// foo
-
-	x	int
-
-	X	int
-}
-
-type T struct {	/* foo */
-
-	x int
-}
-
-type T struct {
-	x int
-}
-
-type T struct {
-	x int
-}
-
-type T struct{ x int }
-
-type T struct {
-	x int
-}
-
-type T struct {
-	x	int
-	X	int
-	x	int
-}
-
-type T struct {
-	// Comment
-	x	int
-	// X.
-	X	int
-	// Comment
-	x	int
-}
-
-const (	// foo
-
-	// bar
-	x	int	= 0
-	X	int	= 0
-)
-
-const (	/* foo */
-
-	// bar
-	x int = 0
-)
-
-const (	// foo
-
-	x	int	= 0
-
-	X	int	= 0
-)
-
-const (	/* foo */
-
-	x int = 0
-)
-
-const (
-	x int = 0
-)
-
-const (
-	x	int	= 0
-	X	int	= 0
-)
-
-const (
-	x	int	= 0
-	X	int	= 0
-	x	int	= 0
-)
-
-const (
-	// Comment
-	x	int	= 0
-	// X.
-	X	int	= 0
-	// Comment
-	x	int	= 0
-)
-
 // This comment group should be separated
 // with a newline from the next comment
 // group.
@@ -829,6 +726,34 @@ func _() {
 	   line 2:
 	   line 3:
 	*/
+}
+
+var _ = []T{ /* lone comment */ }
+
+var _ = []T{
+	/* lone comment */
+}
+
+var _ = []T{
+	// lone comments
+	// in composite lit
+}
+
+var _ = [][]T{
+	{
+		// lone comments
+		// in composite lit
+	},
+}
+
+// TODO: gofmt doesn't add these tabs; make it so that these golden
+// tests run the printer in a way that it's exactly like gofmt.
+
+var _ = []T{	// lone comment
+}
+
+var _ = []T{	// lone comments
+	// in composite lit
 }
 
 /* This comment is the last entry in this file. It must be printed and should be followed by a newline */

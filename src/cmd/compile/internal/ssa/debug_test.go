@@ -34,6 +34,9 @@ var inlines = flag.Bool("i", false, "do inlining for gdb (makes testing flaky ti
 var hexRe = regexp.MustCompile("0x[a-zA-Z0-9]+")
 var numRe = regexp.MustCompile("-?[0-9]+")
 var stringRe = regexp.MustCompile("\"([^\\\"]|(\\.))*\"")
+var leadingDollarNumberRe = regexp.MustCompile("^[$][0-9]+")
+var optOutGdbRe = regexp.MustCompile("[<]optimized out[>]")
+var numberColonRe = regexp.MustCompile("^ *[0-9]+:")
 
 var gdb = "gdb"      // Might be "ggdb" on Darwin, because gdb no longer part of XCode
 var debugger = "gdb" // For naming files, etc.
@@ -68,8 +71,9 @@ var debugger = "gdb" // For naming files, etc.
 // The file being tested may contain comments of the form
 // //DBG-TAG=(v1,v2,v3)
 // where DBG = {gdb,dlv} and TAG={dbg,opt}
-// each variable may optionally be followed by a / and one or more of S,A,N
+// each variable may optionally be followed by a / and one or more of S,A,N,O
 // to indicate normalization of Strings, (hex) addresses, and numbers.
+// "O" is an explicit indication that we expect it to be optimized out.
 // For example:
 /*
 	if len(os.Args) > 1 { //gdb-dbg=(hist/A,cannedInput/A) //dlv-dbg=(hist/A,cannedInput/A)
@@ -128,6 +132,12 @@ func TestNexting(t *testing.T) {
 	t.Run("dbg-"+debugger, func(t *testing.T) {
 		testNexting(t, "hist", "dbg", "-N -l")
 	})
+	t.Run("dbg-race-"+debugger, func(t *testing.T) {
+		testNexting(t, "i22600", "dbg-race", "-N -l", "-race")
+	})
+	t.Run("dbg-22558-"+debugger, func(t *testing.T) {
+		testNexting(t, "i22558", "dbg-22558", "-N -l")
+	})
 	t.Run("opt-"+debugger, func(t *testing.T) {
 		// If this is test is run with a runtime compiled with -N -l, it is very likely to fail.
 		// This occurs in the noopt builders (for example).
@@ -144,7 +154,7 @@ func TestNexting(t *testing.T) {
 	})
 }
 
-func testNexting(t *testing.T, base, tag, gcflags string) {
+func testNexting(t *testing.T, base, tag, gcflags string, moreArgs ...string) {
 	// (1) In testdata, build sample.go into sample
 	// (2) Run debugger gathering a history
 	// (3) Read expected history from testdata/sample.<variant>.nexts
@@ -167,13 +177,13 @@ func testNexting(t *testing.T, base, tag, gcflags string) {
 		defer os.RemoveAll(tmpdir)
 	}
 
-	if gcflags == "" {
-		runGo(t, "", "build", "-o", exe, filepath.Join("testdata", base+".go"))
-	} else {
-		runGo(t, "", "build", "-o", exe, "-gcflags", gcflags, filepath.Join("testdata", base+".go"))
-	}
-	var h1 *nextHist
+	runGoArgs := []string{"build", "-o", exe, "-gcflags=all=" + gcflags}
+	runGoArgs = append(runGoArgs, moreArgs...)
+	runGoArgs = append(runGoArgs, filepath.Join("testdata", base+".go"))
 
+	runGo(t, "", runGoArgs...)
+
+	var h1 *nextHist
 	nextlog := logbase + "-" + debugger + ".nexts"
 	tmplog := tmpbase + "-" + debugger + ".nexts"
 	if *useDelve {
@@ -302,13 +312,9 @@ func (h *nextHist) write(filename string) {
 			lastfile = p.file
 		}
 		fmt.Fprintf(file, "%d:%s\n", p.line, x)
-		// Vars must begin with a dollar-sign.
 		// TODO, normalize between gdb and dlv into a common, comparable format.
 		for _, y := range h.vars[i] {
 			y = strings.TrimSpace(y)
-			if y[0] != '$' {
-				panic(fmt.Sprintf("Var line '%s' must begin with $, but does not\n", y))
-			}
 			fmt.Fprintf(file, "%s\n", y)
 		}
 	}
@@ -328,15 +334,15 @@ func (h *nextHist) read(filename string) {
 			if l[0] == ' ' {
 				// file -- first two characters expected to be "  "
 				lastfile = strings.TrimSpace(l)
-			} else if l[0] == '$' {
-				h.addVar(l)
-			} else {
+			} else if numberColonRe.MatchString(l) {
 				// line number -- <number>:<line>
 				colonPos := strings.Index(l, ":")
 				if colonPos == -1 {
 					panic(fmt.Sprintf("Line %d (%s) in file %s expected to contain '<number>:' but does not.\n", i+1, l, filename))
 				}
 				h.add(lastfile, l[0:colonPos], l[colonPos+1:])
+			} else {
+				h.addVar(l)
 			}
 		}
 	}
@@ -409,6 +415,19 @@ func (h *nextHist) equals(k *nextHist) bool {
 			return false
 		}
 	}
+
+	for i, hv := range h.vars {
+		kv := k.vars[i]
+		if len(hv) != len(kv) {
+			return false
+		}
+		for j, hvt := range hv {
+			if hvt != kv[j] {
+				return false
+			}
+		}
+	}
+
 	return true
 }
 
@@ -485,7 +504,7 @@ func (s *delveState) stepnext(ss string) bool {
 func (s *delveState) start() {
 	if *dryrun {
 		fmt.Printf("%s\n", asCommandLine("", s.cmd))
-		fmt.Printf("b main.main\n")
+		fmt.Printf("b main.test\n")
 		fmt.Printf("c\n")
 		return
 	}
@@ -495,7 +514,7 @@ func (s *delveState) start() {
 		panic(fmt.Sprintf("There was an error [start] running '%s', %v\n", line, err))
 	}
 	s.ioState.readExpecting(-1, 5000, "Type 'help' for list of commands.")
-	expect("Breakpoint [0-9]+ set at ", s.ioState.writeReadExpect("b main.main\n", "[(]dlv[)] "))
+	expect("Breakpoint [0-9]+ set at ", s.ioState.writeReadExpect("b main.test\n", "[(]dlv[)] "))
 	s.stepnext("c")
 }
 
@@ -524,7 +543,7 @@ func newGdb(tag, executable string, args ...string) dbgr {
 	s := &gdbState{tag: tag, cmd: cmd, args: args}
 	s.atLineRe = regexp.MustCompile("(^|\n)([0-9]+)(.*)")
 	s.funcFileLinePCre = regexp.MustCompile(
-		"([^ ]+) [(][)][ \\t\\n]+at ([^:]+):([0-9]+)")
+		"([^ ]+) [(][^)]*[)][ \\t\\n]+at ([^:]+):([0-9]+)")
 	// runtime.main () at /Users/drchase/GoogleDrive/work/go/src/runtime/proc.go:201
 	//                                    function              file    line
 	// Thread 2 hit Breakpoint 1, main.main () at /Users/drchase/GoogleDrive/work/debug/hist.go:18
@@ -539,7 +558,7 @@ func (s *gdbState) start() {
 	}
 	if *dryrun {
 		fmt.Printf("%s\n", asCommandLine("", s.cmd))
-		fmt.Printf("tbreak main.main\n")
+		fmt.Printf("tbreak main.test\n")
 		fmt.Printf("%s\n", run)
 		return
 	}
@@ -549,7 +568,7 @@ func (s *gdbState) start() {
 		panic(fmt.Sprintf("There was an error [start] running '%s', %v\n", line, err))
 	}
 	s.ioState.readExpecting(-1, -1, "[(]gdb[)] ")
-	x := s.ioState.writeReadExpect("b main.main\n", "[(]gdb[)] ")
+	x := s.ioState.writeReadExpect("b main.test\n", "[(]gdb[)] ")
 	expect("Breakpoint [0-9]+ at", x)
 	s.stepnext(run)
 }
@@ -621,7 +640,11 @@ func (s *gdbState) stepnext(ss string) bool {
 		if cr == -1 {
 			cr = len(response)
 		}
+		// Convert the leading $<number> into $<N> to limit scope of diffs
+		// when a new print-this-variable comment is added.
 		response = strings.TrimSpace(response[dollar:cr])
+		response = leadingDollarNumberRe.ReplaceAllString(response, v)
+
 		if strings.Contains(substitutions, "A") {
 			response = hexRe.ReplaceAllString(response, "<A>")
 		}
@@ -630,6 +653,9 @@ func (s *gdbState) stepnext(ss string) bool {
 		}
 		if strings.Contains(substitutions, "S") {
 			response = stringRe.ReplaceAllString(response, "<S>")
+		}
+		if strings.Contains(substitutions, "O") {
+			response = optOutGdbRe.ReplaceAllString(response, "<Optimized out, as expected>")
 		}
 		s.ioState.history.addVar(response)
 	}
