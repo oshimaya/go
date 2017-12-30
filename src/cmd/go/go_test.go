@@ -2982,6 +2982,18 @@ func TestGoTestMainAsNormalTest(t *testing.T) {
 	tg.grepBoth(okPattern, "go test did not say ok")
 }
 
+func TestGoTestMainTwice(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.makeTempdir()
+	tg.setenv("GOCACHE", tg.tempdir)
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+	tg.run("test", "-v", "multimain")
+	if strings.Count(tg.getStdout(), "notwithstanding") != 2 {
+		t.Fatal("tests did not run twice")
+	}
+}
+
 func TestGoTestFlagsAfterPackage(t *testing.T) {
 	tg := testgo(t)
 	defer tg.cleanup()
@@ -5263,6 +5275,10 @@ func TestTestVet(t *testing.T) {
 
 	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
 	tg.run("test", "vetcycle") // must not fail; #22890
+
+	tg.runFail("test", "vetfail/...")
+	tg.grepStderr(`Printf format %d`, "did not diagnose bad Printf")
+	tg.grepStdout(`ok\s+vetfail/p2`, "did not run vetfail/p2")
 }
 
 func TestInstallDeps(t *testing.T) {
