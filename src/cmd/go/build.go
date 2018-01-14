@@ -2121,6 +2121,42 @@ func (b *builder) ccompilerCmd(envvar, defcmd, objdir string) []string {
 	return a
 }
 
+// gccNoPie returns the flag to use to request non-PIE. On systems
+// with PIE (position independent executables) enabled by default,
+// -no-pie must be passed when doing a partial link with -Wl,-r.
+// But -no-pie is not supported by all compilers, and clang spells it -nopie.
+func (b *builder) gccNoPie() string {
+	if goos != "linux" {
+		// On some BSD platforms, error messages from the
+		// compiler make it to the console despite cmd.Std*
+		// all being nil. As -no-pie is only required on linux
+		// systems so far, we only test there.
+		return ""
+	}
+	src := filepath.Join(b.work, "trivial.c")
+	if err := ioutil.WriteFile(src, []byte{}, 0666); err != nil {
+		return ""
+	}
+	for _, nopie := range []string{"-no-pie", "-nopie"} {
+		cmdArgs := b.gccCmd(b.work)
+		cmdArgs = append(cmdArgs, nopie, "-c", "trivial.c")
+		if buildN || buildX {
+			b.showcmd(b.work, "%s", joinUnambiguously(cmdArgs))
+			if buildN {
+				return ""
+			}
+		}
+		cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+		cmd.Dir = b.work
+		cmd.Env = envForDir(cmd.Dir)
+		err := cmd.Run()
+		if err == nil {
+			return nopie
+		}
+	}
+	return ""
+}
+
 // gccArchArgs returns arguments to pass to gcc based on the architecture.
 func (b *builder) gccArchArgs() []string {
 	switch archChar {
@@ -2368,6 +2404,10 @@ func (b *builder) cgo(p *Package, cgoExe, obj string, pcCFLAGS, pcLDFLAGS, gccfi
 		}
 	}
 	ldflags := stringList(bareLDFLAGS, "-Wl,-r", "-nostdlib", staticLibs)
+
+	if flag := b.gccNoPie(); flag != "" {
+		ldflags = append(ldflags, flag)
+	}
 
 	// Some systems, such as Ubuntu, always add --build-id to
 	// every link, but we don't want a build ID since we are
