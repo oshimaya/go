@@ -4,6 +4,10 @@
 
 // Package sha512 implements the SHA-384, SHA-512, SHA-512/224, and SHA-512/256
 // hash algorithms as defined in FIPS 180-4.
+//
+// All the hash.Hash implementations returned by this package also
+// implement encoding.BinaryMarshaler and encoding.BinaryUnmarshaler to
+// marshal and unmarshal the internal state of the hash.
 package sha512
 
 import (
@@ -155,7 +159,8 @@ func (d *digest) MarshalBinary() ([]byte, error) {
 	b = appendUint64(b, d.h[5])
 	b = appendUint64(b, d.h[6])
 	b = appendUint64(b, d.h[7])
-	b = append(b, d.x[:]...)
+	b = append(b, d.x[:d.nx]...)
+	b = b[:len(b)+len(d.x)-int(d.nx)] // already zero
 	b = appendUint64(b, d.len)
 	return b, nil
 }

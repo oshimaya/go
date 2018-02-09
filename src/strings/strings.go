@@ -166,6 +166,10 @@ func IndexRune(s string, r rune) int {
 // IndexAny returns the index of the first instance of any Unicode code point
 // from chars in s, or -1 if no Unicode code point from chars is present in s.
 func IndexAny(s, chars string) int {
+	if chars == "" {
+		// Avoid scanning all of s.
+		return -1
+	}
 	if len(s) > 8 {
 		if as, isASCII := makeASCIISet(chars); isASCII {
 			for i := 0; i < len(s); i++ {
@@ -190,6 +194,10 @@ func IndexAny(s, chars string) int {
 // point from chars in s, or -1 if no Unicode code point from chars is
 // present in s.
 func LastIndexAny(s, chars string) int {
+	if chars == "" {
+		// Avoid scanning all of s.
+		return -1
+	}
 	if len(s) > 8 {
 		if as, isASCII := makeASCIISet(chars); isASCII {
 			for i := len(s) - 1; i >= 0; i-- {
@@ -917,4 +925,28 @@ func EqualFold(s, t string) bool {
 
 	// One string is empty. Are both?
 	return s == t
+}
+
+func indexRabinKarp(s, substr string) int {
+	// Rabin-Karp search
+	hashss, pow := hashStr(substr)
+	n := len(substr)
+	var h uint32
+	for i := 0; i < n; i++ {
+		h = h*primeRK + uint32(s[i])
+	}
+	if h == hashss && s[:n] == substr {
+		return 0
+	}
+	for i := n; i < len(s); {
+		h *= primeRK
+		h += uint32(s[i])
+		h -= pow * uint32(s[i-n])
+		i++
+		if h == hashss && s[i-n:i] == substr {
+			return i - n
+		}
+	}
+	return -1
+
 }

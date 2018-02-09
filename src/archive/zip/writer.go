@@ -26,13 +26,11 @@ type Writer struct {
 	last        *fileWriter
 	closed      bool
 	compressors map[uint16]Compressor
+	comment     string
 
 	// testHookCloseSizeOffset if non-nil is called with the size
 	// of offset of the central directory at Close.
 	testHookCloseSizeOffset func(size, offset uint64)
-
-	// Comment is the central directory comment and must be set before Close is called.
-	Comment string
 }
 
 type header struct {
@@ -62,13 +60,19 @@ func (w *Writer) Flush() error {
 	return w.cw.w.(*bufio.Writer).Flush()
 }
 
+// SetComment sets the end-of-central-directory comment field.
+// It can only be called before Close.
+func (w *Writer) SetComment(comment string) error {
+	if len(comment) > uint16max {
+		return errors.New("zip: Writer.Comment too long")
+	}
+	w.comment = comment
+	return nil
+}
+
 // Close finishes writing the zip file by writing the central directory.
 // It does not (and cannot) close the underlying writer.
 func (w *Writer) Close() error {
-	if len(w.Comment) > uint16max {
-		return errors.New("zip: Writer.Comment too long")
-	}
-
 	if w.last != nil && !w.last.closed {
 		if err := w.last.close(); err != nil {
 			return err
@@ -189,11 +193,11 @@ func (w *Writer) Close() error {
 	b.uint16(uint16(records))        // number of entries total
 	b.uint32(uint32(size))           // size of directory
 	b.uint32(uint32(offset))         // start of directory
-	b.uint16(uint16(len(w.Comment))) // byte size of EOCD comment
+	b.uint16(uint16(len(w.comment))) // byte size of EOCD comment
 	if _, err := w.cw.Write(buf[:]); err != nil {
 		return err
 	}
-	if _, err := io.WriteString(w.cw, w.Comment); err != nil {
+	if _, err := io.WriteString(w.cw, w.comment); err != nil {
 		return err
 	}
 
@@ -202,6 +206,7 @@ func (w *Writer) Close() error {
 
 // Create adds a file to the zip file using the provided name.
 // It returns a Writer to which the file contents should be written.
+// The file contents will be compressed using the Deflate method.
 // The name must be a relative path: it must not start with a drive
 // letter (e.g. C:) or leading slash, and only forward slashes are
 // allowed.
@@ -219,7 +224,9 @@ func (w *Writer) Create(name string) (io.Writer, error) {
 // must be considered UTF-8 encoding (i.e., not compatible with CP-437, ASCII,
 // or any other common encoding).
 func detectUTF8(s string) (valid, require bool) {
-	for _, r := range s {
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
 		// Officially, ZIP uses CP-437, but many readers use the system's
 		// local character encoding. Most encoding are compatible with a large
 		// subset of CP-437, which itself is ASCII-like.
@@ -227,7 +234,7 @@ func detectUTF8(s string) (valid, require bool) {
 		// Forbid 0x7e and 0x5c since EUC-KR and Shift-JIS replace those
 		// characters with localized currency and overline characters.
 		if r < 0x20 || r > 0x7d || r == 0x5c {
-			if !utf8.ValidRune(r) || r == utf8.RuneError {
+			if !utf8.ValidRune(r) || (r == utf8.RuneError && size == 1) {
 				return false, false
 			}
 			require = true
@@ -303,7 +310,7 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 		// This format happens to be identical for both local and central header
 		// if modification time is the only timestamp being encoded.
 		var mbuf [9]byte // 2*SizeOf(uint16) + SizeOf(uint8) + SizeOf(uint32)
-		mt := uint32(fh.ModTime().Unix())
+		mt := uint32(fh.Modified.Unix())
 		eb := writeBuf(mbuf[:])
 		eb.uint16(extTimeExtraID)
 		eb.uint16(5)  // Size: SizeOf(uint8) + SizeOf(uint32)

@@ -18,7 +18,7 @@
 // To add equivalent profiling support to a standalone program, add
 // code like the following to your main function:
 //
-//    var cpuprofile = flag.String("cpuprofile", "", "write cpu profile `file`")
+//    var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to `file`")
 //    var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
 //
 //    func main() {
@@ -350,7 +350,8 @@ type countProfile interface {
 // as the pprof-proto format output. Translations from cycle count to time duration
 // are done because The proto expects count and time (nanoseconds) instead of count
 // and the number of cycles for block, contention profiles.
-func printCountCycleProfile(w io.Writer, countName, cycleName string, records []runtime.BlockProfileRecord) error {
+// Possible 'scaler' functions are scaleBlockProfile and scaleMutexProfile.
+func printCountCycleProfile(w io.Writer, countName, cycleName string, scaler func(int64, float64) (int64, float64), records []runtime.BlockProfileRecord) error {
 	// Output profile in protobuf form.
 	b := newProfileBuilder(w)
 	b.pbValueType(tagProfile_PeriodType, countName, "count")
@@ -363,8 +364,9 @@ func printCountCycleProfile(w io.Writer, countName, cycleName string, records []
 	values := []int64{0, 0}
 	var locs []uint64
 	for _, r := range records {
-		values[0] = int64(r.Count)
-		values[1] = int64(float64(r.Cycles) / cpuGHz) // to nanoseconds
+		count, nanosec := scaler(r.Count, float64(r.Cycles)/cpuGHz)
+		values[0] = count
+		values[1] = int64(nanosec)
 		locs = locs[:0]
 		for _, addr := range r.Stack() {
 			// For count profiles, all stack addresses are
@@ -509,6 +511,14 @@ func countHeap() int {
 
 // writeHeap writes the current runtime heap profile to w.
 func writeHeap(w io.Writer, debug int) error {
+	var memStats *runtime.MemStats
+	if debug != 0 {
+		// Read mem stats first, so that our other allocations
+		// do not appear in the statistics.
+		memStats = new(runtime.MemStats)
+		runtime.ReadMemStats(memStats)
+	}
+
 	// Find out how many records there are (MemProfile(nil, true)),
 	// allocate that many records, and get the data.
 	// There's a race—more records might be added between
@@ -571,8 +581,7 @@ func writeHeap(w io.Writer, debug int) error {
 
 	// Print memstats information too.
 	// Pprof will ignore, but useful for people
-	s := new(runtime.MemStats)
-	runtime.ReadMemStats(s)
+	s := memStats
 	fmt.Fprintf(w, "\n# runtime.MemStats\n")
 	fmt.Fprintf(w, "# Alloc = %d\n", s.Alloc)
 	fmt.Fprintf(w, "# TotalAlloc = %d\n", s.TotalAlloc)
@@ -799,7 +808,7 @@ func writeBlock(w io.Writer, debug int) error {
 	sort.Slice(p, func(i, j int) bool { return p[i].Cycles > p[j].Cycles })
 
 	if debug <= 0 {
-		return printCountCycleProfile(w, "contentions", "delay", p)
+		return printCountCycleProfile(w, "contentions", "delay", scaleBlockProfile, p)
 	}
 
 	b := bufio.NewWriter(w)
@@ -826,6 +835,14 @@ func writeBlock(w io.Writer, debug int) error {
 	return b.Flush()
 }
 
+func scaleBlockProfile(cnt int64, ns float64) (int64, float64) {
+	// Do nothing.
+	// The current way of block profile sampling makes it
+	// hard to compute the unsampled number. The legacy block
+	// profile parse doesn't attempt to scale or unsample.
+	return cnt, ns
+}
+
 // writeMutex writes the current mutex profile to w.
 func writeMutex(w io.Writer, debug int) error {
 	// TODO(pjw): too much common code with writeBlock. FIX!
@@ -843,7 +860,7 @@ func writeMutex(w io.Writer, debug int) error {
 	sort.Slice(p, func(i, j int) bool { return p[i].Cycles > p[j].Cycles })
 
 	if debug <= 0 {
-		return printCountCycleProfile(w, "contentions", "delay", p)
+		return printCountCycleProfile(w, "contentions", "delay", scaleMutexProfile, p)
 	}
 
 	b := bufio.NewWriter(w)
@@ -869,6 +886,11 @@ func writeMutex(w io.Writer, debug int) error {
 		tw.Flush()
 	}
 	return b.Flush()
+}
+
+func scaleMutexProfile(cnt int64, ns float64) (int64, float64) {
+	period := runtime.SetMutexProfileFraction(-1)
+	return cnt * int64(period), ns * float64(period)
 }
 
 func runtime_cyclesPerSecond() int64

@@ -97,7 +97,7 @@ func buildModeInit() {
 			codegenArg = "-fPIC"
 		} else {
 			switch platform {
-			case "linux/amd64", "linux/arm", "linux/arm64", "linux/386", "linux/ppc64le",
+			case "linux/amd64", "linux/arm", "linux/arm64", "linux/386", "linux/ppc64le", "linux/s390x",
 				"android/amd64", "android/arm", "android/arm64", "android/386":
 				codegenArg = "-shared"
 			case "darwin/amd64", "darwin/386":
@@ -123,6 +123,12 @@ func buildModeInit() {
 	case "exe":
 		pkgsFilter = pkgsMain
 		ldBuildmode = "exe"
+		// Set the pkgsFilter to oneMainPkg if the user passed a specific binary output
+		// and is using buildmode=exe for a better error message.
+		// See issue #20017.
+		if cfg.BuildO != "" {
+			pkgsFilter = oneMainPkg
+		}
 	case "pie":
 		if cfg.BuildRace {
 			base.Fatalf("-buildmode=pie not supported when -race is enabled")

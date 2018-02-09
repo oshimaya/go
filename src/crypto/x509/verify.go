@@ -546,15 +546,32 @@ func (c *Certificate) checkNameConstraints(count *int,
 // ekuPermittedBy returns true iff the given extended key usage is permitted by
 // the given EKU from a certificate. Normally, this would be a simple
 // comparison plus a special case for the “any” EKU. But, in order to support
-// COMODO chains, SGC EKUs permit generic server and client authentication
-// EKUs.
+// existing certificates, some exceptions are made.
 func ekuPermittedBy(eku, certEKU ExtKeyUsage) bool {
 	if certEKU == ExtKeyUsageAny || eku == certEKU {
 		return true
 	}
 
-	if (eku == ExtKeyUsageServerAuth || eku == ExtKeyUsageClientAuth) &&
-		(certEKU == ExtKeyUsageNetscapeServerGatedCrypto || certEKU == ExtKeyUsageMicrosoftServerGatedCrypto) {
+	// Some exceptions are made to support existing certificates. Firstly,
+	// the ServerAuth and SGC EKUs are treated as a group.
+	mapServerAuthEKUs := func(eku ExtKeyUsage) ExtKeyUsage {
+		if eku == ExtKeyUsageNetscapeServerGatedCrypto || eku == ExtKeyUsageMicrosoftServerGatedCrypto {
+			return ExtKeyUsageServerAuth
+		}
+		return eku
+	}
+
+	eku = mapServerAuthEKUs(eku)
+	certEKU = mapServerAuthEKUs(certEKU)
+
+	if eku == certEKU ||
+		// ServerAuth in a CA permits ClientAuth in the leaf.
+		(eku == ExtKeyUsageClientAuth && certEKU == ExtKeyUsageServerAuth) ||
+		// Any CA may issue an OCSP responder certificate.
+		eku == ExtKeyUsageOCSPSigning ||
+		// Code-signing CAs can use Microsoft's commercial and
+		// kernel-mode EKUs.
+		((eku == ExtKeyUsageMicrosoftCommercialCodeSigning || eku == ExtKeyUsageMicrosoftKernelCodeSigning) && certEKU == ExtKeyUsageCodeSigning) {
 		return true
 	}
 
@@ -672,7 +689,7 @@ func (c *Certificate) isValid(certType int, currentChain []*Certificate, opts *V
 		}
 	}
 
-	checkEKUs := certType == intermediateCertificate || certType == rootCertificate
+	checkEKUs := certType == intermediateCertificate
 
 	// If no extended key usages are specified, then all are acceptable.
 	if checkEKUs && (len(c.ExtKeyUsage) == 0 && len(c.UnknownExtKeyUsage) == 0) {
@@ -764,7 +781,17 @@ func (c *Certificate) isValid(certType int, currentChain []*Certificate, opts *V
 // If opts.Roots is nil and system roots are unavailable the returned error
 // will be of type SystemRootsError.
 //
-// WARNING: this doesn't do any revocation checking.
+// Name constraints in the intermediates will be applied to all names claimed
+// in the chain, not just opts.DNSName. Thus it is invalid for a leaf to claim
+// example.com if an intermediate doesn't permit it, even if example.com is not
+// the name being validated. Note that DirectoryName constraints are not
+// supported.
+//
+// Extended Key Usage values are enforced down a chain, so an intermediate or
+// root that enumerates EKUs prevents a leaf from asserting an EKU not in that
+// list.
+//
+// WARNING: this function doesn't do any revocation checking.
 func (c *Certificate) Verify(opts VerifyOptions) (chains [][]*Certificate, err error) {
 	// Platform-specific verification needs the ASN.1 contents so
 	// this makes the behavior consistent across platforms.

@@ -34,6 +34,7 @@ var (
 	tags    = flag.String("tags", "", "space-separated list of build tags to apply when parsing")
 	tagList = []string{} // exploded version of tags flag; set in main
 
+	vcfg          vetConfig
 	mustTypecheck bool
 )
 
@@ -194,9 +195,11 @@ type File struct {
 	// Parsed package "foo" when checking package "foo_test"
 	basePkg *Package
 
-	// The objects that are receivers of a "String() string" method.
+	// The keys are the objects that are receivers of a "String()
+	// string" method. The value reports whether the method has a
+	// pointer receiver.
 	// This is used by the recursiveStringer method in print.go.
-	stringers map[*ast.Object]bool
+	stringerPtrs map[*ast.Object]bool
 
 	// Registered checkers to run.
 	checkers map[ast.Node][]func(*File, ast.Node)
@@ -287,9 +290,12 @@ func prefixDirectory(directory string, names []string) {
 type vetConfig struct {
 	Compiler    string
 	Dir         string
+	ImportPath  string
 	GoFiles     []string
 	ImportMap   map[string]string
 	PackageFile map[string]string
+
+	SucceedOnTypecheckFailure bool
 
 	imp types.Importer
 }
@@ -332,7 +338,6 @@ func doPackageCfg(cfgFile string) {
 	if err != nil {
 		errorf("%v", err)
 	}
-	var vcfg vetConfig
 	if err := json.Unmarshal(js, &vcfg); err != nil {
 		errorf("parsing vet config %s: %v", cfgFile, err)
 	}
@@ -427,6 +432,9 @@ func doPackage(names []string, basePkg *Package) *Package {
 	// Type check the package.
 	errs := pkg.check(fs, astFiles)
 	if errs != nil {
+		if vcfg.SucceedOnTypecheckFailure {
+			os.Exit(0)
+		}
 		if *verbose || mustTypecheck {
 			for _, err := range errs {
 				fmt.Fprintf(os.Stderr, "%v\n", err)

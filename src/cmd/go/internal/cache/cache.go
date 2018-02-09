@@ -81,9 +81,9 @@ func (c *Cache) fileName(id [HashSize]byte, key string) string {
 var errMissing = errors.New("cache entry not found")
 
 const (
-	// action entry file is "v1 <hex id> <hex out> <decimal size space-padded to 20 bytes>\n"
+	// action entry file is "v1 <hex id> <hex out> <decimal size space-padded to 20 bytes> <unixnano space-padded to 20 bytes>\n"
 	hexSize   = HashSize * 2
-	entrySize = 2 + 1 + hexSize + 1 + hexSize + 1 + 20 + 1
+	entrySize = 2 + 1 + hexSize + 1 + hexSize + 1 + 20 + 1 + 20 + 1
 )
 
 // verify controls whether to run the cache in verify mode.
@@ -96,6 +96,9 @@ const (
 // verify is enabled by setting the environment variable
 // GODEBUG=gocacheverify=1.
 var verify = false
+
+// DebugTest is set when GODEBUG=gocachetest=1 is in the environment.
+var DebugTest = false
 
 func init() { initEnv() }
 
@@ -110,6 +113,9 @@ func initEnv() {
 		if f == "gocachehash=1" {
 			debugHash = true
 		}
+		if f == "gocachetest=1" {
+			DebugTest = true
+		}
 	}
 }
 
@@ -117,18 +123,24 @@ func initEnv() {
 // returning the corresponding output ID and file size, if any.
 // Note that finding an output ID does not guarantee that the
 // saved file for that output ID is still available.
-func (c *Cache) Get(id ActionID) (OutputID, int64, error) {
+func (c *Cache) Get(id ActionID) (Entry, error) {
 	if verify {
-		return OutputID{}, 0, errMissing
+		return Entry{}, errMissing
 	}
 	return c.get(id)
 }
 
+type Entry struct {
+	OutputID OutputID
+	Size     int64
+	Time     time.Time
+}
+
 // get is Get but does not respect verify mode, so that Put can use it.
-func (c *Cache) get(id ActionID) (OutputID, int64, error) {
-	missing := func() (OutputID, int64, error) {
+func (c *Cache) get(id ActionID) (Entry, error) {
+	missing := func() (Entry, error) {
 		fmt.Fprintf(c.log, "%d miss %x\n", c.now().Unix(), id)
-		return OutputID{}, 0, errMissing
+		return Entry{}, errMissing
 	}
 	f, err := os.Open(c.fileName(id, "a"))
 	if err != nil {
@@ -139,10 +151,13 @@ func (c *Cache) get(id ActionID) (OutputID, int64, error) {
 	if n, err := io.ReadFull(f, entry); n != entrySize || err != io.ErrUnexpectedEOF {
 		return missing()
 	}
-	if entry[0] != 'v' || entry[1] != '1' || entry[2] != ' ' || entry[3+hexSize] != ' ' || entry[3+hexSize+1+64] != ' ' || entry[entrySize-1] != '\n' {
+	if entry[0] != 'v' || entry[1] != '1' || entry[2] != ' ' || entry[3+hexSize] != ' ' || entry[3+hexSize+1+hexSize] != ' ' || entry[3+hexSize+1+hexSize+1+20] != ' ' || entry[entrySize-1] != '\n' {
 		return missing()
 	}
-	eid, eout, esize := entry[3:3+hexSize], entry[3+hexSize+1:3+hexSize+1+hexSize], entry[3+hexSize+1+hexSize+1:entrySize-1]
+	eid, entry := entry[3:3+hexSize], entry[3+hexSize:]
+	eout, entry := entry[1:1+hexSize], entry[1+hexSize:]
+	esize, entry := entry[1:1+20], entry[1+20:]
+	etime, entry := entry[1:1+20], entry[1+20:]
 	var buf [HashSize]byte
 	if _, err := hex.Decode(buf[:], eid); err != nil || buf != id {
 		return missing()
@@ -158,40 +173,129 @@ func (c *Cache) get(id ActionID) (OutputID, int64, error) {
 	if err != nil || size < 0 {
 		return missing()
 	}
+	i = 0
+	for i < len(etime) && etime[i] == ' ' {
+		i++
+	}
+	tm, err := strconv.ParseInt(string(etime[i:]), 10, 64)
+	if err != nil || size < 0 {
+		return missing()
+	}
 
 	fmt.Fprintf(c.log, "%d get %x\n", c.now().Unix(), id)
 
-	// Best-effort attempt to update mtime on file,
-	// so that mtime reflects cache access time.
-	os.Chtimes(c.fileName(id, "a"), c.now(), c.now())
+	c.used(c.fileName(id, "a"))
 
-	return buf, size, nil
+	return Entry{buf, size, time.Unix(0, tm)}, nil
 }
 
 // GetBytes looks up the action ID in the cache and returns
 // the corresponding output bytes.
 // GetBytes should only be used for data that can be expected to fit in memory.
-func (c *Cache) GetBytes(id ActionID) ([]byte, error) {
-	out, _, err := c.Get(id)
+func (c *Cache) GetBytes(id ActionID) ([]byte, Entry, error) {
+	entry, err := c.Get(id)
 	if err != nil {
-		return nil, err
+		return nil, entry, err
 	}
-	data, _ := ioutil.ReadFile(c.OutputFile(out))
-	if sha256.Sum256(data) != out {
-		return nil, errMissing
+	data, _ := ioutil.ReadFile(c.OutputFile(entry.OutputID))
+	if sha256.Sum256(data) != entry.OutputID {
+		return nil, entry, errMissing
 	}
-	return data, nil
+	return data, entry, nil
 }
 
 // OutputFile returns the name of the cache file storing output with the given OutputID.
 func (c *Cache) OutputFile(out OutputID) string {
 	file := c.fileName(out, "d")
-
-	// Best-effort attempt to update mtime on file,
-	// so that mtime reflects cache access time.
-	os.Chtimes(file, c.now(), c.now())
-
+	c.used(file)
 	return file
+}
+
+// Time constants for cache expiration.
+//
+// We set the mtime on a cache file on each use, but at most one per mtimeInterval (1 hour),
+// to avoid causing many unnecessary inode updates. The mtimes therefore
+// roughly reflect "time of last use" but may in fact be older by at most an hour.
+//
+// We scan the cache for entries to delete at most once per trimInterval (1 day).
+//
+// When we do scan the cache, we delete entries that have not been used for
+// at least trimLimit (5 days). Statistics gathered from a month of usage by
+// Go developers found that essentially all reuse of cached entries happened
+// within 5 days of the previous reuse. See golang.org/issue/22990.
+const (
+	mtimeInterval = 1 * time.Hour
+	trimInterval  = 24 * time.Hour
+	trimLimit     = 5 * 24 * time.Hour
+)
+
+// used makes a best-effort attempt to update mtime on file,
+// so that mtime reflects cache access time.
+//
+// Because the reflection only needs to be approximate,
+// and to reduce the amount of disk activity caused by using
+// cache entries, used only updates the mtime if the current
+// mtime is more than an hour old. This heuristic eliminates
+// nearly all of the mtime updates that would otherwise happen,
+// while still keeping the mtimes useful for cache trimming.
+func (c *Cache) used(file string) {
+	info, err := os.Stat(file)
+	if err == nil && c.now().Sub(info.ModTime()) < mtimeInterval {
+		return
+	}
+	os.Chtimes(file, c.now(), c.now())
+}
+
+// Trim removes old cache entries that are likely not to be reused.
+func (c *Cache) Trim() {
+	now := c.now()
+
+	// We maintain in dir/trim.txt the time of the last completed cache trim.
+	// If the cache has been trimmed recently enough, do nothing.
+	// This is the common case.
+	data, _ := ioutil.ReadFile(filepath.Join(c.dir, "trim.txt"))
+	t, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err == nil && now.Sub(time.Unix(t, 0)) < trimInterval {
+		return
+	}
+
+	// Trim each of the 256 subdirectories.
+	// We subtract an additional mtimeInterval
+	// to account for the imprecision of our "last used" mtimes.
+	cutoff := now.Add(-trimLimit - mtimeInterval)
+	for i := 0; i < 256; i++ {
+		subdir := filepath.Join(c.dir, fmt.Sprintf("%02x", i))
+		c.trimSubdir(subdir, cutoff)
+	}
+
+	ioutil.WriteFile(filepath.Join(c.dir, "trim.txt"), []byte(fmt.Sprintf("%d", now.Unix())), 0666)
+}
+
+// trimSubdir trims a single cache subdirectory.
+func (c *Cache) trimSubdir(subdir string, cutoff time.Time) {
+	// Read all directory entries from subdir before removing
+	// any files, in case removing files invalidates the file offset
+	// in the directory scan. Also, ignore error from f.Readdirnames,
+	// because we don't care about reporting the error and we still
+	// want to process any entries found before the error.
+	f, err := os.Open(subdir)
+	if err != nil {
+		return
+	}
+	names, _ := f.Readdirnames(-1)
+	f.Close()
+
+	for _, name := range names {
+		// Remove only cache entries (xxxx-a and xxxx-d).
+		if !strings.HasSuffix(name, "-a") && !strings.HasSuffix(name, "-d") {
+			continue
+		}
+		entry := filepath.Join(subdir, name)
+		info, err := os.Stat(entry)
+		if err == nil && info.ModTime().Before(cutoff) {
+			os.Remove(entry)
+		}
+	}
 }
 
 // putIndexEntry adds an entry to the cache recording that executing the action
@@ -208,13 +312,13 @@ func (c *Cache) putIndexEntry(id ActionID, out OutputID, size int64, allowVerify
 	// in verify mode we are double-checking that the cache entries
 	// are entirely reproducible. As just noted, this may be unrealistic
 	// in some cases but the check is also useful for shaking out real bugs.
-	entry := []byte(fmt.Sprintf("v1 %x %x %20d\n", id, out, size))
+	entry := []byte(fmt.Sprintf("v1 %x %x %20d %20d\n", id, out, size, time.Now().UnixNano()))
 	if verify && allowVerify {
-		oldOut, oldSize, err := c.get(id)
-		if err == nil && (oldOut != out || oldSize != size) {
-			fmt.Fprintf(os.Stderr, "go: internal cache error: id=%x changed:<<<\n%s\n>>>\nold: %x %d\nnew: %x %d\n", id, reverseHash(id), out, size, oldOut, oldSize)
+		old, err := c.get(id)
+		if err == nil && (old.OutputID != out || old.Size != size) {
 			// panic to show stack trace, so we can see what code is generating this cache entry.
-			panic("cache verify failed")
+			msg := fmt.Sprintf("go: internal cache error: cache verify failed: id=%x changed:<<<\n%s\n>>>\nold: %x %d\nnew: %x %d", id, reverseHash(id), out, size, old.OutputID, old.Size)
+			panic(msg)
 		}
 	}
 	file := c.fileName(id, "a")
@@ -222,6 +326,7 @@ func (c *Cache) putIndexEntry(id ActionID, out OutputID, size int64, allowVerify
 		os.Remove(file)
 		return err
 	}
+	os.Chtimes(file, c.now(), c.now()) // mainly for tests
 
 	fmt.Fprintf(c.log, "%d put %x %x %d\n", c.now().Unix(), id, out, size)
 	return nil
@@ -348,6 +453,7 @@ func (c *Cache) copyFile(file io.ReadSeeker, out OutputID, size int64) error {
 		os.Remove(name)
 		return err
 	}
+	os.Chtimes(name, c.now(), c.now()) // mainly for tests
 
 	return nil
 }

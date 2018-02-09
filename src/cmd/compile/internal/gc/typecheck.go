@@ -243,21 +243,15 @@ func callrecvlist(l Nodes) bool {
 }
 
 // indexlit implements typechecking of untyped values as
-// array/slice indexes. It is equivalent to defaultlit
-// except for constants of numerical kind, which are acceptable
-// whenever they can be represented by a value of type int.
+// array/slice indexes. It is almost equivalent to defaultlit
+// but also accepts untyped numeric values representable as
+// value of type int (see also checkmake for comparison).
 // The result of indexlit MUST be assigned back to n, e.g.
 // 	n.Left = indexlit(n.Left)
 func indexlit(n *Node) *Node {
-	if n == nil || !n.Type.IsUntyped() {
-		return n
+	if n != nil && n.Type != nil && n.Type.Etype == TIDEAL {
+		return defaultlit(n, types.Types[TINT])
 	}
-	switch consttype(n) {
-	case CTINT, CTRUNE, CTFLT, CTCPLX:
-		n = defaultlit(n, types.Types[TINT])
-	}
-
-	n = defaultlit(n, nil)
 	return n
 }
 
@@ -2547,18 +2541,18 @@ func hasddd(t *types.Type) bool {
 // typecheck assignment: type list = expression list
 func typecheckaste(op Op, call *Node, isddd bool, tstruct *types.Type, nl Nodes, desc func() string) {
 	var t *types.Type
-	var n *Node
 	var n1 int
 	var n2 int
 	var i int
 
 	lno := lineno
+	defer func() { lineno = lno }()
 
 	if tstruct.Broke() {
-		goto out
+		return
 	}
 
-	n = nil
+	var n *Node
 	if nl.Len() == 1 {
 		n = nl.First()
 		if n.Type != nil && n.Type.IsFuncArgStruct() {
@@ -2587,7 +2581,7 @@ func typecheckaste(op Op, call *Node, isddd bool, tstruct *types.Type, nl Nodes,
 							}
 						}
 					}
-					goto out
+					return
 				}
 
 				if i >= len(rfs) {
@@ -2606,7 +2600,7 @@ func typecheckaste(op Op, call *Node, isddd bool, tstruct *types.Type, nl Nodes,
 			if len(rfs) > len(lfs) {
 				goto toomany
 			}
-			goto out
+			return
 		}
 	}
 
@@ -2650,7 +2644,7 @@ func typecheckaste(op Op, call *Node, isddd bool, tstruct *types.Type, nl Nodes,
 				if n.Type != nil {
 					nl.SetIndex(i, assignconvfn(n, t, desc))
 				}
-				goto out
+				return
 			}
 
 			for ; i < nl.Len(); i++ {
@@ -2660,8 +2654,7 @@ func typecheckaste(op Op, call *Node, isddd bool, tstruct *types.Type, nl Nodes,
 					nl.SetIndex(i, assignconvfn(n, t.Elem(), desc))
 				}
 			}
-
-			goto out
+			return
 		}
 
 		if i >= nl.Len() {
@@ -2685,9 +2678,6 @@ func typecheckaste(op Op, call *Node, isddd bool, tstruct *types.Type, nl Nodes,
 			yyerror("invalid use of ... in %v", op)
 		}
 	}
-
-out:
-	lineno = lno
 	return
 
 notenough:
@@ -2709,8 +2699,7 @@ notenough:
 			n.SetDiag(true)
 		}
 	}
-
-	goto out
+	return
 
 toomany:
 	details := errorDetails(nl, tstruct, isddd)
@@ -2719,7 +2708,6 @@ toomany:
 	} else {
 		yyerror("too many arguments to %v%s", op, details)
 	}
-	goto out
 }
 
 func errorDetails(nl Nodes, tstruct *types.Type, isddd bool) string {
@@ -3111,7 +3099,11 @@ func typecheckcomplit(n *Node) *Node {
 
 				f := lookdot1(nil, l.Sym, t, t.Fields(), 0)
 				if f == nil {
-					yyerror("unknown field '%v' in struct literal of type %v", l.Sym, t)
+					if ci := lookdot1(nil, l.Sym, t, t.Fields(), 2); ci != nil { // Case-insensitive lookup.
+						yyerror("unknown field '%v' in struct literal of type %v (but does have %v)", l.Sym, t, ci.Sym)
+					} else {
+						yyerror("unknown field '%v' in struct literal of type %v", l.Sym, t)
+					}
 					continue
 				}
 				fielddup(f.Sym.Name, hash)
@@ -3785,6 +3777,10 @@ func checkmake(t *types.Type, arg string, n *Node) bool {
 	}
 
 	// defaultlit is necessary for non-constants too: n might be 1.1<<k.
+	// TODO(gri) The length argument requirements for (array/slice) make
+	// are the same as for index expressions. Factor the code better;
+	// for instance, indexlit might be called here and incorporate some
+	// of the bounds checks done for make.
 	n = defaultlit(n, types.Types[TINT])
 
 	return true

@@ -93,7 +93,7 @@ func hcrash() {
 }
 
 func linestr(pos src.XPos) string {
-	return Ctxt.OutermostPos(pos).Format(Debug['C'] == 0)
+	return Ctxt.OutermostPos(pos).Format(Debug['C'] == 0, Debug['L'] == 1)
 }
 
 // lasterror keeps track of the most recently issued error.
@@ -1165,6 +1165,21 @@ func calcHasCall(n *Node) bool {
 		// These ops might panic, make sure they are done
 		// before we start marshaling args for a call. See issue 16760.
 		return true
+
+	// When using soft-float, these ops might be rewritten to function calls
+	// so we ensure they are evaluated first.
+	case OADD, OSUB, OMINUS:
+		if thearch.SoftFloat && (isFloat[n.Type.Etype] || isComplex[n.Type.Etype]) {
+			return true
+		}
+	case OLT, OEQ, ONE, OLE, OGE, OGT:
+		if thearch.SoftFloat && (isFloat[n.Left.Type.Etype] || isComplex[n.Left.Type.Etype]) {
+			return true
+		}
+	case OCONV:
+		if thearch.SoftFloat && ((isFloat[n.Type.Etype] || isComplex[n.Type.Etype]) || (isFloat[n.Left.Type.Etype] || isComplex[n.Left.Type.Etype])) {
+			return true
+		}
 	}
 
 	if n.Left != nil && n.Left.HasCall() {
@@ -1959,6 +1974,11 @@ func addinit(n *Node, init []*Node) *Node {
 	return n
 }
 
+// The linker uses the magic symbol prefixes "go." and "type."
+// Avoid potential confusion between import paths and symbols
+// by rejecting these reserved imports for now. Also, people
+// "can do weird things in GOPATH and we'd prefer they didn't
+// do _that_ weird thing" (per rsc). See also #4257.
 var reservedimports = []string{
 	"go",
 	"type",
@@ -2022,6 +2042,10 @@ func checknil(x *Node, init *Nodes) {
 // Can this type be stored directly in an interface word?
 // Yes, if the representation is a single pointer.
 func isdirectiface(t *types.Type) bool {
+	if t.Broke() {
+		return false
+	}
+
 	switch t.Etype {
 	case TPTR32,
 		TPTR64,
