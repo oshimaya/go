@@ -849,7 +849,8 @@ func elfnetbsdarmsig(sh *ElfShdr, startva uint64, resoff uint64) int {
 }
 
 
-func elfwritenetbsdsig(ctxt *Link, out *OutBuf) int {
+func elfwritenetbsdsig(ctxt *Link) int {
+	out := ctxt.Out
 	// Write Elf_Note header.
 	sh := elfwritenotehdr(out, ".note.netbsd.ident", ELF_NOTE_NETBSD_NAMESZ, ELF_NOTE_NETBSD_DESCSZ, ELF_NOTE_NETBSD_TAG)
 
@@ -2277,7 +2278,7 @@ elfobj:
 	}
 	if ctxt.LinkMode != LinkExternal {
 		if ctxt.HeadType == objabi.Hnetbsd {
-			a += int64(elfwritenetbsdsig(ctxt, ctxt.Out))
+			a += int64(elfwritenetbsdsig(ctxt))
 		}
 		if ctxt.HeadType == objabi.Hopenbsd {
 			a += int64(elfwriteopenbsdsig(ctxt.Out))
