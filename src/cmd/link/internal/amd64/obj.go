@@ -96,7 +96,6 @@ func archinit(ctxt *ld.Link) {
 
 	case objabi.Hlinux, /* elf64 executable */
 		objabi.Hfreebsd,   /* freebsd */
-		objabi.Hnetbsd,    /* netbsd */
 		objabi.Hopenbsd,   /* openbsd */
 		objabi.Hdragonfly, /* dragonfly */
 		objabi.Hsolaris:   /* solaris */
@@ -109,6 +108,17 @@ func archinit(ctxt *ld.Link) {
 		if *ld.FlagRound == -1 {
 			*ld.FlagRound = 4096
 		}
+	case objabi.Hnetbsd: /* netbsd */
+		ld.Elfinit(ctxt)
+
+		ld.HEADR = ld.ELFRESERVE
+		if *ld.FlagTextAddr == -1 {
+			*ld.FlagTextAddr = (1 << 22) + int64(ld.HEADR)
+		}
+		if *ld.FlagRound == -1 {
+			*ld.FlagRound = 0x200000
+		}
+
 
 	case objabi.Hwindows: /* PE executable */
 		// ld.HEADR, ld.FlagTextAddr, ld.FlagRound are set in ld.Peinit
