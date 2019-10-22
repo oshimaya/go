@@ -1,0 +1,34 @@
+# NetBSD specific changes
+## HEAD 
+- arm
+  * remove: (upstream was changed)
+    change cmesg alignment from 4 to 8 when netbsd/arm beacuse this is sizeof(long long) though 32bit.
+    see also system header include/arm/cdefs.h.
+- all
+  * remove original change  for EABI padding in src/runtime/defs1_netbsd_arm.go
+    and  src/cmd/link/internal/ld/elf.go because thease have been merged in
+    upstream. (20161028)
+
+  * Import upstram changes that is pagesize become to variable from constant for all OS and arch, so remove original code  for getting pagesize when netbsd only.
+## 1.7.1
+- arm
+  * Default binary type to armv6, because src/sync/atomic/asm_arm.s and some file use some instructions which is in  only armv6 or lator.
+- all
+  * Merge go1.7.1
+
+## 1.7 
+- arm
+  * Support external linker for NetBSD/earm
+  * Add MARCH tag in ELF header, such as 'earmv6hf' or 'earmv7hf'
+- all
+  * Change NCPU to NCPUONLINE in ncpus for real number of active cores.
+
+## 1.6 or before
+- arm
+  * Change to EABI syscall param, insert padding when 64bit alignment
+  * Change default round size to 64k (0x10000),which is the same as system default linker.
+- amd64
+  * Change default round size to 2G (0x200000),which is the same as system default linker.
+- all
+  * Change PhysPageSize to variable because PageSize is not constant, it is valiable by kernel environment.
+  * Change default crt path
