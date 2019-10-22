@@ -91,13 +91,13 @@ var sigset_all = sigset{[4]uint32{^uint32(0), ^uint32(0), ^uint32(0), ^uint32(0)
 
 // From NetBSD's <sys/sysctl.h>
 const (
-	_CTL_HW      = 6
-	_HW_NCPU     = 3
+	_CTL_HW  = 6
+	_HW_NCPUONLINE = 16
 	_HW_PAGESIZE = 7
 )
 
 func getncpu() int32 {
-	mib := [2]uint32{_CTL_HW, _HW_NCPU}
+	mib := [2]uint32{_CTL_HW, _HW_NCPUONLINE}
 	out := uint32(0)
 	nout := unsafe.Sizeof(out)
 	ret := sysctl(&mib[0], 2, (*byte)(unsafe.Pointer(&out)), &nout, nil, 0)
